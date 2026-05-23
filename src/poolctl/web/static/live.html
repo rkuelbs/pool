@@ -1,0 +1,394 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>poolctl Live</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <h1>poolctl</h1>
+          <p id="runtimeLine">Live view</p>
+        </div>
+        <div class="status-strip">
+          <span id="safetyBadge" class="badge">Starting</span>
+          <span id="updatedAt" class="timestamp">--</span>
+          <span id="healthLine" class="timestamp">--</span>
+        </div>
+      </header>
+
+      <section class="layout">
+        <section class="diagram-panel" aria-label="Pool system live diagram">
+          <div class="diagram">
+            <svg class="pipe-layer" viewBox="0 0 1088 560" aria-hidden="true">
+              <path class="pipe-run pipe-water" d="M168 205 H420 V125 H875 V205 H905"></path>
+              <path class="pipe-run pipe-water" d="M995 205 H1030 V397 H850"></path>
+              <path class="pipe-run pipe-water" d="M168 397 H760"></path>
+              <path class="pipe-run pipe-water" d="M430 305 H805 V370"></path>
+              <path class="pipe-run pipe-water" d="M295 505 H465"></path>
+              <path class="pipe-run pipe-water" d="M555 505 H805 V438"></path>
+              <path class="pipe-run pipe-water" d="M168 305 H340"></path>
+              <path class="pipe-run pipe-suction" d="M168 505 H205"></path>
+              <path class="pipe-run pipe-dose" d="M268 48 H340"></path>
+              <path class="pipe-run pipe-dose" d="M430 48 H470 V205"></path>
+            </svg>
+
+            <div class="pool">
+              <span class="pool-label">POOL</span>
+              <span class="port cleaner">CLEANER</span>
+              <span class="port bubbler">BUBBLER</span>
+            </div>
+
+            <div class="component pump" data-component="pump_motor">
+              <span>PUMP</span>
+              <strong data-sensor="pump_output_psi">--</strong>
+              <small data-flow="pump_flow_gpm">-- gpm</small>
+            </div>
+            <div class="component filter">FILTER</div>
+            <div class="component booster" data-component="booster_pump">
+              <span>BOOSTER</span>
+            </div>
+            <div class="component valve valve-two">2-PORT<br>VALVE</div>
+            <div class="component valve valve-three">3-PORT<br>VALVE</div>
+            <div class="component tank">NaOCl<br>TANK</div>
+            <div class="component dosing" data-component="chlorine_dosing_pump">
+              <span>DOSING</span>
+              <small>PUMP</small>
+            </div>
+
+            <div class="sensor green tank-level">
+              <span>LEVEL</span>
+              <strong data-sensor="tank_level">--</strong>
+            </div>
+            <div class="sensor green orp">
+              <span>ORP</span>
+              <strong data-sensor="raw_orp">--</strong>
+              <small data-sensor="orp_temp">--</small>
+            </div>
+            <div class="sensor green ph">
+              <span>pH</span>
+              <strong data-sensor="raw_ph">--</strong>
+              <small data-sensor="raw_ph_voltage">--</small>
+            </div>
+            <div class="sensor green temp">
+              <span>WATER</span>
+              <strong data-sensor="temp">--</strong>
+            </div>
+
+            <div class="sensor pressure filter-output">
+              <span>FILTER</span>
+              <strong data-sensor="filter_output_psi">--</strong>
+            </div>
+            <div class="sensor pressure return-psi">
+              <span>RETURN</span>
+              <strong data-sensor="return_psi">--</strong>
+              <small data-flow="return_flow_gpm">-- gpm</small>
+            </div>
+            <div class="sensor pressure bubbler-psi">
+              <span>BUBBLER</span>
+              <strong data-sensor="bubbler_psi">--</strong>
+              <small data-flow="bubbler_flow_gpm">-- gpm</small>
+            </div>
+            <div class="sensor pressure booster-psi">
+              <span>BOOSTER</span>
+              <strong data-sensor="booster_psi">--</strong>
+              <small data-flow="booster_flow_gpm">-- gpm</small>
+            </div>
+          </div>
+        </section>
+
+        <aside class="side-panel">
+          <section class="panel">
+            <h2>Controls</h2>
+            <div class="control-grid">
+              <button data-command="pump_motor:on">Pump On</button>
+              <button data-command="pump_motor:off">Pump Off</button>
+              <button data-command="pump_motor_speed:low">Speed Low</button>
+              <button data-command="pump_motor_speed:high">Speed High</button>
+              <button data-command="booster_pump:on">Booster On</button>
+              <button data-command="booster_pump:off">Booster Off</button>
+              <button data-command="chlorine_dosing_pump:on">Dose On</button>
+              <button data-command="chlorine_dosing_pump:off">Dose Off</button>
+            </div>
+            <div class="timer-actions">
+              <button id="overridePumpOnHour" type="button">Pump ON 1h</button>
+              <button id="overridePumpOffManual" type="button">Pump OFF</button>
+              <button id="overrideResumeSchedule" type="button">Resume Timer</button>
+            </div>
+            <div id="timerOverrideStatus" class="history-status">Schedule mode</div>
+            <div id="freezeStatus" class="history-status">Freeze protection: --</div>
+            <div id="commandStatus" class="command-status">--</div>
+          </section>
+          <section class="panel">
+            <h2>Actuators</h2>
+            <div id="actuatorList" class="state-list"></div>
+          </section>
+          <section class="panel">
+            <h2>Sensors</h2>
+            <div id="sensorList" class="state-list"></div>
+          </section>
+          <section class="panel">
+            <h2>Events</h2>
+            <div id="eventList" class="events">--</div>
+          </section>
+        </aside>
+      </section>
+
+      <section class="history-panel" aria-label="Measurement history">
+        <div class="history-header">
+          <h2>History</h2>
+          <div class="history-controls">
+            <button id="historySelectAll" type="button">All Sensors</button>
+            <button id="historyClearAll" type="button">Clear</button>
+            <select id="historyHours" aria-label="History range">
+              <option value="1">1 hour</option>
+              <option value="6">6 hours</option>
+              <option value="24" selected>24 hours</option>
+              <option value="168">7 days</option>
+            </select>
+            <select id="historyValidity" aria-label="History validity">
+              <option value="validated" selected>Validated</option>
+              <option value="all">Raw + validated</option>
+            </select>
+            <button id="historyExportCsv" type="button">Export CSV</button>
+          </div>
+        </div>
+        <div id="historySensorChecklist" class="sensor-checklist"></div>
+        <svg id="historyChart" class="history-chart" viewBox="0 0 720 260" role="img"></svg>
+        <div id="historyStatus" class="history-status">--</div>
+      </section>
+
+      <section class="history-panel" aria-label="Pump timer schedules">
+        <div class="history-header">
+          <h2>Pump Timer Config</h2>
+          <button id="timerAddRow" type="button">Add Schedule</button>
+        </div>
+        <div id="timerLayerStatus" class="history-status">--</div>
+        <div class="config-grid">
+          <label>Timezone
+            <input id="timerTimezone" type="text" placeholder="America/Chicago">
+          </label>
+        </div>
+        <div class="timer-grid-head">
+          <span>Name</span>
+          <span>Start</span>
+          <span>End</span>
+          <span>Pump Speed</span>
+          <span>Booster</span>
+          <span>Action</span>
+        </div>
+        <div id="timerRows" class="timer-rows"></div>
+        <div class="timer-actions">
+          <button id="timerReload" type="button">Reload</button>
+          <button id="timerSave" type="button">Save Schedules</button>
+        </div>
+        <div id="timerSaveStatus" class="history-status">--</div>
+      </section>
+
+      <section class="history-panel" aria-label="Runtime config">
+        <div class="history-header">
+          <h2>Runtime Config</h2>
+          <button id="runtimeReload" type="button">Reload</button>
+        </div>
+        <div class="config-grid">
+          <label>Stage
+            <select id="runtimeStage"></select>
+          </label>
+          <label>Driver
+            <select id="runtimeDriverProfile">
+              <option value="simulated">simulated</option>
+              <option value="raspberry_pi">raspberry_pi</option>
+            </select>
+          </label>
+        </div>
+        <div id="runtimeLayers" class="layer-grid"></div>
+        <div class="timer-actions">
+          <button id="runtimeSave" type="button">Save Runtime</button>
+        </div>
+        <div id="runtimeStatus" class="history-status">--</div>
+      </section>
+
+      <section class="history-panel" aria-label="Safety config">
+        <div class="history-header">
+          <h2>Safety Config</h2>
+          <button id="safetyReload" type="button">Reload</button>
+        </div>
+        <div class="config-grid">
+          <label>Pump output sensor
+            <select id="safetySensorPumpOutput"></select>
+          </label>
+          <label>Return sensor
+            <select id="safetySensorReturn"></select>
+          </label>
+          <label>Booster sensor
+            <select id="safetySensorBooster"></select>
+          </label>
+        </div>
+        <div class="config-grid">
+          <label><span>Freeze enabled</span><input id="safetyFreezeEnabled" type="checkbox"></label>
+          <label>Freeze source
+            <select id="safetyFreezeSource">
+              <option value="temp">temp</option>
+              <option value="ph_temp">ph_temp</option>
+              <option value="both">both</option>
+            </select>
+          </label>
+          <label>Freeze temp sensor
+            <select id="safetyFreezeTempSensor"></select>
+          </label>
+          <label>Freeze ph_temp sensor
+            <select id="safetyFreezePhTempSensor"></select>
+          </label>
+          <label>Freeze low ON <= <input id="safetyFreezeLowOnTemp" type="number" step="0.1"></label>
+          <label>Freeze low OFF >= <input id="safetyFreezeLowOffTemp" type="number" step="0.1"></label>
+          <label>Freeze high ON <= <input id="safetyFreezeHighOnTemp" type="number" step="0.1"></label>
+          <label>Freeze high OFF >= <input id="safetyFreezeHighOffTemp" type="number" step="0.1"></label>
+          <label>Freeze minimum run s <input id="safetyFreezeMinRunSeconds" type="number" step="1" min="0"></label>
+          <label>Freeze threshold unit
+            <select id="safetyFreezeUnit">
+              <option value="degF">degF</option>
+              <option value="degC">degC</option>
+            </select>
+          </label>
+        </div>
+        <div class="config-grid">
+          <label>Chlorine min return psi <input id="safetyChlorineMinReturn" type="number" step="0.1"></label>
+          <label>Chlorine min pump psi <input id="safetyChlorineMinPump" type="number" step="0.1"></label>
+          <label>Booster max psi <input id="safetyBoosterMax" type="number" step="0.1"></label>
+          <label>Booster min psi <input id="safetyBoosterMin" type="number" step="0.1"></label>
+          <label>Pump low prime min psi <input id="safetyLowPrimeMin" type="number" step="0.1"></label>
+          <label>Pump overpressure psi <input id="safetyOverpressure" type="number" step="0.1"></label>
+          <label>Pump high prime min psi <input id="safetyHighPrimeMin" type="number" step="0.1"></label>
+          <label>Booster low grace s <input id="safetyBoosterGrace" type="number" step="0.1"></label>
+          <label>Pump low prime s <input id="safetyLowPrimeSec" type="number" step="0.1"></label>
+          <label>Pump high prime timeout s <input id="safetyHighPrimeTimeout" type="number" step="0.1"></label>
+        </div>
+        <div class="timer-actions">
+          <button id="safetySave" type="button">Save Safety</button>
+          <button id="safetyClearLockout" type="button">Clear Lockout</button>
+        </div>
+        <div id="safetyStatus" class="history-status">--</div>
+      </section>
+
+      <section class="history-panel" aria-label="Acquisition and logging config">
+        <div class="history-header">
+          <h2>Acquisition + Logging</h2>
+        </div>
+        <div class="history-header">
+          <h2>Acquisition Groups</h2>
+          <div class="history-controls">
+            <button id="acqAddGroup" type="button">Add Group</button>
+            <button id="acqReload" type="button">Reload</button>
+          </div>
+        </div>
+        <div id="acqGroupRows" class="config-rows"></div>
+        <div class="history-header">
+          <h2>Chemistry Sampling Refresh</h2>
+        </div>
+        <div class="config-grid">
+          <label><span>Enabled</span><input id="acqRefreshEnabled" type="checkbox"></label>
+          <label><span>Max Pump Off (s)</span><input id="acqRefreshMaxOff" type="number" step="1" min="1"></label>
+          <label><span>Run Duration (s)</span><input id="acqRefreshDuration" type="number" step="1" min="1"></label>
+          <label>Run Pump Speed
+            <select id="acqRefreshSpeed">
+              <option value="low">LOW</option>
+              <option value="high">HIGH</option>
+            </select>
+          </label>
+        </div>
+        <div class="timer-actions">
+          <button id="acqSave" type="button">Save Acquisition</button>
+        </div>
+        <div id="acqStatus" class="history-status">--</div>
+        <div class="history-header">
+          <h2>Logging</h2>
+          <button id="loggingReload" type="button">Reload</button>
+        </div>
+        <div class="config-grid">
+          <label>Database path <input id="loggingDatabasePath" type="text"></label>
+        </div>
+        <div class="timer-actions">
+          <button id="loggingSave" type="button">Save Logging</button>
+        </div>
+        <div id="loggingStatus" class="history-status">--</div>
+      </section>
+
+      <section class="history-panel" aria-label="Fault timeline">
+        <div class="history-header">
+          <h2>Fault Timeline</h2>
+          <div class="history-controls">
+            <select id="faultKind">
+              <option value="all">all</option>
+              <option value="safety">safety</option>
+              <option value="lockout">lockout</option>
+              <option value="acquisition">acquisition</option>
+              <option value="command">command</option>
+            </select>
+            <select id="faultLimit">
+              <option value="20">20</option>
+              <option value="50" selected>50</option>
+              <option value="100">100</option>
+            </select>
+            <button id="faultReload" type="button">Reload</button>
+          </div>
+        </div>
+        <div id="faultTimeline" class="timeline-list">--</div>
+      </section>
+
+      <section class="history-panel" aria-label="Water test entry">
+        <div class="history-header">
+          <h2>Water Tests</h2>
+          <div class="history-controls">
+            <button id="labTestReload" type="button">Reload</button>
+          </div>
+        </div>
+        <div class="config-grid">
+          <label>Sampled At (ISO) <input id="labSampledAt" type="text" placeholder="2026-05-23T14:30:00-05:00"></label>
+          <label>pH <input id="labPh" type="number" step="0.01"></label>
+          <label>Free Chlorine <input id="labFreeChlorine" type="number" step="0.01"></label>
+          <label>Combined Chlorine <input id="labCombinedChlorine" type="number" step="0.01"></label>
+          <label>Total Chlorine <input id="labTotalChlorine" type="number" step="0.01"></label>
+          <label>Alkalinity <input id="labAlkalinity" type="number" step="0.1"></label>
+          <label>CYA <input id="labCya" type="number" step="0.1"></label>
+          <label>Calcium Hardness <input id="labCalciumHardness" type="number" step="0.1"></label>
+          <label>Salt <input id="labSalt" type="number" step="0.1"></label>
+          <label>Borates <input id="labBorates" type="number" step="0.1"></label>
+          <label>Water Temp <input id="labWaterTemp" type="number" step="0.1"></label>
+          <label>Notes <input id="labNotes" type="text"></label>
+        </div>
+        <div class="timer-actions">
+          <button id="labTestSave" type="button">Add Test Result</button>
+        </div>
+        <div id="labTestStatus" class="history-status">--</div>
+        <div id="labTestList" class="timeline-list">--</div>
+      </section>
+
+      <section class="history-panel" aria-label="Analog input config">
+        <div class="history-header">
+          <h2>Analog Input Config</h2>
+          <div class="history-controls">
+            <button id="analogAddSensor" type="button">Add Sensor</button>
+            <button id="analogReload" type="button">Reload</button>
+          </div>
+        </div>
+        <div class="config-grid">
+          <label>Port <input id="analogPort" type="text"></label>
+          <label>Slave ID <input id="analogSlaveId" type="number" step="1" min="1"></label>
+          <label>Baudrate <input id="analogBaudrate" type="number" step="1" min="1"></label>
+          <label>Timeout (s) <input id="analogTimeout" type="number" step="0.1" min="0"></label>
+          <label>Raw to Volts Scale <input id="analogScale" type="number" step="0.0001"></label>
+          <label>Raw to Volts Offset <input id="analogOffset" type="number" step="0.0001"></label>
+        </div>
+        <div id="analogSensorRows" class="config-rows"></div>
+        <div class="timer-actions">
+          <button id="analogSave" type="button">Save Analog Config</button>
+        </div>
+        <div id="analogStatus" class="history-status">--</div>
+      </section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>

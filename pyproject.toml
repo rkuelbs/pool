@@ -1,0 +1,55 @@
+[project]
+name = "poolctl"
+version = "0.1.0"
+description = "Raspberry Pi pool automation controller"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "pydantic>=2",
+    "pyyaml>=6",
+    "aiosqlite>=0.20",
+    "apscheduler>=3.10",
+    "tzdata>=2024.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+    "mypy",
+]
+
+api = [
+    "fastapi",
+    "uvicorn[standard]",
+]
+
+mqtt = [
+    "paho-mqtt",
+]
+
+raspberrypi = [
+    "gpiozero",
+    "smbus2",
+    "adafruit-circuitpython-ads1x15",
+    "pymodbus>=3",
+]
+
+[project.scripts]
+poolctl = "poolctl.main:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+    "hardware: tests that require real Raspberry Pi hardware",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.mypy]
+python_version = "3.13"
+mypy_path = "src"
+strict = true

@@ -1,0 +1,19 @@
+[Unit]
+Description=poolctl automation controller
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/opt/poolctl
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/poolctl/.venv/bin/python -m poolctl.web.server --config /opt/poolctl/configs/pi-prod.yaml --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=3
+KillSignal=SIGINT
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

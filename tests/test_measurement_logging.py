@@ -1,0 +1,116 @@
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+from poolctl.domain.models import LabTest, Measurement, Quality, SensorId
+from poolctl.services.measurement_logging import (
+    MeasurementLogger,
+    MeasurementLoggingConfig,
+)
+
+
+def test_measurement_logger_persists_and_queries_history(tmp_path: Path) -> None:
+    logger = MeasurementLogger(
+        MeasurementLoggingConfig(database_path=tmp_path / "measurements.sqlite3")
+    )
+    now = datetime(2026, 5, 22, 12, 0, tzinfo=timezone.utc)
+    old = Measurement(
+        sensor_id=SensorId.PUMP_OUTPUT_PSI,
+        observed_at=now - timedelta(hours=2),
+        value=8.0,
+        unit="psi",
+        quality=Quality.GOOD,
+        metadata={"driver": "test"},
+    )
+    recent = Measurement(
+        sensor_id=SensorId.PUMP_OUTPUT_PSI,
+        observed_at=now,
+        value=10.0,
+        unit="psi",
+        quality=Quality.GOOD,
+        metadata={"driver": "test"},
+    )
+
+    assert logger.log_measurements((old, recent)) == 2
+
+    records = logger.history(
+        sensor_id=SensorId.PUMP_OUTPUT_PSI,
+        since=now - timedelta(hours=1),
+        limit=10,
+    )
+
+    assert len(records) == 1
+    assert records[0].measurement_id == recent.id
+    assert records[0].value == 10.0
+    assert records[0].metadata == {"driver": "test"}
+
+
+def test_measurement_logger_ignores_duplicate_measurement_ids(tmp_path: Path) -> None:
+    logger = MeasurementLogger(
+        MeasurementLoggingConfig(database_path=tmp_path / "measurements.sqlite3")
+    )
+    measurement = Measurement(
+        sensor_id=SensorId.RETURN_PSI,
+        value=5.0,
+        unit="psi",
+    )
+
+    assert logger.log_measurements((measurement,)) == 1
+    assert logger.log_measurements((measurement,)) == 0
+    assert len(logger.history(sensor_id=SensorId.RETURN_PSI)) == 1
+
+
+def test_measurement_logger_history_can_filter_by_quality(tmp_path: Path) -> None:
+    logger = MeasurementLogger(
+        MeasurementLoggingConfig(database_path=tmp_path / "measurements.sqlite3")
+    )
+    now = datetime(2026, 5, 22, 12, 0, tzinfo=timezone.utc)
+    good = Measurement(
+        sensor_id=SensorId.RAW_ORP,
+        observed_at=now,
+        value=700.0,
+        unit="mV",
+        quality=Quality.GOOD,
+    )
+    suspect = Measurement(
+        sensor_id=SensorId.RAW_ORP,
+        observed_at=now + timedelta(seconds=1),
+        value=699.0,
+        unit="mV",
+        quality=Quality.SUSPECT,
+    )
+    logger.log_measurements((good, suspect))
+
+    all_records = logger.history(sensor_id=SensorId.RAW_ORP, limit=10)
+    good_only = logger.history(
+        sensor_id=SensorId.RAW_ORP,
+        limit=10,
+        qualities=(Quality.GOOD,),
+    )
+
+    assert len(all_records) == 2
+    assert len(good_only) == 1
+    assert good_only[0].quality == Quality.GOOD
+
+
+def test_measurement_logger_persists_lab_tests(tmp_path: Path) -> None:
+    logger = MeasurementLogger(
+        MeasurementLoggingConfig(database_path=tmp_path / "measurements.sqlite3")
+    )
+    now = datetime(2026, 5, 22, 12, 0, tzinfo=timezone.utc)
+    test = LabTest(
+        sampled_at=now,
+        ph=7.45,
+        free_chlorine=3.2,
+        alkalinity=95.0,
+        notes="weekly strip + drop test",
+    )
+    logger.log_lab_test(test)
+    records = logger.lab_test_history(limit=10)
+
+    assert len(records) == 1
+    assert records[0].id == test.id
+    assert records[0].ph == 7.45
+    assert records[0].free_chlorine == 3.2
+    assert records[0].notes == "weekly strip + drop test"

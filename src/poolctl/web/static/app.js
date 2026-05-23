@@ -1,0 +1,1887 @@
+const SENSOR_ORDER = [
+  "pump_output_psi",
+  "filter_output_psi",
+  "return_psi",
+  "bubbler_psi",
+  "booster_psi",
+  "raw_orp",
+  "orp_temp",
+  "raw_ph",
+  "raw_ph_voltage",
+  "temp",
+  "tank_level",
+];
+
+const SENSOR_LABELS = {
+  pump_output_psi: "Pump output",
+  filter_output_psi: "Filter output",
+  return_psi: "Return",
+  bubbler_psi: "Bubbler",
+  booster_psi: "Booster",
+  raw_orp: "ORP",
+  orp_temp: "ORP temp",
+  raw_ph: "pH",
+  raw_ph_voltage: "pH Vraw",
+  temp: "Water temp",
+  tank_level: "Tank level",
+};
+
+const ACQ_REDUCERS = ["last", "mean", "median", "trimmed_mean"];
+const ANALOG_SENSOR_OPTIONS = [
+  "pump_output_psi",
+  "filter_output_psi",
+  "return_psi",
+  "bubbler_psi",
+  "booster_psi",
+  "raw_ph",
+];
+
+const ACTUATOR_ORDER = [
+  "pump_motor",
+  "pump_motor_speed",
+  "booster_pump",
+  "chlorine_dosing_pump",
+];
+
+const SENSOR_STATUS_CLASSES = [
+  "status-normal",
+  "status-caution",
+  "status-alarm",
+  "status-invalid",
+  "status-unknown",
+];
+
+const SENSOR_STATUS_PRIORITY = {
+  unknown: 0,
+  normal: 1,
+  caution: 2,
+  alarm: 3,
+  invalid: 4,
+};
+
+const RUNTIME_STAGES = [
+  "windows_simulation",
+  "open_loop_timer",
+  "sensor_logging",
+  "safety_monitor",
+  "closed_loop_control",
+];
+
+const FEATURE_LAYERS = [
+  "pump_timer",
+  "acquisition",
+  "logging",
+  "safety_enforcement",
+  "mqtt_bridge",
+  "chlorination",
+  "closed_loop_control",
+];
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+const HISTORY_SERIES_COLORS = [
+  "#1680f2",
+  "#1f9d55",
+  "#fb9e33",
+  "#d64545",
+  "#7d5be0",
+  "#008f8c",
+  "#9a6f2f",
+  "#b23aa6",
+];
+
+let historyLoading = false;
+let lastHistoryLoadedAt = 0;
+let lastHistoryKey = "";
+let timerConfigLoading = false;
+let timerConfigSaving = false;
+let faultLoading = false;
+let lastFaultLoadedAt = 0;
+let runtimeConfigLoading = false;
+let safetyConfigLoading = false;
+let acquisitionConfigLoading = false;
+let loggingConfigLoading = false;
+let analogConfigLoading = false;
+let timerOverrideBusy = false;
+let healthLoading = false;
+let lastHealthLoadedAt = 0;
+let labTestLoading = false;
+let pumpPrimeThresholds = {
+  lowPrimeMinPsi: 1.0,
+  highPrimeMinPsi: 5.0,
+};
+
+async function loadLive() {
+  const response = await fetch("/api/live", { cache: "no-store" });
+  const payload = await parseApiResponse(response, "live API failed");
+  render(payload);
+}
+
+async function sendCommand(actuatorId, state) {
+  setControlsDisabled(true);
+  const status = document.getElementById("commandStatus");
+  status.textContent = `Sending ${actuatorId} ${state}...`;
+
+  try {
+    const response = await fetch("/api/command", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        actuator_id: actuatorId,
+        state,
+      }),
+    });
+    const payload = await parseApiResponse(response, "command failed");
+
+    if (payload.applied) {
+      status.textContent = `Applied ${actuatorId} ${state}`;
+    } else {
+      status.textContent = payload.rejection_reason || `Rejected ${actuatorId} ${state}`;
+    }
+
+    await loadLive();
+  } catch (error) {
+    status.textContent = error.message;
+  } finally {
+    setControlsDisabled(false);
+  }
+}
+
+async function setTimerOverride(payload) {
+  if (timerOverrideBusy) {
+    return;
+  }
+  timerOverrideBusy = true;
+  const status = document.getElementById("commandStatus");
+  status.textContent = "Updating timer override...";
+  try {
+    const response = await fetch("/api/timer/override", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    await parseApiResponse(response, "timer override update failed");
+    status.textContent = "Timer override updated";
+    await loadLive();
+  } catch (error) {
+    status.textContent = error.message;
+  } finally {
+    timerOverrideBusy = false;
+  }
+}
+
+function setControlsDisabled(disabled) {
+  document.querySelectorAll("[data-command]").forEach((button) => {
+    button.disabled = disabled;
+  });
+}
+
+function render(payload) {
+  document.getElementById("runtimeLine").textContent =
+    `${payload.runtime.stage} / ${payload.runtime.driver_profile}`;
+  document.getElementById("updatedAt").textContent = new Date(payload.observed_at).toLocaleString();
+
+  renderSafetyBadge(payload.safety);
+  renderFreezeStatus(payload.safety);
+  renderTimerOverride(payload.timer_override);
+  renderDiagramSensors(payload.sensors);
+  renderFlowPlaceholders(payload.flows || {});
+  renderComponentStates(payload.actuators || {}, payload.sensors || {});
+  renderSensorList(payload.sensors);
+  renderActuatorList(payload.actuators);
+  renderEvents(payload.tick);
+  refreshHistory(false);
+  refreshFaultTimeline(false);
+  refreshHealth(false);
+}
+
+function renderSafetyBadge(safety) {
+  const badge = document.getElementById("safetyBadge");
+  badge.classList.remove("ok", "fault");
+
+  if (safety.locked_out) {
+    badge.classList.add("fault");
+    badge.textContent = `LOCKOUT: ${safety.fault.code}`;
+    return;
+  }
+
+  badge.classList.add("ok");
+  if (safety.freeze_protection && safety.freeze_protection.active) {
+    badge.textContent = `Safety OK | Freeze ${String(safety.freeze_protection.latched_speed || "").toUpperCase()}`;
+    return;
+  }
+  badge.textContent = "Safety OK";
+}
+
+function renderTimerOverride(override) {
+  const status = document.getElementById("timerOverrideStatus");
+  if (!status) {
+    return;
+  }
+
+  if (!override || !override.active) {
+    status.textContent = "Schedule mode";
+    return;
+  }
+
+  const until = override.until ? new Date(override.until).toLocaleString() : "manual clear";
+  status.textContent =
+    `Override ${override.pump_motor.toUpperCase()} ` +
+    `(${override.pump_speed.toUpperCase()}, booster ${override.booster.toUpperCase()}) ` +
+    `until ${until}`;
+}
+
+function renderFreezeStatus(safety) {
+  const node = document.getElementById("freezeStatus");
+  if (!node) {
+    return;
+  }
+  const freeze = safety && safety.freeze_protection;
+  if (!freeze || !freeze.enabled) {
+    node.textContent = "Freeze protection: disabled";
+    return;
+  }
+  if (!freeze.active) {
+    node.textContent = "Freeze protection: idle";
+    return;
+  }
+  const hold = Number(freeze.hold_remaining_s || 0);
+  const rounded = hold > 0 ? `${Math.ceil(hold)}s hold` : "release eligible";
+  const observation = freeze.observation ? ` @ ${freeze.observation}` : "";
+  node.textContent = `Freeze ${String(freeze.latched_speed || "").toUpperCase()} (${rounded})${observation}`;
+}
+
+async function refreshHealth(force) {
+  const now = Date.now();
+  if (healthLoading) {
+    return;
+  }
+  if (!force && now - lastHealthLoadedAt < 10000) {
+    return;
+  }
+  healthLoading = true;
+  try {
+    const response = await fetch("/api/health", { cache: "no-store" });
+    const payload = await parseApiResponse(response, "health API failed");
+    const line = document.getElementById("healthLine");
+    const modbusErrors = Object.values((payload.modbus && payload.modbus.ports) || {}).reduce(
+      (sum, item) => sum + Number(item.error_count || 0),
+      0,
+    );
+    const mqttState =
+      payload.mqtt && payload.mqtt.enabled
+        ? payload.mqtt.connected
+          ? "mqtt connected"
+          : "mqtt disconnected"
+        : "mqtt disabled";
+    line.textContent = `Health: ${payload.status} | Modbus errors: ${modbusErrors} | ${mqttState}`;
+    lastHealthLoadedAt = now;
+  } catch (error) {
+    document.getElementById("healthLine").textContent = `Health error: ${error.message}`;
+  } finally {
+    healthLoading = false;
+  }
+}
+
+function renderDiagramSensors(sensors) {
+  document.querySelectorAll(".sensor").forEach((box) => {
+    box.classList.remove(...SENSOR_STATUS_CLASSES);
+    box.dataset.statusPriority = "-1";
+    box.removeAttribute("title");
+  });
+
+  document.querySelectorAll("[data-sensor]").forEach((node) => {
+    const sensor = sensors[node.dataset.sensor];
+    node.textContent = sensor ? sensor.display : "--";
+    node.classList.toggle("quality-suspect", sensor && sensor.quality !== "good");
+    applySensorBoxStatus(node.closest(".sensor"), sensor);
+  });
+}
+
+function renderFlowPlaceholders(flows) {
+  document.querySelectorAll("[data-flow]").forEach((node) => {
+    const key = node.dataset.flow;
+    const flow = flows[key];
+    node.textContent = flow && flow.display ? flow.display : "-- gpm";
+  });
+}
+
+function renderComponentStates(actuators, sensors) {
+  const components = document.querySelectorAll("[data-component]");
+  components.forEach((component) => {
+    component.classList.remove("status-off", "status-on", "status-low", "status-high", "status-alarm");
+    const actuatorId = component.dataset.component;
+    if (!actuatorId) {
+      return;
+    }
+    if (actuatorId === "pump_motor") {
+      const pumpState = actuators.pump_motor ? actuators.pump_motor.state : null;
+      const speedState = actuators.pump_motor_speed ? actuators.pump_motor_speed.state : null;
+      const pumpPsi = sensors.pump_output_psi ? Number(sensors.pump_output_psi.value) : null;
+      const lowPrimeMinPsi = Number(pumpPrimeThresholds.lowPrimeMinPsi || 1.0);
+      const highPrimeMinPsi = Number(pumpPrimeThresholds.highPrimeMinPsi || 5.0);
+      const pumpIsAlarm =
+        pumpState === "on" &&
+        Number.isFinite(pumpPsi) &&
+        ((speedState === "low" && pumpPsi < lowPrimeMinPsi) ||
+          (speedState === "high" && pumpPsi < highPrimeMinPsi));
+      if (pumpState !== "on") {
+        component.classList.add("status-off");
+      } else if (pumpIsAlarm) {
+        component.classList.add("status-alarm");
+      } else if (speedState === "low") {
+        component.classList.add("status-low");
+      } else if (speedState === "high") {
+        component.classList.add("status-high");
+      } else {
+        component.classList.add("status-on");
+      }
+      return;
+    }
+
+    const actuator = actuators[actuatorId];
+    if (!actuator || actuator.state !== "on") {
+      component.classList.add("status-off");
+      return;
+    }
+    component.classList.add("status-on");
+  });
+}
+
+function renderSensorList(sensors) {
+  const list = document.getElementById("sensorList");
+  list.innerHTML = "";
+
+  SENSOR_ORDER.forEach((sensorId) => {
+    const sensor = sensors[sensorId];
+    if (!sensor) {
+      return;
+    }
+    list.appendChild(row(sensor.label, sensor.display, sensor.quality, sensor.status));
+  });
+}
+
+function renderActuatorList(actuators) {
+  const list = document.getElementById("actuatorList");
+  list.innerHTML = "";
+
+  ACTUATOR_ORDER.forEach((actuatorId) => {
+    const actuator = actuators[actuatorId];
+    if (!actuator) {
+      return;
+    }
+    list.appendChild(row(actuator.label, actuator.state.toUpperCase()));
+  });
+}
+
+function renderEvents(tick) {
+  const events = document.getElementById("eventList");
+  const lines = [];
+
+  if (tick.acquired_groups.length) {
+    lines.push(`Acquired: ${tick.acquired_groups.join(", ")}`);
+  }
+
+  if (tick.loggable_measurement_count) {
+    lines.push(`Loggable measurements: ${tick.loggable_measurement_count}`);
+  }
+
+  if (tick.logged_measurement_count) {
+    lines.push(`Logged measurements: ${tick.logged_measurement_count}`);
+  }
+  if (tick.logged_lab_test_count) {
+    lines.push(`Logged lab tests: ${tick.logged_lab_test_count}`);
+  }
+  if (tick.mqtt_result_count) {
+    lines.push(`MQTT commands processed: ${tick.mqtt_result_count}`);
+  }
+
+  tick.acquisition_failures.forEach((failure) => {
+    lines.push(`${failure.driver}: ${failure.error}`);
+  });
+
+  tick.safety_results.forEach((result) => {
+    if (result.applied && result.metadata.safety_action) {
+      lines.push(`Safety action: ${result.metadata.safety_action}`);
+    }
+  });
+
+  (tick.mqtt_results || []).forEach((result) => {
+    const summary = result.applied ? "applied" : (result.rejection_reason || "rejected");
+    lines.push(`MQTT command: ${summary}`);
+  });
+
+  events.textContent = lines.length ? lines.join("\n") : "No new events";
+}
+
+function row(name, value, quality, status) {
+  const item = document.createElement("div");
+  item.className = "state-row";
+  if (status) {
+    item.classList.add(`status-${status}`);
+  }
+
+  const label = document.createElement("span");
+  label.className = "state-name";
+  label.textContent = name;
+
+  const display = document.createElement("span");
+  display.className = "state-value";
+  if (quality && quality !== "good") {
+    display.classList.add("quality-suspect");
+  }
+  display.textContent = value;
+
+  item.append(label, display);
+  return item;
+}
+
+function applySensorBoxStatus(box, sensor) {
+  if (!box || !sensor) {
+    return;
+  }
+
+  const status = sensor.status || "unknown";
+  const nextPriority = SENSOR_STATUS_PRIORITY[status] ?? 0;
+  const currentPriority = Number(box.dataset.statusPriority ?? "-1");
+
+  if (nextPriority < currentPriority) {
+    return;
+  }
+
+  box.classList.remove(...SENSOR_STATUS_CLASSES);
+  box.classList.add(`status-${status}`);
+  box.dataset.statusPriority = String(nextPriority);
+  box.title = `${sensor.label}: ${sensor.status_label}`;
+}
+
+async function refreshHistory(force) {
+  const hoursSelect = document.getElementById("historyHours");
+  const validitySelect = document.getElementById("historyValidity");
+  const status = document.getElementById("historyStatus");
+  updateHistoryChecklistAppearance();
+  const sensorIds = selectedHistorySensorIds();
+  const validatedOnly = validitySelect.value !== "all";
+  const key = `${sensorIds.join(",")}:${hoursSelect.value}:${validatedOnly}`;
+  const now = Date.now();
+
+  if (!sensorIds.length) {
+    drawHistoryChartSeries([]);
+    status.textContent = "Select one or more sensors";
+    return;
+  }
+
+  if (historyLoading) {
+    return;
+  }
+
+  if (!force && key === lastHistoryKey && now - lastHistoryLoadedAt < 10000) {
+    return;
+  }
+
+  historyLoading = true;
+  status.textContent = "Loading history...";
+
+  try {
+    const params = new URLSearchParams({
+      hours: hoursSelect.value,
+      limit: "600",
+      validated_only: validatedOnly ? "true" : "false",
+    });
+    sensorIds.forEach((sensorId) => params.append("sensor_id", sensorId));
+    const response = await fetch(`/api/history?${params.toString()}`, { cache: "no-store" });
+    const payload = await parseApiResponse(
+      response,
+      "history API failed",
+      "History API unavailable. Restart the dashboard server.",
+    );
+
+    const series = normalizeHistorySeries(payload);
+    drawHistoryChartSeries(series);
+    lastHistoryKey = key;
+    lastHistoryLoadedAt = now;
+  } catch (error) {
+    drawHistoryChartSeries([]);
+    status.textContent = error.message;
+  } finally {
+    historyLoading = false;
+  }
+}
+
+function normalizeHistorySeries(payload) {
+  if (Array.isArray(payload.series)) {
+    return payload.series;
+  }
+
+  if (payload.sensor_id && Array.isArray(payload.points)) {
+    return [
+      {
+        sensor_id: payload.sensor_id,
+        label: SENSOR_LABELS[payload.sensor_id] || payload.sensor_id,
+        points: payload.points,
+      },
+    ];
+  }
+
+  return [];
+}
+
+function drawHistoryChartSeries(series) {
+  const chart = document.getElementById("historyChart");
+  const status = document.getElementById("historyStatus");
+  chart.replaceChildren();
+  const colorMap = selectedHistoryColorMap();
+
+  const width = 720;
+  const height = 260;
+  const margin = { top: 18, right: 20, bottom: 34, left: 54 };
+  const plotWidth = width - margin.left - margin.right;
+  const plotHeight = height - margin.top - margin.bottom;
+
+  const points = series.flatMap((entry) =>
+    (entry.points || []).map((point) => ({ ...point, sensor_id: entry.sensor_id })),
+  );
+
+  if (!points.length) {
+    chart.appendChild(svgText("No logged measurements yet", width / 2, height / 2, "history-empty"));
+    status.textContent = "Waiting for loggable samples";
+    return;
+  }
+
+  const values = points.map((point) => Number(point.value));
+  const times = points.map((point) => new Date(point.observed_at).getTime());
+  const minTime = Math.min(...times);
+  const maxTime = Math.max(...times);
+  let minValue = Math.min(...values);
+  let maxValue = Math.max(...values);
+
+  if (minValue === maxValue) {
+    minValue -= 1;
+    maxValue += 1;
+  }
+
+  const valuePadding = (maxValue - minValue) * 0.08;
+  minValue -= valuePadding;
+  maxValue += valuePadding;
+
+  for (let index = 0; index <= 4; index += 1) {
+    const y = margin.top + (plotHeight * index) / 4;
+    chart.appendChild(svgLine(margin.left, y, width - margin.right, y, "history-grid"));
+
+    const labelValue = maxValue - ((maxValue - minValue) * index) / 4;
+    chart.appendChild(svgText(labelValue.toFixed(1), margin.left - 8, y + 4, "history-axis-label", "end"));
+  }
+
+  series.forEach((entry, seriesIndex) => {
+    const entryPoints = entry.points || [];
+    if (!entryPoints.length) {
+      return;
+    }
+
+    const color =
+      colorMap[entry.sensor_id] || HISTORY_SERIES_COLORS[seriesIndex % HISTORY_SERIES_COLORS.length];
+    const coordinates = entryPoints.map((point) => {
+      const pointTime = new Date(point.observed_at).getTime();
+      const x =
+        minTime === maxTime
+          ? margin.left + plotWidth
+          : margin.left + ((pointTime - minTime) / (maxTime - minTime)) * plotWidth;
+      const y = margin.top + plotHeight - ((Number(point.value) - minValue) / (maxValue - minValue)) * plotHeight;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    });
+
+    const polyline = document.createElementNS(SVG_NS, "polyline");
+    polyline.setAttribute("class", "history-line");
+    polyline.setAttribute("style", `stroke:${color}`);
+    polyline.setAttribute("points", coordinates.join(" "));
+    chart.appendChild(polyline);
+
+    const latest = entryPoints[entryPoints.length - 1];
+    const [latestX, latestY] = coordinates[coordinates.length - 1].split(",");
+    const point = document.createElementNS(SVG_NS, "circle");
+    point.setAttribute("class", "history-point");
+    point.setAttribute("cx", latestX);
+    point.setAttribute("cy", latestY);
+    point.setAttribute("r", "3.5");
+    point.setAttribute("fill", color);
+    point.setAttribute("title", `${entry.label}: ${latest.display}`);
+    chart.appendChild(point);
+  });
+
+  const xTickCount = 5;
+  for (let index = 0; index < xTickCount; index += 1) {
+    const ratio = xTickCount === 1 ? 1 : index / (xTickCount - 1);
+    const x = margin.left + plotWidth * ratio;
+    const timestamp = minTime + (maxTime - minTime) * ratio;
+    const date = new Date(timestamp);
+    const label =
+      maxTime - minTime > 24 * 3600 * 1000
+        ? date.toLocaleString([], { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })
+        : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
+    chart.appendChild(svgLine(x, margin.top + plotHeight, x, margin.top + plotHeight + 4, "history-grid"));
+    chart.appendChild(svgText(label, x, height - 10, "history-axis-label", "middle"));
+  }
+
+  installHistoryHover(chart, series, {
+    minTime,
+    maxTime,
+    minValue,
+    maxValue,
+    margin,
+    plotWidth,
+    plotHeight,
+  });
+
+  status.textContent = `${points.length} points across ${series.length} sensors`;
+}
+
+function installHistoryHover(chart, series, axis) {
+  const status = document.getElementById("historyStatus");
+  const hoverLine = svgLine(axis.margin.left, axis.margin.top, axis.margin.left, axis.margin.top + axis.plotHeight, "history-hover-line");
+  hoverLine.style.display = "none";
+  chart.appendChild(hoverLine);
+
+  chart.addEventListener("mousemove", (event) => {
+    const rect = chart.getBoundingClientRect();
+    const x = ((event.clientX - rect.left) / rect.width) * 720;
+    if (x < axis.margin.left || x > axis.margin.left + axis.plotWidth) {
+      hoverLine.style.display = "none";
+      return;
+    }
+
+    hoverLine.style.display = "block";
+    hoverLine.setAttribute("x1", String(x));
+    hoverLine.setAttribute("x2", String(x));
+
+    const ratio = (x - axis.margin.left) / axis.plotWidth;
+    const timestamp = axis.minTime + ratio * (axis.maxTime - axis.minTime);
+    const nearestRows = series
+      .map((entry) => nearestPoint(entry, timestamp))
+      .filter((row) => row !== null);
+    const lines = nearestRows.map((row) => `${row.label}: ${row.point.display}`);
+    status.textContent = `${new Date(timestamp).toLocaleString()} | ${lines.join(" | ")}`;
+  });
+
+  chart.addEventListener("mouseleave", () => {
+    hoverLine.style.display = "none";
+  });
+}
+
+function nearestPoint(seriesEntry, timestamp) {
+  const points = seriesEntry.points || [];
+  if (!points.length) {
+    return null;
+  }
+  let best = points[0];
+  let bestDistance = Math.abs(new Date(best.observed_at).getTime() - timestamp);
+  for (let index = 1; index < points.length; index += 1) {
+    const point = points[index];
+    const distance = Math.abs(new Date(point.observed_at).getTime() - timestamp);
+    if (distance < bestDistance) {
+      best = point;
+      bestDistance = distance;
+    }
+  }
+  return { label: seriesEntry.label || seriesEntry.sensor_id, point: best };
+}
+
+function selectedHistorySensorIds() {
+  return [...document.querySelectorAll('#historySensorChecklist input[type="checkbox"]:checked')].map(
+    (input) => input.value,
+  );
+}
+
+function selectedHistoryColorMap() {
+  const selectedIds = selectedHistorySensorIds();
+  const colorMap = {};
+  selectedIds.forEach((sensorId, index) => {
+    colorMap[sensorId] = HISTORY_SERIES_COLORS[index % HISTORY_SERIES_COLORS.length];
+  });
+  return colorMap;
+}
+
+function updateHistoryChecklistAppearance() {
+  const colorMap = selectedHistoryColorMap();
+  document.querySelectorAll("#historySensorChecklist label").forEach((label) => {
+    const sensorId = label.dataset.sensorId;
+    if (!sensorId) {
+      return;
+    }
+    const selectedColor = colorMap[sensorId];
+    const swatch = label.querySelector(".history-swatch");
+    const text = label.querySelector(".history-sensor-text");
+
+    if (selectedColor) {
+      label.style.backgroundColor = colorWithAlpha(selectedColor, 0.16);
+      label.style.borderColor = colorWithAlpha(selectedColor, 0.45);
+      if (text) {
+        text.style.color = "#202830";
+      }
+      if (swatch) {
+        swatch.style.backgroundColor = selectedColor;
+      }
+      return;
+    }
+
+    label.style.backgroundColor = "#f2f4f7";
+    label.style.borderColor = "var(--line)";
+    if (text) {
+      text.style.color = "var(--muted)";
+    }
+    if (swatch) {
+      swatch.style.backgroundColor = "#a6b2bf";
+    }
+  });
+}
+
+function colorWithAlpha(hexColor, alpha) {
+  const hex = hexColor.replace("#", "");
+  const expanded = hex.length === 3 ? hex.split("").map((part) => part + part).join("") : hex;
+  const red = Number.parseInt(expanded.slice(0, 2), 16);
+  const green = Number.parseInt(expanded.slice(2, 4), 16);
+  const blue = Number.parseInt(expanded.slice(4, 6), 16);
+  return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+}
+
+function exportHistoryCsv() {
+  const sensorIds = selectedHistorySensorIds();
+  const validatedOnly = document.getElementById("historyValidity").value !== "all";
+  if (!sensorIds.length) {
+    document.getElementById("historyStatus").textContent = "Select one or more sensors";
+    return;
+  }
+  const params = new URLSearchParams({
+    hours: document.getElementById("historyHours").value,
+    limit: "2000",
+    validated_only: validatedOnly ? "true" : "false",
+  });
+  sensorIds.forEach((sensorId) => params.append("sensor_id", sensorId));
+  window.open(`/api/history.csv?${params.toString()}`, "_blank");
+}
+
+function svgLine(x1, y1, x2, y2, className) {
+  const line = document.createElementNS(SVG_NS, "line");
+  line.setAttribute("class", className);
+  line.setAttribute("x1", String(x1));
+  line.setAttribute("y1", String(y1));
+  line.setAttribute("x2", String(x2));
+  line.setAttribute("y2", String(y2));
+  return line;
+}
+
+function svgText(text, x, y, className, anchor = "middle") {
+  const label = document.createElementNS(SVG_NS, "text");
+  label.setAttribute("class", className);
+  label.setAttribute("x", String(x));
+  label.setAttribute("y", String(y));
+  label.setAttribute("text-anchor", anchor);
+  label.textContent = text;
+  return label;
+}
+
+async function parseApiResponse(response, fallbackMessage, nonJsonHint = "") {
+  const contentType = (response.headers.get("content-type") || "").toLowerCase();
+
+  if (contentType.includes("application/json")) {
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.error || `${fallbackMessage} (HTTP ${response.status})`);
+    }
+    return payload;
+  }
+
+  const body = (await response.text()).trim();
+  const hint = nonJsonHint || "Unexpected response format";
+  const preview = body ? ` ${body.slice(0, 80)}` : "";
+  throw new Error(`${hint} (HTTP ${response.status}).${preview}`);
+}
+
+function labeledInput(labelText, field, type, value, step = "", min = "") {
+  const label = document.createElement("label");
+  const text = document.createElement("span");
+  text.textContent = labelText;
+  const input = document.createElement("input");
+  input.type = type;
+  input.dataset.field = field;
+  if (value !== undefined && value !== null) {
+    input.value = String(value);
+  }
+  if (step) {
+    input.step = step;
+  }
+  if (min) {
+    input.min = min;
+  }
+  label.append(text, input);
+  return label;
+}
+
+function labeledCheckbox(labelText, field, checked) {
+  const label = document.createElement("label");
+  const text = document.createElement("span");
+  text.textContent = labelText;
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.dataset.field = field;
+  input.checked = Boolean(checked);
+  label.append(text, input);
+  return label;
+}
+
+function labeledSelect(labelText, field, options, selectedValue) {
+  const label = document.createElement("label");
+  const text = document.createElement("span");
+  text.textContent = labelText;
+  const select = document.createElement("select");
+  select.dataset.field = field;
+  options.forEach((item) => {
+    const option = document.createElement("option");
+    option.value = item.value;
+    option.textContent = item.label;
+    select.appendChild(option);
+  });
+  select.value = selectedValue;
+  label.append(text, select);
+  return label;
+}
+
+function fieldNode(root, field) {
+  const node = root.querySelector(`[data-field="${field}"]`);
+  if (!node) {
+    throw new Error(`Missing field: ${field}`);
+  }
+  return node;
+}
+
+function stringValue(root, field) {
+  return String(fieldNode(root, field).value || "").trim();
+}
+
+function numberValue(root, field) {
+  const value = Number(fieldNode(root, field).value);
+  if (!Number.isFinite(value)) {
+    throw new Error(`Invalid number for ${field}`);
+  }
+  return value;
+}
+
+function intValue(root, field) {
+  const value = Number(fieldNode(root, field).value);
+  if (!Number.isInteger(value)) {
+    throw new Error(`Invalid integer for ${field}`);
+  }
+  return value;
+}
+
+function initializeHistoryControls() {
+  const checklist = document.getElementById("historySensorChecklist");
+  SENSOR_ORDER.forEach((sensorId, index) => {
+    const label = document.createElement("label");
+    label.dataset.sensorId = sensorId;
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.value = sensorId;
+    input.checked = index < 2;
+    input.addEventListener("change", () => refreshHistory(true));
+    const swatch = document.createElement("span");
+    swatch.className = "history-swatch";
+    swatch.style.backgroundColor = "#a6b2bf";
+    const text = document.createElement("span");
+    text.className = "history-sensor-text";
+    text.textContent = SENSOR_LABELS[sensorId] || sensorId;
+    label.append(input, swatch, text);
+    checklist.appendChild(label);
+  });
+  updateHistoryChecklistAppearance();
+
+  document.getElementById("historyHours").addEventListener("change", () => refreshHistory(true));
+  document.getElementById("historyValidity").addEventListener("change", () => refreshHistory(true));
+  document.getElementById("historySelectAll").addEventListener("click", () => {
+    checklist.querySelectorAll('input[type="checkbox"]').forEach((input) => {
+      input.checked = true;
+    });
+    updateHistoryChecklistAppearance();
+    refreshHistory(true);
+  });
+  document.getElementById("historyClearAll").addEventListener("click", () => {
+    checklist.querySelectorAll('input[type="checkbox"]').forEach((input) => {
+      input.checked = false;
+    });
+    updateHistoryChecklistAppearance();
+    refreshHistory(true);
+  });
+  document.getElementById("historyExportCsv").addEventListener("click", exportHistoryCsv);
+}
+
+async function loadPumpTimerConfig() {
+  if (timerConfigLoading) {
+    return;
+  }
+
+  timerConfigLoading = true;
+  setTimerStatus("Loading timer schedules...");
+  setTimerButtonsDisabled(true);
+
+  try {
+    const response = await fetch("/api/config/pump_timer", { cache: "no-store" });
+    const payload = await parseApiResponse(response, "pump timer config load failed");
+    renderPumpTimerConfig(payload);
+    setTimerStatus("Timer schedules loaded");
+  } catch (error) {
+    setTimerStatus(error.message);
+  } finally {
+    timerConfigLoading = false;
+    setTimerButtonsDisabled(false);
+  }
+}
+
+function renderPumpTimerConfig(payload) {
+  const layer = document.getElementById("timerLayerStatus");
+  layer.classList.toggle("timer-layer-disabled", !payload.layer_enabled);
+  layer.textContent = payload.layer_enabled
+    ? "Pump timer layer is enabled"
+    : "Pump timer layer is disabled in runtime.enabled_layers";
+
+  const rows = document.getElementById("timerRows");
+  rows.replaceChildren();
+  const timezoneInput = document.getElementById("timerTimezone");
+  if (timezoneInput) {
+    timezoneInput.value = payload.timezone || "UTC";
+  }
+
+  const schedules = Array.isArray(payload.schedules) ? payload.schedules : [];
+  if (!schedules.length) {
+    rows.appendChild(timerRowElement());
+    return;
+  }
+
+  schedules.forEach((schedule) => rows.appendChild(timerRowElement(schedule)));
+}
+
+function timerRowElement(schedule = {}) {
+  const row = document.createElement("div");
+  row.className = "timer-row";
+
+  row.appendChild(timerInput("name", schedule.name || "", "text"));
+  row.appendChild(timerInput("start", schedule.start || "08:00", "time"));
+  row.appendChild(timerInput("end", schedule.end || "12:00", "time"));
+  row.appendChild(timerSelect("pump_speed", ["low", "high"], schedule.pump_speed || "low"));
+  row.appendChild(timerSelect("booster", ["off", "on"], schedule.booster || "off"));
+
+  const removeButton = document.createElement("button");
+  removeButton.type = "button";
+  removeButton.textContent = "Remove";
+  removeButton.addEventListener("click", () => {
+    row.remove();
+    if (!document.querySelectorAll(".timer-row").length) {
+      document.getElementById("timerRows").appendChild(timerRowElement());
+    }
+  });
+  row.appendChild(removeButton);
+
+  return row;
+}
+
+function timerInput(field, value, type) {
+  const input = document.createElement("input");
+  input.type = type;
+  input.value = value;
+  input.dataset.field = field;
+  if (field === "name") {
+    input.placeholder = "morning_filter";
+  }
+  return input;
+}
+
+function timerSelect(field, options, value) {
+  const select = document.createElement("select");
+  select.dataset.field = field;
+  options.forEach((optionValue) => {
+    const option = document.createElement("option");
+    option.value = optionValue;
+    option.textContent = optionValue.toUpperCase();
+    select.appendChild(option);
+  });
+  select.value = value;
+  return select;
+}
+
+function collectTimerSchedules() {
+  const rows = [...document.querySelectorAll(".timer-row")];
+  const schedules = rows.map((row, index) => {
+    const name = row.querySelector('[data-field="name"]').value.trim();
+    const start = row.querySelector('[data-field="start"]').value;
+    const end = row.querySelector('[data-field="end"]').value;
+    const pumpSpeed = row.querySelector('[data-field="pump_speed"]').value;
+    const booster = row.querySelector('[data-field="booster"]').value;
+
+    return {
+      name: name || `schedule_${index + 1}`,
+      start,
+      end,
+      pump_speed: pumpSpeed,
+      booster,
+    };
+  });
+
+  return schedules.filter((schedule) => schedule.start && schedule.end);
+}
+
+async function savePumpTimerConfig() {
+  if (timerConfigSaving) {
+    return;
+  }
+
+  timerConfigSaving = true;
+  setTimerStatus("Saving timer schedules...");
+  setTimerButtonsDisabled(true);
+
+  try {
+    const response = await fetch("/api/config/pump_timer", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        timezone: document.getElementById("timerTimezone").value.trim() || "UTC",
+        schedules: collectTimerSchedules(),
+      }),
+    });
+    const payload = await parseApiResponse(response, "pump timer config save failed");
+    renderPumpTimerConfig(payload);
+    setTimerStatus("Timer schedules saved");
+  } catch (error) {
+    setTimerStatus(error.message);
+  } finally {
+    timerConfigSaving = false;
+    setTimerButtonsDisabled(false);
+  }
+}
+
+function setTimerStatus(message) {
+  document.getElementById("timerSaveStatus").textContent = message;
+}
+
+function setTimerButtonsDisabled(disabled) {
+  document.getElementById("timerAddRow").disabled = disabled;
+  document.getElementById("timerSave").disabled = disabled;
+  document.getElementById("timerReload").disabled = disabled;
+}
+
+function initializeTimerControls() {
+  document.getElementById("timerAddRow").addEventListener("click", () => {
+    document.getElementById("timerRows").appendChild(timerRowElement());
+  });
+  document.getElementById("timerSave").addEventListener("click", savePumpTimerConfig);
+  document.getElementById("timerReload").addEventListener("click", loadPumpTimerConfig);
+  loadPumpTimerConfig();
+}
+
+async function loadRuntimeConfig() {
+  if (runtimeConfigLoading) {
+    return;
+  }
+  runtimeConfigLoading = true;
+  try {
+    const response = await fetch("/api/config/runtime", { cache: "no-store" });
+    const payload = await parseApiResponse(response, "runtime config load failed");
+    document.getElementById("runtimeStage").value = payload.stage;
+    document.getElementById("runtimeDriverProfile").value = payload.driver_profile;
+    FEATURE_LAYERS.forEach((layer) => {
+      const box = document.getElementById(`layer-${layer}`);
+      if (box) {
+        box.checked = payload.enabled_layers.includes(layer);
+      }
+    });
+    setRuntimeStatus("Runtime config loaded");
+  } catch (error) {
+    setRuntimeStatus(error.message);
+  } finally {
+    runtimeConfigLoading = false;
+  }
+}
+
+async function saveRuntimeConfig() {
+  const enabledLayers = FEATURE_LAYERS.filter((layer) => document.getElementById(`layer-${layer}`).checked);
+  setRuntimeStatus("Saving runtime config...");
+  try {
+    const response = await fetch("/api/config/runtime", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        stage: document.getElementById("runtimeStage").value,
+        driver_profile: document.getElementById("runtimeDriverProfile").value,
+        enabled_layers: enabledLayers,
+      }),
+    });
+    const payload = await parseApiResponse(response, "runtime config save failed");
+    setRuntimeStatus(payload.message || "Runtime config saved");
+  } catch (error) {
+    setRuntimeStatus(error.message);
+  }
+}
+
+function setRuntimeStatus(message) {
+  document.getElementById("runtimeStatus").textContent = message;
+}
+
+function initializeRuntimeControls() {
+  const stageSelect = document.getElementById("runtimeStage");
+  RUNTIME_STAGES.forEach((stage) => {
+    const option = document.createElement("option");
+    option.value = stage;
+    option.textContent = stage;
+    stageSelect.appendChild(option);
+  });
+
+  const layers = document.getElementById("runtimeLayers");
+  FEATURE_LAYERS.forEach((layer) => {
+    const label = document.createElement("label");
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.id = `layer-${layer}`;
+    label.append(input, document.createTextNode(layer));
+    layers.appendChild(label);
+  });
+
+  document.getElementById("runtimeReload").addEventListener("click", loadRuntimeConfig);
+  document.getElementById("runtimeSave").addEventListener("click", saveRuntimeConfig);
+  loadRuntimeConfig();
+}
+
+async function loadSafetyConfig() {
+  if (safetyConfigLoading) {
+    return;
+  }
+  safetyConfigLoading = true;
+  try {
+    const response = await fetch("/api/config/safety", { cache: "no-store" });
+    const payload = await parseApiResponse(response, "safety config load failed");
+    const freeze = payload.freeze_protection || {};
+    document.getElementById("safetySensorPumpOutput").value = payload.pressure_sensor_ids.pump_output;
+    document.getElementById("safetySensorReturn").value = payload.pressure_sensor_ids.return_line;
+    document.getElementById("safetySensorBooster").value = payload.pressure_sensor_ids.booster;
+    document.getElementById("safetyFreezeEnabled").checked = Boolean(freeze.enabled);
+    document.getElementById("safetyFreezeSource").value = freeze.source || "temp";
+    document.getElementById("safetyFreezeTempSensor").value = freeze.temp_sensor || "temp";
+    document.getElementById("safetyFreezePhTempSensor").value = freeze.ph_temp_sensor || "orp_temp";
+    document.getElementById("safetyFreezeLowOnTemp").value = String(
+      freeze.low_speed_on_below_temp ?? freeze.low_speed_below_temp ?? 35.0,
+    );
+    document.getElementById("safetyFreezeLowOffTemp").value = String(
+      freeze.low_speed_off_above_temp ?? 37.0,
+    );
+    document.getElementById("safetyFreezeHighOnTemp").value = String(
+      freeze.high_speed_on_below_temp ?? freeze.high_speed_below_temp ?? 33.0,
+    );
+    document.getElementById("safetyFreezeHighOffTemp").value = String(
+      freeze.high_speed_off_above_temp ?? 34.0,
+    );
+    document.getElementById("safetyFreezeMinRunSeconds").value = String(
+      freeze.min_run_seconds ?? 600.0,
+    );
+    document.getElementById("safetyFreezeUnit").value = freeze.threshold_unit || "degF";
+    document.getElementById("safetyChlorineMinReturn").value = payload.thresholds.chlorine_min_return_psi;
+    document.getElementById("safetyChlorineMinPump").value = payload.thresholds.chlorine_min_pump_output_psi;
+    document.getElementById("safetyBoosterMax").value = payload.thresholds.booster_max_psi;
+    document.getElementById("safetyBoosterMin").value = payload.thresholds.booster_min_psi;
+    document.getElementById("safetyLowPrimeMin").value = payload.thresholds.pump_low_prime_min_output_psi;
+    document.getElementById("safetyOverpressure").value = payload.thresholds.pump_output_overpressure_psi;
+    document.getElementById("safetyHighPrimeMin").value = payload.thresholds.pump_high_prime_min_output_psi;
+    document.getElementById("safetyBoosterGrace").value = payload.timeouts.booster_low_pressure_grace_s;
+    document.getElementById("safetyLowPrimeSec").value = payload.timeouts.pump_low_prime_seconds;
+    document.getElementById("safetyHighPrimeTimeout").value = payload.timeouts.pump_high_prime_timeout_s;
+    pumpPrimeThresholds = {
+      lowPrimeMinPsi: Number(payload.thresholds.pump_low_prime_min_output_psi ?? 1.0),
+      highPrimeMinPsi: Number(payload.thresholds.pump_high_prime_min_output_psi ?? 5.0),
+    };
+    setSafetyStatus("Safety config loaded");
+  } catch (error) {
+    setSafetyStatus(error.message);
+  } finally {
+    safetyConfigLoading = false;
+  }
+}
+
+async function saveSafetyConfig() {
+  setSafetyStatus("Saving safety config...");
+  try {
+    const response = await fetch("/api/config/safety", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pressure_sensor_ids: {
+          pump_output: document.getElementById("safetySensorPumpOutput").value,
+          return_line: document.getElementById("safetySensorReturn").value,
+          booster: document.getElementById("safetySensorBooster").value,
+        },
+        freeze_protection: {
+          enabled: document.getElementById("safetyFreezeEnabled").checked,
+          source: document.getElementById("safetyFreezeSource").value,
+          temp_sensor: document.getElementById("safetyFreezeTempSensor").value,
+          ph_temp_sensor: document.getElementById("safetyFreezePhTempSensor").value,
+          low_speed_on_below_temp: Number(document.getElementById("safetyFreezeLowOnTemp").value),
+          low_speed_off_above_temp: Number(document.getElementById("safetyFreezeLowOffTemp").value),
+          high_speed_on_below_temp: Number(document.getElementById("safetyFreezeHighOnTemp").value),
+          high_speed_off_above_temp: Number(document.getElementById("safetyFreezeHighOffTemp").value),
+          min_run_seconds: Number(document.getElementById("safetyFreezeMinRunSeconds").value),
+          threshold_unit: document.getElementById("safetyFreezeUnit").value,
+        },
+        thresholds: {
+          chlorine_min_return_psi: Number(document.getElementById("safetyChlorineMinReturn").value),
+          chlorine_min_pump_output_psi: Number(document.getElementById("safetyChlorineMinPump").value),
+          booster_max_psi: Number(document.getElementById("safetyBoosterMax").value),
+          booster_min_psi: Number(document.getElementById("safetyBoosterMin").value),
+          pump_low_prime_min_output_psi: Number(document.getElementById("safetyLowPrimeMin").value),
+          pump_output_overpressure_psi: Number(document.getElementById("safetyOverpressure").value),
+          pump_high_prime_min_output_psi: Number(document.getElementById("safetyHighPrimeMin").value),
+        },
+        timeouts: {
+          booster_low_pressure_grace_s: Number(document.getElementById("safetyBoosterGrace").value),
+          pump_low_prime_seconds: Number(document.getElementById("safetyLowPrimeSec").value),
+          pump_high_prime_timeout_s: Number(document.getElementById("safetyHighPrimeTimeout").value),
+        },
+      }),
+    });
+    const payload = await parseApiResponse(response, "safety config save failed");
+    setSafetyStatus(payload.applied_live ? "Safety config saved and applied live" : "Safety config saved");
+  } catch (error) {
+    setSafetyStatus(error.message);
+  }
+}
+
+async function clearSafetyLockout() {
+  setSafetyStatus("Clearing safety lockout...");
+  try {
+    const response = await fetch("/api/safety/clear_lockout", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    await parseApiResponse(response, "clear lockout failed");
+    setSafetyStatus("Safety lockout cleared");
+  } catch (error) {
+    setSafetyStatus(error.message);
+  }
+}
+
+function setSafetyStatus(message) {
+  document.getElementById("safetyStatus").textContent = message;
+}
+
+function initializeSafetyControls() {
+  const selects = [
+    "safetySensorPumpOutput",
+    "safetySensorReturn",
+    "safetySensorBooster",
+    "safetyFreezeTempSensor",
+    "safetyFreezePhTempSensor",
+  ];
+  selects.forEach((selectId) => {
+    const select = document.getElementById(selectId);
+    SENSOR_ORDER.forEach((sensorId) => {
+      const option = document.createElement("option");
+      option.value = sensorId;
+      option.textContent = sensorId;
+      select.appendChild(option);
+    });
+  });
+
+  document.getElementById("safetyReload").addEventListener("click", loadSafetyConfig);
+  document.getElementById("safetySave").addEventListener("click", saveSafetyConfig);
+  document.getElementById("safetyClearLockout").addEventListener("click", clearSafetyLockout);
+  loadSafetyConfig();
+}
+
+async function loadAcquisitionConfig() {
+  if (acquisitionConfigLoading) {
+    return;
+  }
+  acquisitionConfigLoading = true;
+  try {
+    const response = await fetch("/api/config/acquisition", { cache: "no-store" });
+    const payload = await parseApiResponse(response, "acquisition config load failed");
+    renderAcquisitionGroups(payload.groups || {});
+    renderChemistrySamplingRefresh(payload.chemistry_sampling_refresh || {});
+    setAcqStatus("Acquisition config loaded");
+  } catch (error) {
+    setAcqStatus(error.message);
+  } finally {
+    acquisitionConfigLoading = false;
+  }
+}
+
+async function saveAcquisitionConfig() {
+  setAcqStatus("Saving acquisition config...");
+  try {
+    const groups = collectAcquisitionGroups();
+    const chemistrySamplingRefresh = collectChemistrySamplingRefresh();
+    const response = await fetch("/api/config/acquisition", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        groups,
+        chemistry_sampling_refresh: chemistrySamplingRefresh,
+      }),
+    });
+    const payload = await parseApiResponse(response, "acquisition config save failed");
+    setAcqStatus(payload.message || "Acquisition config saved");
+  } catch (error) {
+    setAcqStatus(error.message);
+  }
+}
+
+function setAcqStatus(message) {
+  document.getElementById("acqStatus").textContent = message;
+}
+
+function initializeAcquisitionControls() {
+  document.getElementById("acqAddGroup").addEventListener("click", () => {
+    document.getElementById("acqGroupRows").appendChild(acquisitionGroupRow());
+  });
+  document.getElementById("acqReload").addEventListener("click", loadAcquisitionConfig);
+  document.getElementById("acqSave").addEventListener("click", saveAcquisitionConfig);
+  loadAcquisitionConfig();
+}
+
+function renderAcquisitionGroups(groups) {
+  const container = document.getElementById("acqGroupRows");
+  container.replaceChildren();
+  const entries = Object.entries(groups);
+  if (!entries.length) {
+    container.appendChild(acquisitionGroupRow());
+    return;
+  }
+  entries.forEach(([name, group]) => {
+    container.appendChild(acquisitionGroupRow(name, group));
+  });
+}
+
+function acquisitionGroupRow(name = "", group = {}) {
+  const card = document.createElement("div");
+  card.className = "config-card";
+  card.dataset.group = "true";
+
+  const head = document.createElement("div");
+  head.className = "config-card-head";
+  const title = document.createElement("strong");
+  title.textContent = "Group";
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.textContent = "Remove";
+  remove.addEventListener("click", () => {
+    card.remove();
+    if (!document.querySelectorAll('[data-group="true"]').length) {
+      document.getElementById("acqGroupRows").appendChild(acquisitionGroupRow());
+    }
+  });
+  head.append(title, remove);
+
+  const grid = document.createElement("div");
+  grid.className = "config-grid";
+  grid.append(
+    labeledInput("Name", "acq-group-name", "text", name || ""),
+    labeledInput("Read Interval (s)", "acq-read-interval", "number", group.read_interval_s ?? 1.0, "0.1"),
+    labeledInput("Log Interval (s)", "acq-log-interval", "number", group.log_interval_s ?? 60.0, "0.1"),
+    labeledCheckbox("Requires Pump Flow", "acq-requires-flow", Boolean(group.requires_pump_flow)),
+    labeledInput(
+      "Min Pump On (s)",
+      "acq-min-pump-on",
+      "number",
+      group.min_pump_on_seconds ?? 0.0,
+      "0.1",
+    ),
+    labeledSelect(
+      "Required Pump Speed",
+      "acq-required-speed",
+      [
+        { value: "", label: "Any" },
+        { value: "low", label: "LOW" },
+        { value: "high", label: "HIGH" },
+      ],
+      group.required_pump_speed || "",
+    ),
+    labeledInput(
+      "Oversample Count",
+      "acq-sample-count",
+      "number",
+      group.oversample?.sample_count ?? 1,
+      "1",
+      "1",
+    ),
+    labeledInput(
+      "Oversample Interval (s)",
+      "acq-sample-interval",
+      "number",
+      group.oversample?.sample_interval_s ?? 0.0,
+      "0.1",
+    ),
+    labeledSelect(
+      "Reducer",
+      "acq-reducer",
+      ACQ_REDUCERS.map((item) => ({ value: item, label: item })),
+      group.oversample?.reducer || "last",
+    ),
+  );
+
+  const sensorsBlock = document.createElement("div");
+  sensorsBlock.className = "group-sensors";
+  const selected = new Set(group.sensor_ids || []);
+  SENSOR_ORDER.forEach((sensorId) => {
+    const sensorLabel = document.createElement("label");
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.value = sensorId;
+    box.dataset.field = "acq-sensor";
+    box.checked = selected.has(sensorId);
+    const text = document.createElement("span");
+    text.textContent = SENSOR_LABELS[sensorId] || sensorId;
+    sensorLabel.append(box, text);
+    sensorsBlock.appendChild(sensorLabel);
+  });
+
+  card.append(head, grid, sensorsBlock);
+  return card;
+}
+
+function renderChemistrySamplingRefresh(config) {
+  document.getElementById("acqRefreshEnabled").checked = Boolean(config.enabled);
+  document.getElementById("acqRefreshMaxOff").value = String(config.max_pump_off_s ?? 21600);
+  document.getElementById("acqRefreshDuration").value = String(config.run_duration_s ?? 1200);
+  document.getElementById("acqRefreshSpeed").value = config.pump_speed || "high";
+}
+
+function collectAcquisitionGroups() {
+  const cards = [...document.querySelectorAll('[data-group="true"]')];
+  const groups = {};
+  cards.forEach((card, index) => {
+    const nameRaw = card.querySelector('[data-field="acq-group-name"]').value.trim();
+    const name = nameRaw || `group_${index + 1}`;
+    if (groups[name]) {
+      throw new Error(`Duplicate group name: ${name}`);
+    }
+    const sensorIds = [...card.querySelectorAll('[data-field="acq-sensor"]:checked')].map((box) => box.value);
+    if (!sensorIds.length) {
+      throw new Error(`Group "${name}" must have at least one sensor`);
+    }
+    groups[name] = {
+      sensor_ids: sensorIds,
+      read_interval_s: numberValue(card, "acq-read-interval"),
+      log_interval_s: numberValue(card, "acq-log-interval"),
+      requires_pump_flow: Boolean(card.querySelector('[data-field="acq-requires-flow"]').checked),
+      min_pump_on_seconds: numberValue(card, "acq-min-pump-on"),
+      required_pump_speed: stringValue(card, "acq-required-speed") || null,
+      oversample: {
+        sample_count: intValue(card, "acq-sample-count"),
+        sample_interval_s: numberValue(card, "acq-sample-interval"),
+        reducer: stringValue(card, "acq-reducer") || "last",
+      },
+    };
+  });
+  return groups;
+}
+
+function collectChemistrySamplingRefresh() {
+  return {
+    enabled: document.getElementById("acqRefreshEnabled").checked,
+    max_pump_off_s: Number(document.getElementById("acqRefreshMaxOff").value),
+    run_duration_s: Number(document.getElementById("acqRefreshDuration").value),
+    pump_speed: document.getElementById("acqRefreshSpeed").value,
+  };
+}
+
+async function loadLoggingConfig() {
+  if (loggingConfigLoading) {
+    return;
+  }
+  loggingConfigLoading = true;
+  try {
+    const response = await fetch("/api/config/logging", { cache: "no-store" });
+    const payload = await parseApiResponse(response, "logging config load failed");
+    document.getElementById("loggingDatabasePath").value = payload.database_path;
+    setLoggingStatus("Logging config loaded");
+  } catch (error) {
+    setLoggingStatus(error.message);
+  } finally {
+    loggingConfigLoading = false;
+  }
+}
+
+async function saveLoggingConfig() {
+  setLoggingStatus("Saving logging config...");
+  try {
+    const response = await fetch("/api/config/logging", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        database_path: document.getElementById("loggingDatabasePath").value.trim(),
+      }),
+    });
+    const payload = await parseApiResponse(response, "logging config save failed");
+    setLoggingStatus(payload.message || "Logging config saved");
+  } catch (error) {
+    setLoggingStatus(error.message);
+  }
+}
+
+function setLoggingStatus(message) {
+  document.getElementById("loggingStatus").textContent = message;
+}
+
+function initializeLoggingControls() {
+  document.getElementById("loggingReload").addEventListener("click", loadLoggingConfig);
+  document.getElementById("loggingSave").addEventListener("click", saveLoggingConfig);
+  loadLoggingConfig();
+}
+
+async function loadAnalogConfig() {
+  if (analogConfigLoading) {
+    return;
+  }
+  analogConfigLoading = true;
+  try {
+    const response = await fetch("/api/config/analog_input", { cache: "no-store" });
+    const payload = await parseApiResponse(response, "analog input config load failed");
+    renderAnalogConfig(payload.modbus_analog_input || {});
+    setAnalogStatus("Analog input config loaded");
+  } catch (error) {
+    setAnalogStatus(error.message);
+  } finally {
+    analogConfigLoading = false;
+  }
+}
+
+async function saveAnalogConfig() {
+  setAnalogStatus("Saving analog input config...");
+  try {
+    const modbusAnalogInput = collectAnalogConfig();
+    const response = await fetch("/api/config/analog_input", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        modbus_analog_input: modbusAnalogInput,
+      }),
+    });
+    const payload = await parseApiResponse(response, "analog input config save failed");
+    setAnalogStatus(payload.message || "Analog input config saved");
+  } catch (error) {
+    setAnalogStatus(error.message);
+  }
+}
+
+function setAnalogStatus(message) {
+  document.getElementById("analogStatus").textContent = message;
+}
+
+function initializeAnalogControls() {
+  document.getElementById("analogAddSensor").addEventListener("click", () => {
+    document.getElementById("analogSensorRows").appendChild(analogSensorRow());
+  });
+  document.getElementById("analogReload").addEventListener("click", loadAnalogConfig);
+  document.getElementById("analogSave").addEventListener("click", saveAnalogConfig);
+  loadAnalogConfig();
+}
+
+function renderAnalogConfig(config) {
+  document.getElementById("analogPort").value = config.port || "";
+  document.getElementById("analogSlaveId").value = String(config.slave_id ?? 4);
+  document.getElementById("analogBaudrate").value = String(config.baudrate ?? 9600);
+  document.getElementById("analogTimeout").value = String(config.timeout_s ?? 1.0);
+  document.getElementById("analogScale").value = String(config.raw_to_volts_scale ?? 0.001);
+  document.getElementById("analogOffset").value = String(config.raw_to_volts_offset ?? 0.0);
+
+  const rows = document.getElementById("analogSensorRows");
+  rows.replaceChildren();
+  const sensors = config.sensors || {};
+  const entries = Object.entries(sensors);
+  if (!entries.length) {
+    rows.appendChild(analogSensorRow());
+    return;
+  }
+  entries.forEach(([sensorId, mapping]) => rows.appendChild(analogSensorRow(sensorId, mapping)));
+}
+
+function analogSensorRow(sensorId = "", mapping = {}) {
+  const card = document.createElement("div");
+  card.className = "config-card";
+  card.dataset.analogSensor = "true";
+
+  const head = document.createElement("div");
+  head.className = "config-card-head";
+  const title = document.createElement("strong");
+  title.textContent = "Analog Sensor Mapping";
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.textContent = "Remove";
+  remove.addEventListener("click", () => {
+    card.remove();
+    if (!document.querySelectorAll('[data-analog-sensor="true"]').length) {
+      document.getElementById("analogSensorRows").appendChild(analogSensorRow());
+    }
+  });
+  head.append(title, remove);
+
+  const calibration = mapping.calibration || {};
+  const grid = document.createElement("div");
+  grid.className = "config-grid";
+  grid.append(
+    labeledSelect(
+      "Sensor",
+      "analog-sensor-id",
+      ANALOG_SENSOR_OPTIONS.map((item) => ({ value: item, label: SENSOR_LABELS[item] || item })),
+      sensorId || ANALOG_SENSOR_OPTIONS[0],
+    ),
+    labeledInput("Channel (1-8)", "analog-channel", "number", mapping.channel ?? 1, "1", "1"),
+    labeledInput("V1", "analog-v1", "number", calibration.voltage_1 ?? 0.0, "0.001"),
+    labeledInput("Value1", "analog-value1", "number", calibration.value_1 ?? 0.0, "0.001"),
+    labeledInput("V2", "analog-v2", "number", calibration.voltage_2 ?? 5.0, "0.001"),
+    labeledInput("Value2", "analog-value2", "number", calibration.value_2 ?? 1.0, "0.001"),
+  );
+
+  card.append(head, grid);
+  return card;
+}
+
+function collectAnalogConfig() {
+  const sensors = {};
+  const rows = [...document.querySelectorAll('[data-analog-sensor="true"]')];
+  rows.forEach((row) => {
+    const sensorId = stringValue(row, "analog-sensor-id");
+    if (!sensorId) {
+      return;
+    }
+    if (sensors[sensorId]) {
+      throw new Error(`Duplicate analog sensor mapping: ${sensorId}`);
+    }
+    sensors[sensorId] = {
+      channel: intValue(row, "analog-channel"),
+      calibration: {
+        voltage_1: numberValue(row, "analog-v1"),
+        value_1: numberValue(row, "analog-value1"),
+        voltage_2: numberValue(row, "analog-v2"),
+        value_2: numberValue(row, "analog-value2"),
+      },
+    };
+  });
+
+  return {
+    port: document.getElementById("analogPort").value.trim(),
+    slave_id: Number(document.getElementById("analogSlaveId").value),
+    baudrate: Number(document.getElementById("analogBaudrate").value),
+    timeout_s: Number(document.getElementById("analogTimeout").value),
+    raw_to_volts_scale: Number(document.getElementById("analogScale").value),
+    raw_to_volts_offset: Number(document.getElementById("analogOffset").value),
+    sensors,
+  };
+}
+
+async function loadLabTests() {
+  if (labTestLoading) {
+    return;
+  }
+  labTestLoading = true;
+  try {
+    const response = await fetch("/api/lab_tests?hours=720&limit=100", { cache: "no-store" });
+    const payload = await parseApiResponse(response, "lab tests load failed");
+    renderLabTests(payload.lab_tests || []);
+    setLabTestStatus("Lab tests loaded");
+  } catch (error) {
+    setLabTestStatus(error.message);
+  } finally {
+    labTestLoading = false;
+  }
+}
+
+async function saveLabTest() {
+  setLabTestStatus("Saving lab test...");
+  try {
+    const response = await fetch("/api/lab_tests", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(collectLabTestPayload()),
+    });
+    await parseApiResponse(response, "lab test save failed");
+    setLabTestStatus("Lab test saved");
+    await loadLabTests();
+  } catch (error) {
+    setLabTestStatus(error.message);
+  }
+}
+
+function collectLabTestPayload() {
+  const payload = {
+    sampled_at: stringOrNull(document.getElementById("labSampledAt").value),
+    ph: numberOrNull(document.getElementById("labPh").value),
+    free_chlorine: numberOrNull(document.getElementById("labFreeChlorine").value),
+    combined_chlorine: numberOrNull(document.getElementById("labCombinedChlorine").value),
+    total_chlorine: numberOrNull(document.getElementById("labTotalChlorine").value),
+    alkalinity: numberOrNull(document.getElementById("labAlkalinity").value),
+    cya: numberOrNull(document.getElementById("labCya").value),
+    calcium_hardness: numberOrNull(document.getElementById("labCalciumHardness").value),
+    salt: numberOrNull(document.getElementById("labSalt").value),
+    borates: numberOrNull(document.getElementById("labBorates").value),
+    water_temp: numberOrNull(document.getElementById("labWaterTemp").value),
+    notes: stringOrNull(document.getElementById("labNotes").value),
+  };
+  if (!payload.sampled_at) {
+    delete payload.sampled_at;
+  }
+  return payload;
+}
+
+function renderLabTests(tests) {
+  const list = document.getElementById("labTestList");
+  if (!tests.length) {
+    list.textContent = "No lab tests recorded";
+    return;
+  }
+  const lines = tests
+    .slice()
+    .reverse()
+    .map((test) => {
+      const parts = [
+        `pH ${formatOptional(test.ph, 2)}`,
+        `FC ${formatOptional(test.free_chlorine, 2)}`,
+        `TA ${formatOptional(test.alkalinity, 0)}`,
+        `CYA ${formatOptional(test.cya, 0)}`,
+      ];
+      const notes = test.notes ? ` | ${test.notes}` : "";
+      return `[${new Date(test.sampled_at).toLocaleString()}] ${parts.join(" | ")}${notes}`;
+    });
+  list.textContent = lines.join("\n");
+}
+
+function setLabTestStatus(message) {
+  document.getElementById("labTestStatus").textContent = message;
+}
+
+function initializeLabTestControls() {
+  document.getElementById("labTestReload").addEventListener("click", loadLabTests);
+  document.getElementById("labTestSave").addEventListener("click", saveLabTest);
+  loadLabTests();
+}
+
+function numberOrNull(raw) {
+  if (raw === null || raw === undefined || String(raw).trim() === "") {
+    return null;
+  }
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function stringOrNull(raw) {
+  const text = String(raw ?? "").trim();
+  return text ? text : null;
+}
+
+function formatOptional(value, decimals) {
+  if (value === null || value === undefined) {
+    return "--";
+  }
+  return Number(value).toFixed(decimals);
+}
+
+async function refreshFaultTimeline(force) {
+  const kind = document.getElementById("faultKind").value;
+  const limit = document.getElementById("faultLimit").value;
+  const now = Date.now();
+
+  if (faultLoading) {
+    return;
+  }
+  if (!force && now - lastFaultLoadedAt < 5000) {
+    return;
+  }
+
+  faultLoading = true;
+  try {
+    const params = new URLSearchParams({ kind, limit });
+    const response = await fetch(`/api/events?${params.toString()}`, { cache: "no-store" });
+    const payload = await parseApiResponse(response, "events API failed");
+    renderFaultTimeline(payload.events || []);
+    lastFaultLoadedAt = now;
+  } catch (error) {
+    document.getElementById("faultTimeline").textContent = error.message;
+  } finally {
+    faultLoading = false;
+  }
+}
+
+function renderFaultTimeline(events) {
+  if (!events.length) {
+    document.getElementById("faultTimeline").textContent = "No timeline events";
+    return;
+  }
+  const lines = events.map((event) => {
+    return `[${event.observed_at}] ${event.kind}/${event.level}: ${event.message}`;
+  });
+  document.getElementById("faultTimeline").textContent = lines.join("\n");
+}
+
+function initializeFaultTimelineControls() {
+  document.getElementById("faultReload").addEventListener("click", () => refreshFaultTimeline(true));
+  document.getElementById("faultKind").addEventListener("change", () => refreshFaultTimeline(true));
+  document.getElementById("faultLimit").addEventListener("change", () => refreshFaultTimeline(true));
+  refreshFaultTimeline(true);
+}
+
+function initializeTimerOverrideControls() {
+  const onHour = document.getElementById("overridePumpOnHour");
+  const offManual = document.getElementById("overridePumpOffManual");
+  const resume = document.getElementById("overrideResumeSchedule");
+  if (!onHour || !offManual || !resume) {
+    return;
+  }
+
+  onHour.addEventListener("click", () =>
+    setTimerOverride({
+      mode: "force_on",
+      duration_s: 3600,
+      pump_speed: "high",
+      booster: "off",
+      reason: "manual pump run 1h",
+    }),
+  );
+  offManual.addEventListener("click", () =>
+    setTimerOverride({
+      mode: "force_off",
+      reason: "manual maintenance off",
+    }),
+  );
+  resume.addEventListener("click", () =>
+    setTimerOverride({
+      mode: "auto",
+    }),
+  );
+}
+
+async function poll() {
+  try {
+    await loadLive();
+  } catch (error) {
+    const badge = document.getElementById("safetyBadge");
+    badge.classList.remove("ok");
+    badge.classList.add("fault");
+    badge.textContent = "Dashboard error";
+    document.getElementById("eventList").textContent = error.message;
+  } finally {
+    setTimeout(poll, 2000);
+  }
+}
+
+document.querySelectorAll("[data-command]").forEach((button) => {
+  button.addEventListener("click", () => {
+    const [actuatorId, state] = button.dataset.command.split(":");
+    sendCommand(actuatorId, state);
+  });
+});
+
+initializeHistoryControls();
+initializeTimerControls();
+initializeRuntimeControls();
+initializeSafetyControls();
+initializeAcquisitionControls();
+initializeLoggingControls();
+initializeAnalogControls();
+initializeLabTestControls();
+initializeFaultTimelineControls();
+initializeTimerOverrideControls();
+poll();

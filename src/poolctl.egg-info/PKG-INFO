@@ -1,0 +1,23 @@
+Metadata-Version: 2.4
+Name: poolctl
+Version: 0.1.0
+Summary: Raspberry Pi pool automation controller
+Requires-Python: <3.14,>=3.13
+Requires-Dist: pydantic>=2
+Requires-Dist: pyyaml>=6
+Requires-Dist: aiosqlite>=0.20
+Requires-Dist: apscheduler>=3.10
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: pytest-asyncio; extra == "dev"
+Requires-Dist: ruff; extra == "dev"
+Requires-Dist: mypy; extra == "dev"
+Provides-Extra: api
+Requires-Dist: fastapi; extra == "api"
+Requires-Dist: uvicorn[standard]; extra == "api"
+Provides-Extra: mqtt
+Requires-Dist: paho-mqtt; extra == "mqtt"
+Provides-Extra: raspberrypi
+Requires-Dist: gpiozero; extra == "raspberrypi"
+Requires-Dist: smbus2; extra == "raspberrypi"
+Requires-Dist: adafruit-circuitpython-ads1x15; extra == "raspberrypi"
