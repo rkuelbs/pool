@@ -4,11 +4,13 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import yaml  # type: ignore[import-untyped]
 
 from poolctl.domain.models import ActuatorId, SensorId
+
+EnumT = TypeVar("EnumT", bound=Enum)
 
 
 class DriverProfile(str, Enum):
@@ -301,12 +303,12 @@ def _mapping_value(
     return value
 
 
-def _enum_value[T: Enum](
-    enum_type: type[T],
+def _enum_value(
+    enum_type: type[EnumT],
     data: Mapping[str, Any],
     key: str,
-    default: T,
-) -> T:
+    default: EnumT,
+) -> EnumT:
     value = data.get(key, default.value)
 
     if not isinstance(value, str):
@@ -315,11 +317,11 @@ def _enum_value[T: Enum](
     return enum_type(value)
 
 
-def _enum_item_value[T: Enum](
-    enum_type: type[T],
+def _enum_item_value(
+    enum_type: type[EnumT],
     value: str,
     source_name: str,
-) -> T:
+) -> EnumT:
     try:
         return enum_type(value)
     except ValueError as error:

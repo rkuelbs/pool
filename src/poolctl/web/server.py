@@ -6,10 +6,11 @@ import csv
 import io
 import json
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 from urllib.parse import parse_qs, urlparse
 
 from poolctl.app import PoolControllerApp, build_app_from_config
@@ -40,6 +41,7 @@ import yaml  # type: ignore[import-untyped]
 
 STATIC_DIR = Path(__file__).with_name("static")
 MAX_EVENT_COUNT = 500
+EnumT = TypeVar("EnumT", bound=Enum)
 
 
 class PoolCtlWebHandler(BaseHTTPRequestHandler):
@@ -636,11 +638,11 @@ def _save_config_mapping(path: str | Path, data: dict[str, Any]) -> None:
         yaml.safe_dump(data, config_file, sort_keys=False)
 
 
-def _enum_payload_value[T](
-    enum_type: type[T],
+def _enum_payload_value(
+    enum_type: type[EnumT],
     payload: dict[str, Any],
     key: str,
-) -> T:
+) -> EnumT:
     value = payload.get(key)
     if not isinstance(value, str):
         raise ValueError(f"{key} must be a string")
@@ -651,12 +653,12 @@ def _enum_payload_value[T](
         raise ValueError(f"invalid {key}: {value}") from error
 
 
-def _enum_payload_optional[T](
-    enum_type: type[T],
+def _enum_payload_optional(
+    enum_type: type[EnumT],
     payload: dict[str, Any],
     key: str,
-    default: T,
-) -> T:
+    default: EnumT,
+) -> EnumT:
     value = payload.get(key, default.value)  # type: ignore[attr-defined]
     if not isinstance(value, str):
         raise ValueError(f"{key} must be a string")
