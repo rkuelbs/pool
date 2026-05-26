@@ -38,6 +38,30 @@ body {
   max-width: 1320px;
 }
 
+.page-nav {
+  display: flex;
+  gap: 10px;
+  margin: 4px 0 14px;
+}
+
+.page-nav a {
+  color: #c8d2dc;
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.page-nav a.active {
+  color: #6ee889;
+}
+
+body[data-page="live"] [data-view-section]:not([data-view-section="live"]),
+body[data-page="history"] [data-view-section]:not([data-view-section="history"]),
+body[data-page="schedule"] [data-view-section]:not([data-view-section="schedule"]),
+body[data-page="config"] [data-view-section]:not([data-view-section="config"]) {
+  display: none;
+}
+
 h1,
 h2,
 p {

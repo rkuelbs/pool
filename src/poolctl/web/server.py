@@ -53,8 +53,20 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         path = urlparse(self.path).path
 
-        if path == "/":
+        if path in {"/", "/live"}:
             self._serve_file(STATIC_DIR / "live.html", "text/html; charset=utf-8")
+            return
+
+        if path == "/history":
+            self._serve_file(STATIC_DIR / "history.html", "text/html; charset=utf-8")
+            return
+
+        if path == "/schedule":
+            self._serve_file(STATIC_DIR / "schedule.html", "text/html; charset=utf-8")
+            return
+
+        if path == "/config":
+            self._serve_file(STATIC_DIR / "config.html", "text/html; charset=utf-8")
             return
 
         if path == "/app.js":
@@ -201,6 +213,8 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             hours = _float_query_value(query, "hours", 24.0)
             limit = _int_query_value(query, "limit", 1000)
             validated_only = _bool_query_value(query, "validated_only", True)
+            resolution = _string_query_value(query, "resolution", "auto")
+            max_points = _int_query_value(query, "max_points", 1500)
 
             if len(sensor_ids) == 1:
                 payload = build_history_payload(
@@ -209,6 +223,8 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
                     hours=hours,
                     limit=limit,
                     validated_only=validated_only,
+                    resolution=resolution,
+                    max_points=max_points,
                 )
             else:
                 payload = build_history_series_payload(
@@ -217,6 +233,8 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
                     hours=hours,
                     limit=limit,
                     validated_only=validated_only,
+                    resolution=resolution,
+                    max_points=max_points,
                 )
         except ValueError as error:
             self._serve_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
@@ -234,12 +252,16 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             hours = _float_query_value(query, "hours", 24.0)
             limit = _int_query_value(query, "limit", 1000)
             validated_only = _bool_query_value(query, "validated_only", True)
+            resolution = _string_query_value(query, "resolution", "auto")
+            max_points = _int_query_value(query, "max_points", 1500)
             payload = build_history_series_payload(
                 self.app,
                 sensor_ids=tuple(sensor_ids),
                 hours=hours,
                 limit=limit,
                 validated_only=validated_only,
+                resolution=resolution,
+                max_points=max_points,
             )
             csv_content = _history_csv_content(payload)
         except ValueError as error:

@@ -88,6 +88,7 @@ const FEATURE_LAYERS = [
 ];
 
 const SVG_NS = "http://www.w3.org/2000/svg";
+const PAGE_MODE = document.body.dataset.page || "live";
 const HISTORY_SERIES_COLORS = [
   "#1680f2",
   "#1f9d55",
@@ -199,9 +200,6 @@ function render(payload) {
   renderSensorList(payload.sensors);
   renderActuatorList(payload.actuators);
   renderEvents(payload.tick);
-  refreshHistory(false);
-  refreshFaultTimeline(false);
-  refreshHealth(false);
 }
 
 function renderSafetyBadge(safety) {
@@ -516,6 +514,9 @@ async function refreshHistory(force) {
   const hoursSelect = document.getElementById("historyHours");
   const validitySelect = document.getElementById("historyValidity");
   const status = document.getElementById("historyStatus");
+  if (!hoursSelect || !validitySelect || !status) {
+    return;
+  }
   updateHistoryChecklistAppearance();
   const sensorIds = selectedHistorySensorIds();
   const validatedOnly = validitySelect.value !== "all";
@@ -540,10 +541,13 @@ async function refreshHistory(force) {
   status.textContent = "Loading history...";
 
   try {
+    const hours = Number(hoursSelect.value);
     const params = new URLSearchParams({
       hours: hoursSelect.value,
-      limit: "600",
+      limit: String(historyQueryLimit(hours)),
       validated_only: validatedOnly ? "true" : "false",
+      max_points: "1800",
+      resolution: "auto",
     });
     sensorIds.forEach((sensorId) => params.append("sensor_id", sensorId));
     const response = await fetch(`/api/history?${params.toString()}`, { cache: "no-store" });
@@ -812,9 +816,27 @@ function exportHistoryCsv() {
     hours: document.getElementById("historyHours").value,
     limit: "2000",
     validated_only: validatedOnly ? "true" : "false",
+    resolution: "auto",
+    max_points: "2000",
   });
   sensorIds.forEach((sensorId) => params.append("sensor_id", sensorId));
   window.open(`/api/history.csv?${params.toString()}`, "_blank");
+}
+
+function historyQueryLimit(hours) {
+  if (!Number.isFinite(hours) || hours <= 0) {
+    return 3000;
+  }
+  if (hours <= 24) {
+    return 7000;
+  }
+  if (hours <= 24 * 7) {
+    return 14000;
+  }
+  if (hours <= 24 * 30) {
+    return 22000;
+  }
+  return 50000;
 }
 
 function svgLine(x1, y1, x2, y2, className) {
@@ -1913,15 +1935,41 @@ function initializeTimerOverrideControls() {
 
 async function poll() {
   try {
-    await loadLive();
+    if (PAGE_MODE === "live") {
+      await loadLive();
+      await refreshHealth(false);
+    } else if (PAGE_MODE === "history") {
+      await refreshHistory(false);
+      await refreshFaultTimeline(false);
+      await loadLabTests();
+      await refreshHealth(false);
+    } else if (PAGE_MODE === "schedule") {
+      await loadPumpTimerConfig();
+      await refreshHealth(false);
+    } else if (PAGE_MODE === "config") {
+      await Promise.all([
+        loadRuntimeConfig(),
+        loadSafetyConfig(),
+        loadAcquisitionConfig(),
+        loadLoggingConfig(),
+        loadAnalogConfig(),
+      ]);
+      await refreshHealth(false);
+    }
   } catch (error) {
     const badge = document.getElementById("safetyBadge");
-    badge.classList.remove("ok");
-    badge.classList.add("fault");
-    badge.textContent = "Dashboard error";
-    document.getElementById("eventList").textContent = error.message;
+    if (badge) {
+      badge.classList.remove("ok");
+      badge.classList.add("fault");
+      badge.textContent = "Dashboard error";
+    }
+    const events = document.getElementById("eventList");
+    if (events) {
+      events.textContent = error.message;
+    }
   } finally {
-    setTimeout(poll, 2000);
+    const intervalMs = PAGE_MODE === "live" ? 2000 : 10000;
+    setTimeout(poll, intervalMs);
   }
 }
 
@@ -1932,14 +1980,37 @@ document.querySelectorAll("[data-command]").forEach((button) => {
   });
 });
 
-initializeHistoryControls();
-initializeTimerControls();
-initializeRuntimeControls();
-initializeSafetyControls();
-initializeAcquisitionControls();
-initializeLoggingControls();
-initializeAnalogControls();
-initializeLabTestControls();
-initializeFaultTimelineControls();
-initializeTimerOverrideControls();
+setActiveNavPage();
+initializeForPage();
 poll();
+
+function setActiveNavPage() {
+  document.querySelectorAll("[data-nav-page]").forEach((node) => {
+    node.classList.toggle("active", node.dataset.navPage === PAGE_MODE);
+  });
+}
+
+function initializeForPage() {
+  if (PAGE_MODE === "live") {
+    initializeTimerOverrideControls();
+    return;
+  }
+  if (PAGE_MODE === "history") {
+    initializeHistoryControls();
+    initializeFaultTimelineControls();
+    initializeLabTestControls();
+    return;
+  }
+  if (PAGE_MODE === "schedule") {
+    initializeTimerControls();
+    return;
+  }
+  if (PAGE_MODE === "config") {
+    initializeRuntimeControls();
+    initializeSafetyControls();
+    initializeAcquisitionControls();
+    initializeLoggingControls();
+    initializeAnalogControls();
+    return;
+  }
+}

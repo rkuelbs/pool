@@ -114,3 +114,66 @@ def test_measurement_logger_persists_lab_tests(tmp_path: Path) -> None:
     assert records[0].ph == 7.45
     assert records[0].free_chlorine == 3.2
     assert records[0].notes == "weekly strip + drop test"
+
+
+def test_measurement_logger_rollup_history_uses_bucket_aggregation(tmp_path: Path) -> None:
+    logger = MeasurementLogger(
+        MeasurementLoggingConfig(database_path=tmp_path / "measurements.sqlite3")
+    )
+    start = datetime(2026, 5, 22, 0, 0, tzinfo=timezone.utc)
+    samples = tuple(
+        Measurement(
+            sensor_id=SensorId.PUMP_OUTPUT_PSI,
+            observed_at=start + timedelta(minutes=index),
+            value=float(index % 10),
+            unit="psi",
+            quality=Quality.GOOD,
+        )
+        for index in range(120)
+    )
+    logger.log_measurements(samples)
+
+    records = logger.history_with_rollup(
+        sensor_id=SensorId.PUMP_OUTPUT_PSI,
+        since=start,
+        until=start + timedelta(hours=2),
+        limit=1000,
+        qualities=(Quality.GOOD,),
+        bucket_seconds=3600,
+        max_points=100,
+    )
+
+    assert len(records) == 2
+    assert records[0].metadata["aggregation"] == "avg"
+    assert records[0].metadata["bucket_seconds"] == 3600
+    assert records[0].metadata["sample_count"] == 60
+
+
+def test_measurement_logger_history_with_rollup_respects_max_points(tmp_path: Path) -> None:
+    logger = MeasurementLogger(
+        MeasurementLoggingConfig(database_path=tmp_path / "measurements.sqlite3")
+    )
+    start = datetime(2026, 5, 22, 0, 0, tzinfo=timezone.utc)
+    samples = tuple(
+        Measurement(
+            sensor_id=SensorId.RETURN_PSI,
+            observed_at=start + timedelta(minutes=index),
+            value=float(index),
+            unit="psi",
+            quality=Quality.GOOD,
+        )
+        for index in range(720)
+    )
+    logger.log_measurements(samples)
+
+    records = logger.history_with_rollup(
+        sensor_id=SensorId.RETURN_PSI,
+        since=start,
+        until=start + timedelta(hours=12),
+        limit=2000,
+        qualities=(Quality.GOOD,),
+        bucket_seconds=60,
+        max_points=120,
+    )
+
+    assert len(records) <= 120

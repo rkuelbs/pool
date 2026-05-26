@@ -10,6 +10,8 @@ from typing import Any
 
 from poolctl.domain.models import LabTest, Measurement, MeasurementKind, Quality, SensorId
 
+ROLLUP_BUCKET_SECONDS = (60, 3600, 86400)
+
 
 @dataclass(frozen=True)
 class MeasurementLoggingConfig:
@@ -58,6 +60,38 @@ class MeasurementRecord:
         )
 
 
+@dataclass(frozen=True)
+class MeasurementRollupRecord:
+    sensor_id: SensorId
+    observed_at: datetime
+    value: float
+    unit: str
+    min_value: float
+    max_value: float
+    sample_count: int
+    bucket_seconds: int
+
+    def to_measurement_record(self) -> MeasurementRecord:
+        return MeasurementRecord(
+            measurement_id=(
+                f"rollup:{self.sensor_id.value}:{self.bucket_seconds}:{self.observed_at.isoformat()}"
+            ),
+            sensor_id=self.sensor_id,
+            observed_at=self.observed_at,
+            kind=MeasurementKind.ESTIMATED,
+            value=self.value,
+            unit=self.unit,
+            quality=Quality.GOOD,
+            metadata={
+                "aggregation": "avg",
+                "bucket_seconds": self.bucket_seconds,
+                "sample_count": self.sample_count,
+                "min_value": self.min_value,
+                "max_value": self.max_value,
+            },
+        )
+
+
 class MeasurementLogger:
     """
     SQLite-backed store for loggable measurement history.
@@ -72,22 +106,23 @@ class MeasurementLogger:
         if not measurements:
             return 0
 
+        inserted_count = 0
         with self._connect() as connection:
-            connection.executemany(
-                """
-                INSERT OR IGNORE INTO measurements (
-                    id,
-                    sensor_id,
-                    observed_at,
-                    kind,
-                    value,
-                    unit,
-                    quality,
-                    metadata_json
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
+            for measurement in measurements:
+                cursor = connection.execute(
+                    """
+                    INSERT OR IGNORE INTO measurements (
+                        id,
+                        sensor_id,
+                        observed_at,
+                        kind,
+                        value,
+                        unit,
+                        quality,
+                        metadata_json
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
                     (
                         measurement.id,
                         measurement.sensor_id.value,
@@ -97,11 +132,12 @@ class MeasurementLogger:
                         measurement.unit,
                         measurement.quality.value,
                         json.dumps(measurement.metadata, sort_keys=True),
-                    )
-                    for measurement in measurements
-                ],
-            )
-            return int(connection.total_changes)
+                    ),
+                )
+                if int(cursor.rowcount) > 0:
+                    inserted_count += 1
+                    self._upsert_rollups(connection, measurement)
+        return inserted_count
 
     def history(
         self,
@@ -156,6 +192,79 @@ class MeasurementLogger:
 
         records = tuple(_record_from_row(row) for row in rows)
         return tuple(reversed(records))
+
+    def history_with_rollup(
+        self,
+        *,
+        sensor_id: SensorId,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int = 1000,
+        qualities: tuple[Quality, ...] | None = None,
+        bucket_seconds: int | None = None,
+        max_points: int | None = None,
+    ) -> tuple[MeasurementRecord, ...]:
+        if bucket_seconds is None:
+            records = self.history(
+                sensor_id=sensor_id,
+                since=since,
+                until=until,
+                limit=limit,
+                qualities=qualities,
+            )
+            return _downsample_records(records, max_points=max_points)
+
+        if bucket_seconds not in ROLLUP_BUCKET_SECONDS:
+            raise ValueError("unsupported bucket_seconds")
+        if qualities not in (None, (Quality.GOOD,)):
+            records = self.history(
+                sensor_id=sensor_id,
+                since=since,
+                until=until,
+                limit=limit,
+                qualities=qualities,
+            )
+            return _downsample_records(records, max_points=max_points)
+
+        clauses = [
+            "sensor_id = ?",
+            "bucket_seconds = ?",
+        ]
+        parameters: list[str | int] = [sensor_id.value, bucket_seconds]
+        if since is not None:
+            clauses.append("bucket_start >= ?")
+            parameters.append(_bucket_start_iso(since, bucket_seconds))
+        if until is not None:
+            clauses.append("bucket_start <= ?")
+            parameters.append(_bucket_start_iso(until, bucket_seconds))
+        parameters.append(limit)
+        where_clause = " AND ".join(clauses)
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT
+                    sensor_id,
+                    bucket_start,
+                    avg_value,
+                    min_value,
+                    max_value,
+                    sample_count,
+                    unit,
+                    bucket_seconds
+                FROM measurement_rollups
+                WHERE {where_clause}
+                ORDER BY bucket_start ASC
+                LIMIT ?
+                """,
+                parameters,
+            ).fetchall()
+
+        records = tuple(
+            _rollup_from_row(row).to_measurement_record()
+            for row in rows
+        )
+        return _downsample_records(records, max_points=max_points)
 
     def log_lab_test(self, test: LabTest) -> str:
         with self._connect() as connection:
@@ -252,6 +361,7 @@ class MeasurementLogger:
 
     def _init_schema(self) -> None:
         with self._connect() as connection:
+            connection.execute("PRAGMA journal_mode = WAL")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS measurements (
@@ -299,6 +409,74 @@ class MeasurementLogger:
                 ON lab_tests (sampled_at)
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS measurement_rollups (
+                    sensor_id TEXT NOT NULL,
+                    bucket_seconds INTEGER NOT NULL,
+                    bucket_start TEXT NOT NULL,
+                    sample_count INTEGER NOT NULL,
+                    sum_value REAL NOT NULL,
+                    min_value REAL NOT NULL,
+                    max_value REAL NOT NULL,
+                    avg_value REAL NOT NULL,
+                    unit TEXT NOT NULL,
+                    PRIMARY KEY (sensor_id, bucket_seconds, bucket_start)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_rollups_sensor_bucket_time
+                ON measurement_rollups (sensor_id, bucket_seconds, bucket_start)
+                """
+            )
+
+    def _upsert_rollups(
+        self,
+        connection: sqlite3.Connection,
+        measurement: Measurement,
+    ) -> None:
+        if measurement.quality != Quality.GOOD:
+            return
+
+        value = float(measurement.value)
+        for bucket_seconds in ROLLUP_BUCKET_SECONDS:
+            bucket_start = _bucket_start_iso(measurement.observed_at, bucket_seconds)
+            connection.execute(
+                """
+                INSERT INTO measurement_rollups (
+                    sensor_id,
+                    bucket_seconds,
+                    bucket_start,
+                    sample_count,
+                    sum_value,
+                    min_value,
+                    max_value,
+                    avg_value,
+                    unit
+                )
+                VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?)
+                ON CONFLICT(sensor_id, bucket_seconds, bucket_start) DO UPDATE SET
+                    sample_count = measurement_rollups.sample_count + 1,
+                    sum_value = measurement_rollups.sum_value + excluded.sum_value,
+                    min_value = MIN(measurement_rollups.min_value, excluded.min_value),
+                    max_value = MAX(measurement_rollups.max_value, excluded.max_value),
+                    avg_value = (measurement_rollups.sum_value + excluded.sum_value) /
+                        (measurement_rollups.sample_count + 1),
+                    unit = excluded.unit
+                """,
+                (
+                    measurement.sensor_id.value,
+                    bucket_seconds,
+                    bucket_start,
+                    value,
+                    value,
+                    value,
+                    value,
+                    measurement.unit,
+                ),
+            )
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self._database_path)
@@ -316,6 +494,19 @@ def _record_from_row(row: sqlite3.Row) -> MeasurementRecord:
         unit=str(row["unit"]),
         quality=Quality(str(row["quality"])),
         metadata=_metadata_from_json(str(row["metadata_json"])),
+    )
+
+
+def _rollup_from_row(row: sqlite3.Row) -> MeasurementRollupRecord:
+    return MeasurementRollupRecord(
+        sensor_id=SensorId(str(row["sensor_id"])),
+        observed_at=_parse_datetime(str(row["bucket_start"])),
+        value=float(row["avg_value"]),
+        min_value=float(row["min_value"]),
+        max_value=float(row["max_value"]),
+        sample_count=int(row["sample_count"]),
+        unit=str(row["unit"]),
+        bucket_seconds=int(row["bucket_seconds"]),
     )
 
 
@@ -359,6 +550,28 @@ def _optional_float(value: Any) -> float | None:
     if value is None:
         return None
     return float(value)
+
+
+def _bucket_start_iso(observed_at: datetime, bucket_seconds: int) -> str:
+    utc_time = observed_at.astimezone(timezone.utc)
+    epoch_s = int(utc_time.timestamp())
+    bucket_epoch = epoch_s - (epoch_s % bucket_seconds)
+    return datetime.fromtimestamp(bucket_epoch, tz=timezone.utc).isoformat()
+
+
+def _downsample_records(
+    records: tuple[MeasurementRecord, ...],
+    *,
+    max_points: int | None,
+) -> tuple[MeasurementRecord, ...]:
+    if max_points is None or max_points < 1 or len(records) <= max_points:
+        return records
+
+    stride = max(1, len(records) // max_points)
+    sampled = records[::stride]
+    if sampled[-1].measurement_id != records[-1].measurement_id:
+        sampled = (*sampled, records[-1])
+    return tuple(sampled[:max_points])
 
 
 def _mapping_value(

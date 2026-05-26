@@ -123,6 +123,8 @@ def build_history_payload(
     hours: float,
     limit: int,
     validated_only: bool = True,
+    resolution: str = "auto",
+    max_points: int = 1500,
 ) -> dict[str, Any]:
     """
     Serialize logged measurement history for one sensor.
@@ -139,11 +141,17 @@ def build_history_payload(
             "points": [],
         }
 
-    records = app.measurement_logger.history(
+    now = app.clock.now()
+    since = now - timedelta(hours=hours)
+    bucket_seconds = history_bucket_seconds(hours=hours, resolution=resolution, validated_only=validated_only)
+    records = app.measurement_logger.history_with_rollup(
         sensor_id=sensor_id,
-        since=app.clock.now() - timedelta(hours=hours),
+        since=since,
+        until=now,
         limit=limit,
         qualities=(Quality.GOOD,) if validated_only else None,
+        bucket_seconds=bucket_seconds,
+        max_points=max_points,
     )
 
     return {
@@ -166,6 +174,8 @@ def build_history_series_payload(
     hours: float,
     limit: int,
     validated_only: bool = True,
+    resolution: str = "auto",
+    max_points: int = 1500,
 ) -> dict[str, Any]:
     if not sensor_ids:
         raise ValueError("at least one sensor_id is required")
@@ -182,18 +192,25 @@ def build_history_series_payload(
             "series": [],
         }
 
+    now = app.clock.now()
+    since = now - timedelta(hours=hours)
+    bucket_seconds = history_bucket_seconds(hours=hours, resolution=resolution, validated_only=validated_only)
     series = []
     for sensor_id in sensor_ids:
-        records = app.measurement_logger.history(
+        records = app.measurement_logger.history_with_rollup(
             sensor_id=sensor_id,
-            since=app.clock.now() - timedelta(hours=hours),
+            since=since,
+            until=now,
             limit=limit,
             qualities=(Quality.GOOD,) if validated_only else None,
+            bucket_seconds=bucket_seconds,
+            max_points=max_points,
         )
         series.append(
             {
                 "sensor_id": sensor_id.value,
                 "label": SENSOR_LABELS.get(sensor_id, sensor_id.value),
+                "bucket_seconds": bucket_seconds,
                 "points": [
                     measurement_payload(
                         record.sensor_id,
@@ -208,8 +225,35 @@ def build_history_series_payload(
     return {
         "sensor_ids": [sensor_id.value for sensor_id in sensor_ids],
         "validated_only": validated_only,
+        "bucket_seconds": bucket_seconds,
         "series": series,
     }
+
+
+def history_bucket_seconds(
+    *,
+    hours: float,
+    resolution: str,
+    validated_only: bool,
+) -> int | None:
+    if resolution == "raw":
+        return None
+    if resolution in {"1m", "minutely"}:
+        return 60
+    if resolution in {"1h", "hourly"}:
+        return 3600
+    if resolution in {"1d", "daily"}:
+        return 86400
+
+    if not validated_only:
+        return None
+    if hours <= 48:
+        return None
+    if hours <= 24 * 14:
+        return 60
+    if hours <= 24 * 90:
+        return 3600
+    return 86400
 
 
 def measurement_payload(
