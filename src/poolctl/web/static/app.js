@@ -131,8 +131,7 @@ async function loadLive() {
 
 async function sendCommand(actuatorId, state) {
   setControlsDisabled(true);
-  const status = document.getElementById("commandStatus");
-  status.textContent = `Sending ${actuatorId} ${state}...`;
+  setCommandStatus(`Sending ${actuatorId} ${state}...`);
 
   try {
     const response = await fetch("/api/command", {
@@ -146,14 +145,14 @@ async function sendCommand(actuatorId, state) {
     const payload = await parseApiResponse(response, "command failed");
 
     if (payload.applied) {
-      status.textContent = `Applied ${actuatorId} ${state}`;
+      setCommandStatus(`Applied ${actuatorId} ${state}`);
     } else {
-      status.textContent = payload.rejection_reason || `Rejected ${actuatorId} ${state}`;
+      setCommandStatus(payload.rejection_reason || `Rejected ${actuatorId} ${state}`);
     }
 
     await loadLive();
   } catch (error) {
-    status.textContent = error.message;
+    setCommandStatus(error.message);
   } finally {
     setControlsDisabled(false);
   }
@@ -164,8 +163,7 @@ async function setTimerOverride(payload) {
     return;
   }
   timerOverrideBusy = true;
-  const status = document.getElementById("commandStatus");
-  status.textContent = "Updating timer override...";
+  setCommandStatus("Updating timer override...");
   try {
     const response = await fetch("/api/timer/override", {
       method: "POST",
@@ -173,10 +171,10 @@ async function setTimerOverride(payload) {
       body: JSON.stringify(payload),
     });
     await parseApiResponse(response, "timer override update failed");
-    status.textContent = "Timer override updated";
+    setCommandStatus("Timer override updated");
     await loadLive();
   } catch (error) {
-    status.textContent = error.message;
+    setCommandStatus(error.message);
   } finally {
     timerOverrideBusy = false;
   }
@@ -224,41 +222,53 @@ function renderSafetyBadge(safety) {
 }
 
 function renderTimerOverride(override) {
-  const status = document.getElementById("timerOverrideStatus");
-  if (!status) {
+  const statusNodes = [document.getElementById("timerOverrideStatus"), document.getElementById("mobileTimerOverrideStatus")].filter(Boolean);
+  if (!statusNodes.length) {
     return;
   }
 
+  const applyText = (value) => {
+    statusNodes.forEach((node) => {
+      node.textContent = value;
+    });
+  };
+
   if (!override || !override.active) {
-    status.textContent = "Schedule mode";
+    applyText("Schedule mode");
     return;
   }
 
   const until = override.until ? new Date(override.until).toLocaleString() : "manual clear";
-  status.textContent =
+  applyText(
     `Override ${override.pump_motor.toUpperCase()} ` +
     `(${override.pump_speed.toUpperCase()}, booster ${override.booster.toUpperCase()}) ` +
-    `until ${until}`;
+    `until ${until}`,
+  );
 }
 
 function renderFreezeStatus(safety) {
-  const node = document.getElementById("freezeStatus");
-  if (!node) {
+  const nodes = [document.getElementById("freezeStatus"), document.getElementById("mobileFreezeStatus")].filter(Boolean);
+  if (!nodes.length) {
     return;
   }
+  const setValue = (value) => {
+    nodes.forEach((node) => {
+      node.textContent = value;
+    });
+  };
   const freeze = safety && safety.freeze_protection;
   if (!freeze || !freeze.enabled) {
-    node.textContent = "Freeze protection: disabled";
+    setValue("Freeze protection: disabled");
     return;
   }
   if (!freeze.active) {
-    node.textContent = "Freeze protection: idle";
+    setValue("Freeze protection: idle");
     return;
   }
   const hold = Number(freeze.hold_remaining_s || 0);
   const rounded = hold > 0 ? `${Math.ceil(hold)}s hold` : "release eligible";
   const observation = freeze.observation ? ` @ ${freeze.observation}` : "";
-  node.textContent = `Freeze ${String(freeze.latched_speed || "").toUpperCase()} (${rounded})${observation}`;
+  setValue(`Freeze ${String(freeze.latched_speed || "").toUpperCase()} (${rounded})${observation}`);
 }
 
 async function refreshHealth(force) {
@@ -364,6 +374,7 @@ function renderComponentStates(actuators, sensors, flows) {
     component.classList.add("status-on");
   });
   renderFilterComponent(flows);
+  renderMobileControlStates(actuators);
 }
 
 function renderFilterComponent(flows) {
@@ -582,6 +593,33 @@ function setMobileCardStatus(cardId, statusClass) {
   }
   card.classList.remove("status-off", "status-on", "status-low", "status-high", "status-caution", "status-alarm", "status-invalid");
   card.classList.add(statusClass);
+}
+
+function renderMobileControlStates(actuators) {
+  const nodes = document.querySelectorAll("[data-mobile-command]");
+  nodes.forEach((node) => {
+    node.classList.remove("is-active");
+    const token = node.dataset.mobileCommand;
+    if (!token || token.indexOf(":") < 0) {
+      return;
+    }
+    const parts = token.split(":");
+    const actuatorId = parts[0];
+    const requestedState = parts[1];
+    const currentState = actuators[actuatorId] ? String(actuators[actuatorId].state) : "";
+    if (currentState === requestedState) {
+      node.classList.add("is-active");
+    }
+  });
+}
+
+function setCommandStatus(message) {
+  ["commandStatus", "mobileCommandStatus"].forEach((id) => {
+    const node = document.getElementById(id);
+    if (node) {
+      node.textContent = message;
+    }
+  });
 }
 
 function renderSensorList(sensors) {
@@ -2085,33 +2123,55 @@ function initializeFaultTimelineControls() {
 }
 
 function initializeTimerOverrideControls() {
-  const onHour = document.getElementById("overridePumpOnHour");
-  const offManual = document.getElementById("overridePumpOffManual");
-  const resume = document.getElementById("overrideResumeSchedule");
-  if (!onHour || !offManual || !resume) {
-    return;
-  }
+  [
+    "overridePumpOnHour",
+    "mobileOverridePumpOnHour",
+  ].forEach((id) => {
+    const node = document.getElementById(id);
+    if (!node) {
+      return;
+    }
+    node.addEventListener("click", () =>
+      setTimerOverride({
+        mode: "force_on",
+        duration_s: 3600,
+        pump_speed: "high",
+        booster: "off",
+        reason: "manual pump run 1h",
+      }),
+    );
+  });
 
-  onHour.addEventListener("click", () =>
-    setTimerOverride({
-      mode: "force_on",
-      duration_s: 3600,
-      pump_speed: "high",
-      booster: "off",
-      reason: "manual pump run 1h",
-    }),
-  );
-  offManual.addEventListener("click", () =>
-    setTimerOverride({
-      mode: "force_off",
-      reason: "manual maintenance off",
-    }),
-  );
-  resume.addEventListener("click", () =>
-    setTimerOverride({
-      mode: "auto",
-    }),
-  );
+  [
+    "overridePumpOffManual",
+    "mobileOverridePumpOffManual",
+  ].forEach((id) => {
+    const node = document.getElementById(id);
+    if (!node) {
+      return;
+    }
+    node.addEventListener("click", () =>
+      setTimerOverride({
+        mode: "force_off",
+        reason: "manual maintenance off",
+      }),
+    );
+  });
+
+  [
+    "overrideResumeSchedule",
+    "mobileOverrideResumeSchedule",
+  ].forEach((id) => {
+    const node = document.getElementById(id);
+    if (!node) {
+      return;
+    }
+    node.addEventListener("click", () =>
+      setTimerOverride({
+        mode: "auto",
+      }),
+    );
+  });
 }
 
 function initializeLiveModeControls() {

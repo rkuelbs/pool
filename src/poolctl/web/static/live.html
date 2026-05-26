@@ -32,6 +32,27 @@
             <button id="liveModeList" type="button">List</button>
             <button id="liveModeSchematic" type="button">Schematic</button>
           </div>
+          <div class="live-card" id="mobileControlsCard">
+            <h3>Quick Controls</h3>
+            <div class="mobile-control-grid">
+              <button type="button" data-command="pump_motor:on" data-mobile-command="pump_motor:on">Pump On</button>
+              <button type="button" data-command="pump_motor:off" data-mobile-command="pump_motor:off">Pump Off</button>
+              <button type="button" data-command="pump_motor_speed:low" data-mobile-command="pump_motor_speed:low">Low</button>
+              <button type="button" data-command="pump_motor_speed:high" data-mobile-command="pump_motor_speed:high">High</button>
+              <button type="button" data-command="booster_pump:on" data-mobile-command="booster_pump:on">Booster On</button>
+              <button type="button" data-command="booster_pump:off" data-mobile-command="booster_pump:off">Booster Off</button>
+              <button type="button" data-command="chlorine_dosing_pump:on" data-mobile-command="chlorine_dosing_pump:on">Dose On</button>
+              <button type="button" data-command="chlorine_dosing_pump:off" data-mobile-command="chlorine_dosing_pump:off">Dose Off</button>
+            </div>
+            <div class="mobile-timer-actions">
+              <button id="mobileOverridePumpOnHour" type="button">Pump ON 1h</button>
+              <button id="mobileOverridePumpOffManual" type="button">Pump OFF</button>
+              <button id="mobileOverrideResumeSchedule" type="button">Resume</button>
+            </div>
+            <div id="mobileTimerOverrideStatus" class="history-status">Schedule mode</div>
+            <div id="mobileFreezeStatus" class="history-status">Freeze protection: --</div>
+            <div id="mobileCommandStatus" class="command-status">--</div>
+          </div>
           <div class="live-card" id="mobilePumpCard">
             <h3>Pump</h3>
             <p id="mobilePumpState">--</p>

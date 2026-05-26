@@ -169,6 +169,42 @@ h2 {
   font-size: 12px;
 }
 
+.mobile-control-grid {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: 1fr 1fr;
+}
+
+.mobile-control-grid button,
+.mobile-timer-actions button {
+  background: #ffffff;
+  border: 1px solid #b8c4cf;
+  border-radius: 6px;
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  min-height: 32px;
+}
+
+.mobile-control-grid button.is-active {
+  background: #edf5ff;
+  border-color: #7eb6ee;
+}
+
+.mobile-control-grid button:disabled,
+.mobile-timer-actions button:disabled {
+  color: #9aa6b2;
+  cursor: wait;
+}
+
+.mobile-timer-actions {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: 1fr 1fr 1fr;
+  margin-top: 4px;
+}
+
 .live-card.status-off {
   background: #d4dae0;
   border-color: #6d7781;
