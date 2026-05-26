@@ -170,6 +170,11 @@ h2 {
   font-weight: 700;
 }
 
+.component strong {
+  font-size: 16px;
+  line-height: 1.1;
+}
+
 .component small {
   font-size: 11px;
   font-weight: 700;
@@ -197,6 +202,12 @@ h2 {
   background: #51c760;
   border-color: #21672a;
   color: #14391a;
+}
+
+.component.status-caution {
+  background: #f7cf59;
+  border-color: #8b6713;
+  color: #4b380a;
 }
 
 .component.status-alarm {

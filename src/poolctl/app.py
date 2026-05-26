@@ -17,6 +17,9 @@ from poolctl.domain.models import (
     CommandSource,
     LabTest,
     Measurement,
+    MeasurementKind,
+    Quality,
+    SensorId,
 )
 from poolctl.drivers.base import ActuatorDriver, MultiSensorDriver, SensorDriver
 from poolctl.drivers.modbus.rtu_bus import ModbusRtuBusRegistry
@@ -36,8 +39,12 @@ from poolctl.services.measurement_logging import (
     MeasurementLogger,
     MeasurementLoggingConfig,
 )
+from poolctl.services.flow_estimation import (
+    FlowEstimates,
+    FlowEstimationConfig,
+    estimate_flows,
+)
 from poolctl.services.mqtt import MqttBridge, MqttBridgeConfig
-from poolctl.services.flow_estimation import FlowEstimationConfig
 from poolctl.services.pump_timer import PumpTimer, PumpTimerConfig
 from poolctl.services.pump_timer import PumpTimerOverride
 from poolctl.services.safety import SafetyConfig, SafetyGate
@@ -56,6 +63,7 @@ class AppTickResult:
     mqtt_results: tuple[ActuatorCommandResult, ...] = ()
     logged_measurement_count: int = 0
     logged_lab_test_count: int = 0
+    flow_estimates: FlowEstimates = FlowEstimates()
 
     @property
     def measurements(self) -> tuple[Measurement, ...]:
@@ -135,10 +143,32 @@ class PoolControllerApp:
         await self.router.refresh_states()
 
         acquisition = await self._poll_acquisition(force=force_acquisition)
-        mqtt_results, logged_lab_test_count = await self._process_mqtt_inputs(acquisition.measurements)
-        logged_measurement_count = self._log_measurements(
-            acquisition.loggable_measurements
+        latest_measurements = (
+            self.acquisition_service.latest_measurements
+            if self.acquisition_service is not None
+            else {}
         )
+        flow_estimates = estimate_flows(
+            measurements=latest_measurements,
+            actuator_states=self.router.actuator_states,
+            config=self.flow_estimation_config,
+        )
+        flow_derived_measurements = _flow_derived_measurements(
+            flow_estimates=flow_estimates,
+            observed_at=self.clock.now(),
+        )
+        source_logged_sensor_ids = {measurement.sensor_id for measurement in acquisition.loggable_measurements}
+        should_log_flow_derived = (
+            SensorId.PUMP_OUTPUT_PSI in source_logged_sensor_ids
+            or SensorId.FILTER_OUTPUT_PSI in source_logged_sensor_ids
+        )
+        loggable_measurements = (
+            tuple(acquisition.loggable_measurements) + flow_derived_measurements
+            if should_log_flow_derived
+            else acquisition.loggable_measurements
+        )
+        mqtt_results, logged_lab_test_count = await self._process_mqtt_inputs(acquisition.measurements)
+        logged_measurement_count = self._log_measurements(loggable_measurements)
         self._update_sampling_override()
         timer_results = await self._run_pump_timer()
         safety_results: tuple[ActuatorCommandResult, ...] = ()
@@ -164,6 +194,7 @@ class PoolControllerApp:
             mqtt_results=mqtt_results,
             logged_measurement_count=logged_measurement_count,
             logged_lab_test_count=logged_lab_test_count,
+            flow_estimates=flow_estimates,
         )
 
     def apply_pump_timer_config(self, config: PumpTimerConfig) -> None:
@@ -680,3 +711,52 @@ def _mqtt_lab_test_payload(payload: dict[str, Any], *, now: datetime) -> LabTest
         return LabTest.model_validate(raw)
     except Exception:
         return None
+
+
+def _flow_derived_measurements(
+    *,
+    flow_estimates: FlowEstimates,
+    observed_at: datetime,
+) -> tuple[Measurement, ...]:
+    measurements: list[Measurement] = []
+
+    if flow_estimates.pump_flow_gpm is not None:
+        measurements.append(
+            Measurement(
+                sensor_id=SensorId.PUMP_FLOW_GPM,
+                observed_at=observed_at,
+                kind=MeasurementKind.ESTIMATED,
+                value=round(flow_estimates.pump_flow_gpm, 3),
+                unit="gpm",
+                quality=Quality.GOOD,
+                metadata={"driver": "flow_estimation", "source": "pump_output_psi"},
+            )
+        )
+
+    if flow_estimates.filter_restriction_metric is not None:
+        measurements.append(
+            Measurement(
+                sensor_id=SensorId.FILTER_RESTRICTION_METRIC,
+                observed_at=observed_at,
+                kind=MeasurementKind.ESTIMATED,
+                value=round(flow_estimates.filter_restriction_metric, 6),
+                unit="restriction_index",
+                quality=Quality.GOOD,
+                metadata={"driver": "flow_estimation", "source": "pump_output_psi-filter_output_psi"},
+            )
+        )
+
+    if flow_estimates.filter_restriction_percent is not None:
+        measurements.append(
+            Measurement(
+                sensor_id=SensorId.FILTER_RESTRICTION_PERCENT,
+                observed_at=observed_at,
+                kind=MeasurementKind.ESTIMATED,
+                value=round(flow_estimates.filter_restriction_percent, 3),
+                unit="percent",
+                quality=Quality.GOOD,
+                metadata={"driver": "flow_estimation", "source": "filter_restriction_metric"},
+            )
+        )
+
+    return tuple(measurements)

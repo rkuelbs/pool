@@ -18,6 +18,9 @@ const SENSOR_LABELS = {
   return_psi: "Return",
   bubbler_psi: "Bubbler",
   booster_psi: "Booster",
+  pump_flow_gpm: "Pump flow",
+  filter_restriction_metric: "Filter restriction",
+  filter_restriction_percent: "Filter restriction %",
   raw_orp: "ORP",
   orp_temp: "ORP temp",
   raw_ph: "pH",
@@ -25,6 +28,13 @@ const SENSOR_LABELS = {
   temp: "Water temp",
   tank_level: "Tank level",
 };
+
+const HISTORY_SENSOR_ORDER = [
+  ...SENSOR_ORDER,
+  "pump_flow_gpm",
+  "filter_restriction_metric",
+  "filter_restriction_percent",
+];
 
 const ACQ_REDUCERS = ["last", "mean", "median", "trimmed_mean"];
 const ANALOG_SENSOR_OPTIONS = [
@@ -185,7 +195,7 @@ function render(payload) {
   renderTimerOverride(payload.timer_override);
   renderDiagramSensors(payload.sensors);
   renderFlowPlaceholders(payload.flows || {});
-  renderComponentStates(payload.actuators || {}, payload.sensors || {});
+  renderComponentStates(payload.actuators || {}, payload.sensors || {}, payload.flows || {});
   renderSensorList(payload.sensors);
   renderActuatorList(payload.actuators);
   renderEvents(payload.tick);
@@ -305,10 +315,17 @@ function renderFlowPlaceholders(flows) {
   });
 }
 
-function renderComponentStates(actuators, sensors) {
+function renderComponentStates(actuators, sensors, flows) {
   const components = document.querySelectorAll("[data-component]");
   components.forEach((component) => {
-    component.classList.remove("status-off", "status-on", "status-low", "status-high", "status-alarm");
+    component.classList.remove(
+      "status-off",
+      "status-on",
+      "status-low",
+      "status-high",
+      "status-caution",
+      "status-alarm",
+    );
     const actuatorId = component.dataset.component;
     if (!actuatorId) {
       return;
@@ -345,6 +362,47 @@ function renderComponentStates(actuators, sensors) {
     }
     component.classList.add("status-on");
   });
+  renderFilterComponent(flows);
+}
+
+function renderFilterComponent(flows) {
+  const block = document.getElementById("filterBlock");
+  if (!block) {
+    return;
+  }
+
+  block.classList.remove(
+    "status-off",
+    "status-on",
+    "status-low",
+    "status-high",
+    "status-caution",
+    "status-alarm",
+  );
+
+  const pumpFlowPayload = flows ? flows.pump_flow_gpm : null;
+  const pumpFlow = pumpFlowPayload ? Number(pumpFlowPayload.value) : Number.NaN;
+  if (!Number.isFinite(pumpFlow) || pumpFlow <= 0) {
+    block.classList.add("status-off");
+    return;
+  }
+
+  const payload = flows ? flows.filter_restriction_percent : null;
+  const percent = payload ? Number(payload.value) : Number.NaN;
+  if (!Number.isFinite(percent)) {
+    block.classList.add("status-off");
+    return;
+  }
+
+  if (percent > 80) {
+    block.classList.add("status-alarm");
+    return;
+  }
+  if (percent >= 50) {
+    block.classList.add("status-caution");
+    return;
+  }
+  block.classList.add("status-on");
 }
 
 function renderSensorList(sensors) {
@@ -875,7 +933,7 @@ function intValue(root, field) {
 
 function initializeHistoryControls() {
   const checklist = document.getElementById("historySensorChecklist");
-  SENSOR_ORDER.forEach((sensorId, index) => {
+  HISTORY_SENSOR_ORDER.forEach((sensorId, index) => {
     const label = document.createElement("label");
     label.dataset.sensorId = sensorId;
     const input = document.createElement("input");

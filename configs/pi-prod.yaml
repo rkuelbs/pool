@@ -104,6 +104,9 @@ flow_estimation:
     c_dynamic: 0.00525
     c_no_flow_low: 22.25
     c_no_flow_high: 93.5
+  filter_restriction:
+    clean_value: 2.0
+    dirty_value: 8.0
 
 safety:
   pressure_sensor_ids:

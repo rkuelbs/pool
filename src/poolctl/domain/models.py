@@ -37,6 +37,9 @@ class SensorId(str, Enum):
     RETURN_PSI = "return_psi"
     BUBBLER_PSI = "bubbler_psi"
     BOOSTER_PSI = "booster_psi"
+    PUMP_FLOW_GPM = "pump_flow_gpm"
+    FILTER_RESTRICTION_METRIC = "filter_restriction_metric"
+    FILTER_RESTRICTION_PERCENT = "filter_restriction_percent"
 
     RAW_ORP = "raw_orp"
     ORP_TEMP = "orp_temp"

@@ -6,7 +6,6 @@ from typing import Any
 from poolctl.app import PoolControllerApp, TimerOverrideState
 from poolctl.config import LiveViewConfig
 from poolctl.domain.models import ActuatorId, Measurement, Quality, SensorId
-from poolctl.services.flow_estimation import estimate_flows
 
 
 SENSOR_LABELS = {
@@ -15,6 +14,9 @@ SENSOR_LABELS = {
     SensorId.RETURN_PSI: "Return",
     SensorId.BUBBLER_PSI: "Bubbler",
     SensorId.BOOSTER_PSI: "Booster",
+    SensorId.PUMP_FLOW_GPM: "Pump flow",
+    SensorId.FILTER_RESTRICTION_METRIC: "Filter restriction",
+    SensorId.FILTER_RESTRICTION_PERCENT: "Filter restriction %",
     SensorId.RAW_ORP: "ORP",
     SensorId.ORP_TEMP: "ORP temp",
     SensorId.RAW_PH: "pH",
@@ -37,12 +39,6 @@ async def build_live_snapshot(app: PoolControllerApp) -> dict[str, Any]:
     """
     tick = await app.tick()
     latest_measurements = app.acquisition_service.latest_measurements if app.acquisition_service else {}
-    flow_estimates = estimate_flows(
-        measurements=latest_measurements,
-        actuator_states=app.router.actuator_states,
-        config=app.flow_estimation_config,
-    )
-
     return {
         "observed_at": tick.observed_at.isoformat(),
         "runtime": {
@@ -65,7 +61,7 @@ async def build_live_snapshot(app: PoolControllerApp) -> dict[str, Any]:
             }
             for actuator_id, state in app.router.actuator_states.items()
         },
-        "flows": flow_estimates.as_payload(),
+        "flows": tick.flow_estimates.as_payload(),
         "safety": safety_payload(app),
         "timer_override": timer_override_payload(
             app.active_timer_override() or app.active_sample_timer_override()
@@ -299,6 +295,12 @@ def format_measurement(measurement: Measurement) -> str:
 
     if measurement.unit == "mV":
         return f"{value:.0f} mV"
+
+    if measurement.unit == "gpm":
+        return f"{value:.1f} gpm"
+
+    if measurement.unit == "restriction_index":
+        return f"{value:.2f} R"
 
     if measurement.unit in {"degF", "degC"}:
         return f"{value:.1f} {measurement.unit}"
