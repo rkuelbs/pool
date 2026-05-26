@@ -89,6 +89,7 @@ const FEATURE_LAYERS = [
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const PAGE_MODE = document.body.dataset.page || "live";
+const LIVE_MODE_STORAGE_KEY = "poolctl.live_mode";
 const HISTORY_SERIES_COLORS = [
   "#1680f2",
   "#1f9d55",
@@ -116,6 +117,7 @@ let timerOverrideBusy = false;
 let healthLoading = false;
 let lastHealthLoadedAt = 0;
 let labTestLoading = false;
+let liveMode = "schematic";
 let pumpPrimeThresholds = {
   lowPrimeMinPsi: 1.0,
   highPrimeMinPsi: 5.0,
@@ -197,6 +199,7 @@ function render(payload) {
   renderDiagramSensors(payload.sensors);
   renderFlowPlaceholders(payload.flows || {});
   renderComponentStates(payload.actuators || {}, payload.sensors || {}, payload.flows || {});
+  renderMobileLive(payload.sensors || {}, payload.actuators || {}, payload.flows || {});
   renderSensorList(payload.sensors);
   renderActuatorList(payload.actuators);
   renderEvents(payload.tick);
@@ -401,6 +404,184 @@ function renderFilterComponent(flows) {
     return;
   }
   block.classList.add("status-on");
+}
+
+function renderMobileLive(sensors, actuators, flows) {
+  if (!document.getElementById("mobileLivePanel")) {
+    return;
+  }
+
+  renderMobilePumpCard(sensors, actuators, flows);
+  renderMobileFilterCard(sensors, flows);
+  renderMobileBranchesCard(sensors, flows);
+  renderMobileChemCard(sensors);
+  renderMobileTankCard(sensors);
+}
+
+function renderMobilePumpCard(sensors, actuators, flows) {
+  const pumpState = actuators.pump_motor ? actuators.pump_motor.state : null;
+  const speedState = actuators.pump_motor_speed ? actuators.pump_motor_speed.state : null;
+  const pumpPsi = sensors.pump_output_psi ? Number(sensors.pump_output_psi.value) : Number.NaN;
+  const lowPrimeMinPsi = Number(pumpPrimeThresholds.lowPrimeMinPsi || 1.0);
+  const highPrimeMinPsi = Number(pumpPrimeThresholds.highPrimeMinPsi || 5.0);
+  const pumpIsAlarm =
+    pumpState === "on" &&
+    Number.isFinite(pumpPsi) &&
+    ((speedState === "low" && pumpPsi < lowPrimeMinPsi) || (speedState === "high" && pumpPsi < highPrimeMinPsi));
+
+  let cardStatus = "status-off";
+  let stateText = "OFF";
+  if (pumpState === "on" && pumpIsAlarm) {
+    cardStatus = "status-alarm";
+    stateText = speedState === "low" ? "LOW | LOW PSI" : "HIGH | LOW PSI";
+  } else if (pumpState === "on" && speedState === "low") {
+    cardStatus = "status-low";
+    stateText = "LOW";
+  } else if (pumpState === "on" && speedState === "high") {
+    cardStatus = "status-high";
+    stateText = "HIGH";
+  } else if (pumpState === "on") {
+    cardStatus = "status-on";
+    stateText = "ON";
+  }
+
+  setMobileCardStatus("mobilePumpCard", cardStatus);
+  setNodeText("mobilePumpState", `State: ${stateText}`);
+  setNodeText("mobilePumpPsi", `Output: ${sensorDisplay(sensors, "pump_output_psi")}`);
+  setNodeText("mobilePumpFlow", `Flow: ${flowDisplay(flows, "pump_flow_gpm")}`);
+}
+
+function renderMobileFilterCard(sensors, flows) {
+  const pumpFlowPayload = flows ? flows.pump_flow_gpm : null;
+  const pumpFlow = pumpFlowPayload ? Number(pumpFlowPayload.value) : Number.NaN;
+  const restrictionPayload = flows ? flows.filter_restriction_percent : null;
+  const restrictionPercent = restrictionPayload ? Number(restrictionPayload.value) : Number.NaN;
+
+  let cardStatus = "status-off";
+  if (Number.isFinite(pumpFlow) && pumpFlow > 0 && Number.isFinite(restrictionPercent)) {
+    if (restrictionPercent > 80) {
+      cardStatus = "status-alarm";
+    } else if (restrictionPercent >= 50) {
+      cardStatus = "status-caution";
+    } else {
+      cardStatus = "status-on";
+    }
+  }
+  setMobileCardStatus("mobileFilterCard", cardStatus);
+
+  const pumpOutput = sensors.pump_output_psi ? Number(sensors.pump_output_psi.value) : Number.NaN;
+  const filterOutput = sensors.filter_output_psi ? Number(sensors.filter_output_psi.value) : Number.NaN;
+  const deltaText =
+    Number.isFinite(pumpOutput) && Number.isFinite(filterOutput)
+      ? `${(pumpOutput - filterOutput).toFixed(2)} psi`
+      : "--";
+
+  setNodeText("mobileFilterRestrictionPct", `Restriction: ${flowDisplay(flows, "filter_restriction_percent")}`);
+  setNodeText("mobileFilterRestrictionMetric", `R: ${flowDisplay(flows, "filter_restriction_metric")}`);
+  setNodeText("mobileFilterDeltaPsi", `Delta PSI: ${deltaText}`);
+}
+
+function renderMobileBranchesCard(sensors, flows) {
+  const returnStatus = sensorStatus(sensors, "return_psi");
+  const bubblerStatus = sensorStatus(sensors, "bubbler_psi");
+  const boosterStatus = sensorStatus(sensors, "booster_psi");
+  setMobileCardStatus("mobileBranchesCard", worstSensorCardStatus([returnStatus, bubblerStatus, boosterStatus]));
+
+  setNodeText(
+    "mobileReturnLine",
+    `Return: ${sensorDisplay(sensors, "return_psi")} | ${flowDisplay(flows, "return_flow_gpm")}`,
+  );
+  setNodeText(
+    "mobileBubblerLine",
+    `Bubbler: ${sensorDisplay(sensors, "bubbler_psi")} | ${flowDisplay(flows, "bubbler_flow_gpm")}`,
+  );
+  setNodeText(
+    "mobileBoosterLine",
+    `Booster: ${sensorDisplay(sensors, "booster_psi")} | ${flowDisplay(flows, "booster_flow_gpm")}`,
+  );
+}
+
+function renderMobileChemCard(sensors) {
+  const tempStatus = sensorStatus(sensors, "temp");
+  const phStatus = sensorStatus(sensors, "raw_ph");
+  const orpStatus = sensorStatus(sensors, "raw_orp");
+  setMobileCardStatus("mobileChemCard", worstSensorCardStatus([tempStatus, phStatus, orpStatus]));
+
+  setNodeText("mobileTempLine", `Temp: ${sensorDisplay(sensors, "temp")}`);
+  setNodeText(
+    "mobilePhLine",
+    `pH: ${sensorDisplay(sensors, "raw_ph")} | Vraw: ${sensorDisplay(sensors, "raw_ph_voltage")}`,
+  );
+  setNodeText(
+    "mobileOrpLine",
+    `ORP: ${sensorDisplay(sensors, "raw_orp")} | Temp: ${sensorDisplay(sensors, "orp_temp")}`,
+  );
+}
+
+function renderMobileTankCard(sensors) {
+  setMobileCardStatus("mobileTankCard", sensorCardStatus(sensorStatus(sensors, "tank_level")));
+  setNodeText("mobileTankLevelLine", `Level: ${sensorDisplay(sensors, "tank_level")}`);
+}
+
+function setNodeText(id, value) {
+  const node = document.getElementById(id);
+  if (!node) {
+    return;
+  }
+  node.textContent = value;
+}
+
+function sensorDisplay(sensors, sensorId) {
+  const payload = sensors[sensorId];
+  return payload && payload.display ? payload.display : "--";
+}
+
+function flowDisplay(flows, flowId) {
+  const payload = flows[flowId];
+  return payload && payload.display ? payload.display : "--";
+}
+
+function sensorStatus(sensors, sensorId) {
+  const payload = sensors[sensorId];
+  return payload && payload.status ? payload.status : "unknown";
+}
+
+function worstSensorCardStatus(statuses) {
+  let best = "unknown";
+  let bestPriority = -1;
+  statuses.forEach((status) => {
+    const priority = SENSOR_STATUS_PRIORITY[status] ?? 0;
+    if (priority > bestPriority) {
+      best = status;
+      bestPriority = priority;
+    }
+  });
+  return sensorCardStatus(best);
+}
+
+function sensorCardStatus(status) {
+  if (status === "alarm") {
+    return "status-alarm";
+  }
+  if (status === "caution") {
+    return "status-caution";
+  }
+  if (status === "invalid") {
+    return "status-invalid";
+  }
+  if (status === "normal") {
+    return "status-on";
+  }
+  return "status-off";
+}
+
+function setMobileCardStatus(cardId, statusClass) {
+  const card = document.getElementById(cardId);
+  if (!card) {
+    return;
+  }
+  card.classList.remove("status-off", "status-on", "status-low", "status-high", "status-caution", "status-alarm", "status-invalid");
+  card.classList.add(statusClass);
 }
 
 function renderSensorList(sensors) {
@@ -1933,6 +2114,38 @@ function initializeTimerOverrideControls() {
   );
 }
 
+function initializeLiveModeControls() {
+  const panel = document.getElementById("mobileLivePanel");
+  const listButton = document.getElementById("liveModeList");
+  const schematicButton = document.getElementById("liveModeSchematic");
+  if (!panel || !listButton || !schematicButton) {
+    return;
+  }
+
+  const storedMode = window.localStorage.getItem(LIVE_MODE_STORAGE_KEY);
+  const defaultMode = window.matchMedia("(max-width: 760px)").matches ? "list" : "schematic";
+  setLiveMode(storedMode === "list" || storedMode === "schematic" ? storedMode : defaultMode);
+
+  listButton.addEventListener("click", () => setLiveMode("list"));
+  schematicButton.addEventListener("click", () => setLiveMode("schematic"));
+}
+
+function setLiveMode(mode) {
+  liveMode = mode === "list" ? "list" : "schematic";
+  document.body.dataset.liveMode = liveMode;
+  const listButton = document.getElementById("liveModeList");
+  const schematicButton = document.getElementById("liveModeSchematic");
+  if (listButton) {
+    listButton.classList.toggle("active", liveMode === "list");
+    listButton.setAttribute("aria-pressed", liveMode === "list" ? "true" : "false");
+  }
+  if (schematicButton) {
+    schematicButton.classList.toggle("active", liveMode === "schematic");
+    schematicButton.setAttribute("aria-pressed", liveMode === "schematic" ? "true" : "false");
+  }
+  window.localStorage.setItem(LIVE_MODE_STORAGE_KEY, liveMode);
+}
+
 async function poll() {
   try {
     if (PAGE_MODE === "live") {
@@ -1992,6 +2205,7 @@ function setActiveNavPage() {
 
 function initializeForPage() {
   if (PAGE_MODE === "live") {
+    initializeLiveModeControls();
     initializeTimerOverrideControls();
     return;
   }

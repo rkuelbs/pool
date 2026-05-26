@@ -27,6 +27,40 @@
       </nav>
 
       <section class="layout" data-view-section="live">
+        <section class="mobile-live-panel" id="mobileLivePanel" aria-label="Live mobile overview">
+          <div class="live-mode-switch" role="group" aria-label="Live view mode">
+            <button id="liveModeList" type="button">List</button>
+            <button id="liveModeSchematic" type="button">Schematic</button>
+          </div>
+          <div class="live-card" id="mobilePumpCard">
+            <h3>Pump</h3>
+            <p id="mobilePumpState">--</p>
+            <p id="mobilePumpPsi">--</p>
+            <p id="mobilePumpFlow">--</p>
+          </div>
+          <div class="live-card" id="mobileFilterCard">
+            <h3>Filter</h3>
+            <p id="mobileFilterRestrictionPct">--</p>
+            <p id="mobileFilterRestrictionMetric">--</p>
+            <p id="mobileFilterDeltaPsi">--</p>
+          </div>
+          <div class="live-card" id="mobileBranchesCard">
+            <h3>Branches</h3>
+            <p id="mobileReturnLine">--</p>
+            <p id="mobileBubblerLine">--</p>
+            <p id="mobileBoosterLine">--</p>
+          </div>
+          <div class="live-card" id="mobileChemCard">
+            <h3>Chemistry</h3>
+            <p id="mobileTempLine">--</p>
+            <p id="mobilePhLine">--</p>
+            <p id="mobileOrpLine">--</p>
+          </div>
+          <div class="live-card" id="mobileTankCard">
+            <h3>Chem Tank</h3>
+            <p id="mobileTankLevelLine">--</p>
+          </div>
+        </section>
         <section class="diagram-panel" aria-label="Pool system live diagram">
           <div class="diagram">
             <svg class="pipe-layer" viewBox="0 0 1088 560" aria-hidden="true">

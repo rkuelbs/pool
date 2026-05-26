@@ -125,6 +125,92 @@ h2 {
   max-width: 1320px;
 }
 
+.mobile-live-panel {
+  display: none;
+}
+
+.live-mode-switch {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 1fr 1fr;
+  margin-bottom: 10px;
+}
+
+.live-mode-switch button {
+  background: #ffffff;
+  border: 1px solid #b8c4cf;
+  border-radius: 6px;
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  min-height: 32px;
+}
+
+.live-mode-switch button.active {
+  background: #edf5ff;
+  border-color: #7eb6ee;
+}
+
+.live-card {
+  border: 1px solid #aeb7c1;
+  border-radius: 6px;
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+}
+
+.live-card h3 {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.live-card p {
+  font-size: 12px;
+}
+
+.live-card.status-off {
+  background: #d4dae0;
+  border-color: #6d7781;
+  color: #39434c;
+}
+
+.live-card.status-on {
+  background: #51c760;
+  border-color: #21672a;
+  color: #14391a;
+}
+
+.live-card.status-low {
+  background: #58a8f7;
+  border-color: #1d5f9f;
+  color: #0f3558;
+}
+
+.live-card.status-high {
+  background: #51c760;
+  border-color: #21672a;
+  color: #14391a;
+}
+
+.live-card.status-caution {
+  background: #ffd44d;
+  border-color: #a97900;
+  color: #4f3900;
+}
+
+.live-card.status-alarm {
+  background: #f05245;
+  border-color: #9c1c13;
+  color: #48120d;
+}
+
+.live-card.status-invalid {
+  background: #c2c9d0;
+  border-color: #6d7781;
+  color: #39434c;
+}
+
 .diagram-panel,
 .panel,
 .history-panel {
@@ -922,6 +1008,23 @@ h2 {
 
   .side-panel {
     grid-template-columns: 1fr;
+  }
+
+  .mobile-live-panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    display: grid;
+    gap: 10px;
+    padding: 10px;
+  }
+
+  body[data-live-mode="schematic"] .mobile-live-panel .live-card {
+    display: none;
+  }
+
+  body[data-live-mode="list"] .diagram-panel {
+    display: none;
   }
 
   .history-header {
