@@ -27,8 +27,8 @@ pump_timer:
 
 modbus_relay:
   port: /dev/ttyUSB0
-  slave_id: 1
-  baudrate: 9600
+  slave_id: 3
+  baudrate: 4800
   timeout_s: 1.0
 
   relays:
@@ -43,14 +43,14 @@ modbus_relay:
 
 modbus_orp_sensor:
   port: /dev/ttyUSB0
-  slave_id: 3
-  baudrate: 9600
+  slave_id: 1
+  baudrate: 4800
   timeout_s: 1.0
 
 modbus_analog_input:
   port: /dev/ttyUSB0
-  slave_id: 4
-  baudrate: 9600
+  slave_id: 2
+  baudrate: 4800
   timeout_s: 1.0
   raw_to_volts_scale: 0.001
   raw_to_volts_offset: 0.0

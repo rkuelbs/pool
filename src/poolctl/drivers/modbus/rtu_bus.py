@@ -98,6 +98,19 @@ class SharedModbusRtuBus:
 
         return tuple(int(value) & 0xFFFF for value in registers[:count])
 
+    async def write_holding_register(
+        self,
+        *,
+        slave_id: int,
+        register_address: int,
+        value: int,
+    ) -> None:
+        async def _call(client: Any) -> Any:
+            return await client.write_register(register_address, value, slave=slave_id)
+
+        response = await self._request("write_holding_register", _call)
+        _raise_for_modbus_error(response, "write holding register")
+
     async def read_input_registers(
         self,
         *,
