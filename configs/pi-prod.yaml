@@ -98,6 +98,13 @@ modbus_analog_input:
         voltage_2: 5.0
         value_2: 14.0
 
+flow_estimation:
+  pump_pressure:
+    pressure_scale_psi: 0.4335
+    c_dynamic: 0.00525
+    c_no_flow_low: 22.25
+    c_no_flow_high: 93.5
+
 safety:
   pressure_sensor_ids:
     pump_output: pump_output_psi

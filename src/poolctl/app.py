@@ -37,6 +37,7 @@ from poolctl.services.measurement_logging import (
     MeasurementLoggingConfig,
 )
 from poolctl.services.mqtt import MqttBridge, MqttBridgeConfig
+from poolctl.services.flow_estimation import FlowEstimationConfig
 from poolctl.services.pump_timer import PumpTimer, PumpTimerConfig
 from poolctl.services.pump_timer import PumpTimerOverride
 from poolctl.services.safety import SafetyConfig, SafetyGate
@@ -128,6 +129,7 @@ class PoolControllerApp:
     sample_timer_override: TimerOverrideState | None = None
     override_audit: tuple[dict[str, Any], ...] = ()
     mqtt_bridge: MqttBridge | None = None
+    flow_estimation_config: FlowEstimationConfig = FlowEstimationConfig()
 
     async def tick(self, *, force_acquisition: bool = False) -> AppTickResult:
         await self.router.refresh_states()
@@ -443,6 +445,7 @@ def build_app_from_mapping(
     pump_timer_config = PumpTimerConfig.from_mapping(data)
     live_view_config = LiveViewConfig.from_mapping(data)
     measurement_logging_config = MeasurementLoggingConfig.from_mapping(data)
+    flow_estimation_config = FlowEstimationConfig.from_mapping(data)
     chemistry_sampling_refresh = ChemistrySamplingRefreshConfig(
         **_chemistry_sampling_refresh_values(data)
     )
@@ -539,6 +542,7 @@ def build_app_from_mapping(
         chemistry_sampling_refresh=chemistry_sampling_refresh,
         sample_timer_override=None,
         mqtt_bridge=mqtt_bridge,
+        flow_estimation_config=flow_estimation_config,
     )
 
 

@@ -40,6 +40,7 @@ async def build_live_snapshot(app: PoolControllerApp) -> dict[str, Any]:
     flow_estimates = estimate_flows(
         measurements=latest_measurements,
         actuator_states=app.router.actuator_states,
+        config=app.flow_estimation_config,
     )
 
     return {
