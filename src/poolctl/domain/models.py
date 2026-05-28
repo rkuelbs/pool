@@ -40,6 +40,7 @@ class SensorId(str, Enum):
     PUMP_FLOW_GPM = "pump_flow_gpm"
     FILTER_RESTRICTION_METRIC = "filter_restriction_metric"
     FILTER_RESTRICTION_PERCENT = "filter_restriction_percent"
+    CALCIUM_SATURATION_INDEX = "calcium_saturation_index"
 
     RAW_ORP = "raw_orp"
     ORP_TEMP = "orp_temp"
@@ -282,6 +283,7 @@ class LabTest(BaseModel):
     alkalinity: float | None = None
     cya: float | None = None
     calcium_hardness: float | None = None
+    tds: float | None = None
     salt: float | None = None
     borates: float | None = None
     water_temp: float | None = None

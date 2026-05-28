@@ -104,6 +104,7 @@ def test_measurement_logger_persists_lab_tests(tmp_path: Path) -> None:
         ph=7.45,
         free_chlorine=3.2,
         alkalinity=95.0,
+        tds=1200.0,
         notes="weekly strip + drop test",
     )
     logger.log_lab_test(test)
@@ -113,7 +114,49 @@ def test_measurement_logger_persists_lab_tests(tmp_path: Path) -> None:
     assert records[0].id == test.id
     assert records[0].ph == 7.45
     assert records[0].free_chlorine == 3.2
+    assert records[0].tds == 1200.0
     assert records[0].notes == "weekly strip + drop test"
+
+
+def test_measurement_logger_latest_lab_values_uses_latest_non_null_per_field(
+    tmp_path: Path,
+) -> None:
+    logger = MeasurementLogger(
+        MeasurementLoggingConfig(database_path=tmp_path / "measurements.sqlite3")
+    )
+    now = datetime(2026, 5, 22, 12, 0, tzinfo=timezone.utc)
+    logger.log_lab_test(LabTest(sampled_at=now - timedelta(days=2), alkalinity=90.0))
+    logger.log_lab_test(LabTest(sampled_at=now - timedelta(days=1), calcium_hardness=250.0))
+    logger.log_lab_test(LabTest(sampled_at=now, tds=1400.0))
+
+    values = logger.latest_lab_values(fields=("alkalinity", "calcium_hardness", "tds"))
+
+    assert values["alkalinity"] == 90.0
+    assert values["calcium_hardness"] == 250.0
+    assert values["tds"] == 1400.0
+
+
+def test_measurement_logger_lab_value_history_returns_time_ordered_non_null_points(
+    tmp_path: Path,
+) -> None:
+    logger = MeasurementLogger(
+        MeasurementLoggingConfig(database_path=tmp_path / "measurements.sqlite3")
+    )
+    now = datetime(2026, 5, 22, 12, 0, tzinfo=timezone.utc)
+    logger.log_lab_test(LabTest(sampled_at=now - timedelta(hours=2), free_chlorine=2.1))
+    logger.log_lab_test(LabTest(sampled_at=now - timedelta(hours=1), free_chlorine=None))
+    logger.log_lab_test(LabTest(sampled_at=now, free_chlorine=3.3))
+
+    points = logger.lab_value_history(
+        field="free_chlorine",
+        since=now - timedelta(hours=3),
+        until=now + timedelta(minutes=1),
+        limit=10,
+    )
+
+    assert len(points) == 2
+    assert points[0][1] == 2.1
+    assert points[1][1] == 3.3
 
 
 def test_measurement_logger_rollup_history_uses_bucket_aggregation(tmp_path: Path) -> None:

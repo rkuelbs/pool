@@ -188,6 +188,15 @@ live_view:
       normal_min: 20.0
       normal_max: 100.0
       caution_max: 100.0
+    calcium_saturation_index:
+      caution_min: -0.6
+      normal_min: -0.3
+      normal_max: 0.3
+      caution_max: 0.6
+calcium_saturation_index:
+  enabled: true
+  temp_sensor_id: temp
+  ph_sensor_id: raw_ph
 modbus_analog_input:
   port: COM3
   slave_id: 4

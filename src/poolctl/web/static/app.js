@@ -21,6 +21,15 @@ const SENSOR_LABELS = {
   pump_flow_gpm: "Pump flow",
   filter_restriction_metric: "Filter restriction",
   filter_restriction_percent: "Filter restriction %",
+  calcium_saturation_index: "CSI",
+  lab_ph: "pH (tested)",
+  lab_free_chlorine: "Free Chlorine (tested)",
+  lab_alkalinity: "Alkalinity (tested)",
+  lab_calcium_hardness: "Calcium Hardness (tested)",
+  lab_cya: "CYA (tested)",
+  lab_tds: "TDS (tested)",
+  lab_salt: "Salt (tested)",
+  lab_borates: "Borates (tested)",
   raw_orp: "ORP",
   orp_temp: "ORP temp",
   raw_ph: "pH",
@@ -31,10 +40,21 @@ const SENSOR_LABELS = {
 
 const HISTORY_SENSOR_ORDER = [
   ...SENSOR_ORDER,
+  "calcium_saturation_index",
   "pump_flow_gpm",
   "filter_restriction_metric",
   "filter_restriction_percent",
+  "lab_ph",
+  "lab_free_chlorine",
+  "lab_alkalinity",
+  "lab_calcium_hardness",
+  "lab_cya",
+  "lab_tds",
+  "lab_salt",
+  "lab_borates",
 ];
+
+const LIVE_SENSOR_ORDER = [...SENSOR_ORDER, "calcium_saturation_index"];
 
 const ACQ_REDUCERS = ["last", "mean", "median", "trimmed_mean"];
 const ANALOG_SENSOR_OPTIONS = [
@@ -193,6 +213,7 @@ function render(payload) {
 
   renderSafetyBadge(payload.safety);
   renderFreezeStatus(payload.safety);
+  renderCsiStatus(payload.sensors || {});
   renderTimerOverride(payload.timer_override);
   renderDiagramSensors(payload.sensors);
   renderFlowPlaceholders(payload.flows || {});
@@ -269,6 +290,15 @@ function renderFreezeStatus(safety) {
   const rounded = hold > 0 ? `${Math.ceil(hold)}s hold` : "release eligible";
   const observation = freeze.observation ? ` @ ${freeze.observation}` : "";
   setValue(`Freeze ${String(freeze.latched_speed || "").toUpperCase()} (${rounded})${observation}`);
+}
+
+function renderCsiStatus(sensors) {
+  const csi = sensors.calcium_saturation_index;
+  const text = csi ? `CSI: ${csi.display}` : "CSI: --";
+  const node = document.getElementById("csiStatus");
+  if (node) {
+    node.textContent = text;
+  }
 }
 
 async function refreshHealth(force) {
@@ -516,7 +546,8 @@ function renderMobileChemCard(sensors) {
   const tempStatus = sensorStatus(sensors, "temp");
   const phStatus = sensorStatus(sensors, "raw_ph");
   const orpStatus = sensorStatus(sensors, "raw_orp");
-  setMobileCardStatus("mobileChemCard", worstSensorCardStatus([tempStatus, phStatus, orpStatus]));
+  const csiStatus = sensorStatus(sensors, "calcium_saturation_index");
+  setMobileCardStatus("mobileChemCard", worstSensorCardStatus([tempStatus, phStatus, orpStatus, csiStatus]));
 
   setNodeText("mobileTempLine", `Temp: ${sensorDisplay(sensors, "temp")}`);
   setNodeText(
@@ -527,6 +558,7 @@ function renderMobileChemCard(sensors) {
     "mobileOrpLine",
     `ORP: ${sensorDisplay(sensors, "raw_orp")} | Temp: ${sensorDisplay(sensors, "orp_temp")}`,
   );
+  setNodeText("mobileCsiLine", `CSI: ${sensorDisplay(sensors, "calcium_saturation_index")}`);
 }
 
 function renderMobileTankCard(sensors) {
@@ -626,7 +658,7 @@ function renderSensorList(sensors) {
   const list = document.getElementById("sensorList");
   list.innerHTML = "";
 
-  SENSOR_ORDER.forEach((sensorId) => {
+  LIVE_SENSOR_ORDER.forEach((sensorId) => {
     const sensor = sensors[sensorId];
     if (!sensor) {
       return;
@@ -2015,6 +2047,7 @@ function collectLabTestPayload() {
     alkalinity: numberOrNull(document.getElementById("labAlkalinity").value),
     cya: numberOrNull(document.getElementById("labCya").value),
     calcium_hardness: numberOrNull(document.getElementById("labCalciumHardness").value),
+    tds: numberOrNull(document.getElementById("labTds").value),
     salt: numberOrNull(document.getElementById("labSalt").value),
     borates: numberOrNull(document.getElementById("labBorates").value),
     water_temp: numberOrNull(document.getElementById("labWaterTemp").value),
@@ -2040,6 +2073,8 @@ function renderLabTests(tests) {
         `pH ${formatOptional(test.ph, 2)}`,
         `FC ${formatOptional(test.free_chlorine, 2)}`,
         `TA ${formatOptional(test.alkalinity, 0)}`,
+        `CH ${formatOptional(test.calcium_hardness, 0)}`,
+        `TDS ${formatOptional(test.tds, 0)}`,
         `CYA ${formatOptional(test.cya, 0)}`,
       ];
       const notes = test.notes ? ` | ${test.notes}` : "";

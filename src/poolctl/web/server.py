@@ -31,6 +31,7 @@ from poolctl.services.measurement_logging import MeasurementLoggingConfig
 from poolctl.services.pump_timer import PumpTimerConfig, PumpTimerOverride
 from poolctl.services.safety import SafetyConfig
 from poolctl.web.live import (
+    LAB_HISTORY_IDS,
     build_history_payload,
     build_history_series_payload,
     build_live_snapshot,
@@ -216,10 +217,10 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             resolution = _string_query_value(query, "resolution", "auto")
             max_points = _int_query_value(query, "max_points", 1500)
 
-            if len(sensor_ids) == 1:
+            if len(sensor_ids) == 1 and sensor_ids[0] not in LAB_HISTORY_IDS:
                 payload = build_history_payload(
                     self.app,
-                    sensor_id=sensor_ids[0],
+                    sensor_id=SensorId(sensor_ids[0]),
                     hours=hours,
                     limit=limit,
                     validated_only=validated_only,
@@ -690,12 +691,12 @@ def _enum_payload_optional(
         raise ValueError(f"invalid {key}: {value}") from error
 
 
-def _sensor_ids_query_value(query: dict[str, list[str]]) -> list[SensorId]:
+def _sensor_ids_query_value(query: dict[str, list[str]]) -> list[str]:
     values = query.get("sensor_id", [])
     if not values:
         raise ValueError("sensor_id query parameter is required")
 
-    sensor_ids: list[SensorId] = []
+    sensor_ids: list[str] = []
     for value in values:
         if "," in value:
             parts = [part.strip() for part in value.split(",") if part.strip()]
@@ -703,8 +704,11 @@ def _sensor_ids_query_value(query: dict[str, list[str]]) -> list[SensorId]:
             parts = [value]
 
         for part in parts:
+            if part in LAB_HISTORY_IDS:
+                sensor_ids.append(part)
+                continue
             try:
-                sensor_ids.append(SensorId(part))
+                sensor_ids.append(SensorId(part).value)
             except ValueError as error:
                 raise ValueError(f"invalid sensor_id: {part}") from error
 
@@ -873,11 +877,14 @@ def add_lab_test(
         raise ValueError("measurement logging is not enabled")
 
     raw = dict(payload)
-    sampled_at = raw.get("sampled_at", app.clock.now().isoformat())
+    sampled_at = raw.get("sampled_at")
+    if sampled_at is None:
+        sampled_at = app.clock.now().isoformat()
     if not isinstance(sampled_at, str):
         raise ValueError("sampled_at must be an ISO timestamp string")
     raw["sampled_at"] = sampled_at
     raw["entered_at"] = app.clock.now().isoformat()
+    raw = {key: value for key, value in raw.items() if value is not None}
     metadata = raw.get("metadata", {})
     if not isinstance(metadata, dict):
         raise ValueError("metadata must be an object")
@@ -933,6 +940,7 @@ def _lab_test_payload(test: LabTest) -> dict[str, Any]:
         "alkalinity": test.alkalinity,
         "cya": test.cya,
         "calcium_hardness": test.calcium_hardness,
+        "tds": test.tds,
         "salt": test.salt,
         "borates": test.borates,
         "water_temp": test.water_temp,

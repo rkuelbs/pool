@@ -332,3 +332,26 @@ def test_lab_test_api_helpers_store_and_list(tmp_path: Path) -> None:
     assert result["lab_test"]["ph"] == 7.4
     assert len(listed["lab_tests"]) == 1
     assert listed["lab_tests"][0]["free_chlorine"] == 3.1
+
+
+def test_lab_test_api_accepts_sparse_payload_and_defaults_sampled_at(tmp_path: Path) -> None:
+    config = config_mapping()
+    runtime = dict(config["runtime"])  # type: ignore[index]
+    runtime["enabled_layers"] = ["pump_timer", "logging"]
+    config["runtime"] = runtime
+    config["logging"] = {"database_path": str(tmp_path / "labtests.sqlite3")}
+    app = build_app_from_mapping(config, clock=make_clock())
+
+    result = add_lab_test(
+        app=app,
+        payload={
+            "sampled_at": None,
+            "tds": 1000.0,
+        },
+        source="local_gui",
+    )
+    listed = list_lab_tests(app, hours=24.0 * 30.0, limit=20)
+
+    assert result["saved"] is True
+    assert result["lab_test"]["tds"] == 1000.0
+    assert listed["lab_tests"][0]["tds"] == 1000.0

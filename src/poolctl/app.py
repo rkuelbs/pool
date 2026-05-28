@@ -47,6 +47,10 @@ from poolctl.services.flow_estimation import (
 from poolctl.services.mqtt import MqttBridge, MqttBridgeConfig
 from poolctl.services.pump_timer import PumpTimer, PumpTimerConfig
 from poolctl.services.pump_timer import PumpTimerOverride
+from poolctl.services.saturation_index import (
+    CalciumSaturationIndexConfig,
+    estimate_calcium_saturation_index,
+)
 from poolctl.services.safety import SafetyConfig, SafetyGate
 
 
@@ -64,6 +68,7 @@ class AppTickResult:
     logged_measurement_count: int = 0
     logged_lab_test_count: int = 0
     flow_estimates: FlowEstimates = FlowEstimates()
+    csi_measurement: Measurement | None = None
 
     @property
     def measurements(self) -> tuple[Measurement, ...]:
@@ -138,6 +143,7 @@ class PoolControllerApp:
     override_audit: tuple[dict[str, Any], ...] = ()
     mqtt_bridge: MqttBridge | None = None
     flow_estimation_config: FlowEstimationConfig = FlowEstimationConfig()
+    calcium_saturation_index_config: CalciumSaturationIndexConfig = CalciumSaturationIndexConfig()
 
     async def tick(self, *, force_acquisition: bool = False) -> AppTickResult:
         await self.router.refresh_states()
@@ -157,16 +163,26 @@ class PoolControllerApp:
             flow_estimates=flow_estimates,
             observed_at=self.clock.now(),
         )
+        csi_measurement = self._csi_derived_measurement(latest_measurements)
         source_logged_sensor_ids = {measurement.sensor_id for measurement in acquisition.loggable_measurements}
         should_log_flow_derived = (
             SensorId.PUMP_OUTPUT_PSI in source_logged_sensor_ids
             or SensorId.FILTER_OUTPUT_PSI in source_logged_sensor_ids
+        )
+        should_log_csi = (
+            csi_measurement is not None
+            and (
+                SensorId.TEMP in source_logged_sensor_ids
+                or SensorId.RAW_PH in source_logged_sensor_ids
+            )
         )
         loggable_measurements = (
             tuple(acquisition.loggable_measurements) + flow_derived_measurements
             if should_log_flow_derived
             else acquisition.loggable_measurements
         )
+        if should_log_csi and csi_measurement is not None:
+            loggable_measurements = tuple(loggable_measurements) + (csi_measurement,)
         mqtt_results, logged_lab_test_count = await self._process_mqtt_inputs(acquisition.measurements)
         logged_measurement_count = self._log_measurements(loggable_measurements)
         self._update_sampling_override()
@@ -184,7 +200,10 @@ class PoolControllerApp:
                 await self.router.enforce_safety(measurements=safety_measurements)
             )
 
-        self._publish_mqtt(acquisition.measurements)
+        publish_measurements = acquisition.measurements
+        if csi_measurement is not None:
+            publish_measurements = publish_measurements + (csi_measurement,)
+        self._publish_mqtt(publish_measurements)
 
         return AppTickResult(
             observed_at=self.clock.now(),
@@ -195,6 +214,7 @@ class PoolControllerApp:
             logged_measurement_count=logged_measurement_count,
             logged_lab_test_count=logged_lab_test_count,
             flow_estimates=flow_estimates,
+            csi_measurement=csi_measurement,
         )
 
     def apply_pump_timer_config(self, config: PumpTimerConfig) -> None:
@@ -425,6 +445,42 @@ class PoolControllerApp:
             }
         )
 
+    def _csi_derived_measurement(
+        self,
+        measurements: Mapping[SensorId, Measurement],
+    ) -> Measurement | None:
+        if self.measurement_logger is None:
+            return None
+
+        lab_values = self.measurement_logger.latest_lab_values(
+            fields=("calcium_hardness", "alkalinity", "tds")
+        )
+        estimate = estimate_calcium_saturation_index(
+            measurement_by_sensor=measurements,
+            lab_values=lab_values,
+            config=self.calcium_saturation_index_config,
+        )
+        if estimate is None:
+            return None
+
+        return Measurement(
+            sensor_id=SensorId.CALCIUM_SATURATION_INDEX,
+            observed_at=self.clock.now(),
+            kind=MeasurementKind.ESTIMATED,
+            value=round(estimate.value, 4),
+            unit="csi",
+            quality=Quality.GOOD,
+            metadata={
+                "driver": "calcium_saturation_index",
+                "source": "raw_ph,temp,lab_tests",
+                "temp_sensor_id": self.calcium_saturation_index_config.temp_sensor_id.value,
+                "ph_sensor_id": self.calcium_saturation_index_config.ph_sensor_id.value,
+                "lab_values": lab_values,
+                "tc": round(estimate.tc, 4),
+                "constant_c": round(estimate.constant_c, 4),
+            },
+        )
+
 
 def build_app_from_config(
     path: str | Path,
@@ -477,6 +533,7 @@ def build_app_from_mapping(
     live_view_config = LiveViewConfig.from_mapping(data)
     measurement_logging_config = MeasurementLoggingConfig.from_mapping(data)
     flow_estimation_config = FlowEstimationConfig.from_mapping(data)
+    calcium_saturation_index_config = CalciumSaturationIndexConfig.from_mapping(data)
     chemistry_sampling_refresh = ChemistrySamplingRefreshConfig(
         **_chemistry_sampling_refresh_values(data)
     )
@@ -574,6 +631,7 @@ def build_app_from_mapping(
         sample_timer_override=None,
         mqtt_bridge=mqtt_bridge,
         flow_estimation_config=flow_estimation_config,
+        calcium_saturation_index_config=calcium_saturation_index_config,
     )
 
 

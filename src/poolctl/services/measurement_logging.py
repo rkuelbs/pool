@@ -281,13 +281,14 @@ class MeasurementLogger:
                     alkalinity,
                     cya,
                     calcium_hardness,
+                    tds,
                     salt,
                     borates,
                     water_temp,
                     notes,
                     metadata_json
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     test.id,
@@ -300,6 +301,7 @@ class MeasurementLogger:
                     test.alkalinity,
                     test.cya,
                     test.calcium_hardness,
+                    test.tds,
                     test.salt,
                     test.borates,
                     test.water_temp,
@@ -308,6 +310,53 @@ class MeasurementLogger:
                 ),
             )
         return test.id
+
+    def latest_lab_values(
+        self,
+        *,
+        fields: tuple[str, ...],
+    ) -> dict[str, float]:
+        """
+        Return latest non-null lab value for each requested field.
+        """
+        if not fields:
+            return {}
+
+        allowed = {
+            "ph",
+            "free_chlorine",
+            "combined_chlorine",
+            "total_chlorine",
+            "alkalinity",
+            "cya",
+            "calcium_hardness",
+            "tds",
+            "salt",
+            "borates",
+            "water_temp",
+        }
+        for field in fields:
+            if field not in allowed:
+                raise ValueError(f"unsupported lab field: {field}")
+
+        latest: dict[str, float] = {}
+        with self._connect() as connection:
+            for field in fields:
+                row = connection.execute(
+                    f"""
+                    SELECT {field}
+                    FROM lab_tests
+                    WHERE {field} IS NOT NULL
+                    ORDER BY sampled_at DESC, entered_at DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+                if row is None:
+                    continue
+                value = _optional_float(row[field])
+                if value is not None:
+                    latest[field] = value
+        return latest
 
     def lab_test_history(
         self,
@@ -344,6 +393,7 @@ class MeasurementLogger:
                     alkalinity,
                     cya,
                     calcium_hardness,
+                    tds,
                     salt,
                     borates,
                     water_temp,
@@ -358,6 +408,63 @@ class MeasurementLogger:
             ).fetchall()
         tests = tuple(_lab_test_from_row(row) for row in rows)
         return tuple(reversed(tests))
+
+    def lab_value_history(
+        self,
+        *,
+        field: str,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int = 1000,
+    ) -> tuple[tuple[datetime, float], ...]:
+        if limit < 1:
+            raise ValueError("limit must be at least 1")
+
+        allowed = {
+            "ph",
+            "free_chlorine",
+            "alkalinity",
+            "calcium_hardness",
+            "cya",
+            "tds",
+            "salt",
+            "borates",
+        }
+        if field not in allowed:
+            raise ValueError(f"unsupported lab field: {field}")
+
+        clauses = [f"{field} IS NOT NULL"]
+        parameters: list[str | int] = []
+        if since is not None:
+            clauses.append("sampled_at >= ?")
+            parameters.append(since.isoformat())
+        if until is not None:
+            clauses.append("sampled_at <= ?")
+            parameters.append(until.isoformat())
+        parameters.append(limit)
+        where_clause = " AND ".join(clauses)
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT sampled_at, {field} AS value
+                FROM lab_tests
+                WHERE {where_clause}
+                ORDER BY sampled_at DESC
+                LIMIT ?
+                """,
+                parameters,
+            ).fetchall()
+
+        descending = tuple(
+            (
+                _parse_datetime(str(row["sampled_at"])),
+                float(row["value"]),
+            )
+            for row in rows
+            if row["value"] is not None
+        )
+        return tuple(reversed(descending))
 
     def _init_schema(self) -> None:
         with self._connect() as connection:
@@ -395,6 +502,7 @@ class MeasurementLogger:
                     alkalinity REAL,
                     cya REAL,
                     calcium_hardness REAL,
+                    tds REAL,
                     salt REAL,
                     borates REAL,
                     water_temp REAL,
@@ -409,6 +517,7 @@ class MeasurementLogger:
                 ON lab_tests (sampled_at)
                 """
             )
+            self._ensure_column(connection, "lab_tests", "tds", "REAL")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS measurement_rollups (
@@ -483,6 +592,19 @@ class MeasurementLogger:
         connection.row_factory = sqlite3.Row
         return connection
 
+    def _ensure_column(
+        self,
+        connection: sqlite3.Connection,
+        table: str,
+        column: str,
+        column_sql: str,
+    ) -> None:
+        rows = connection.execute(f"PRAGMA table_info({table})").fetchall()
+        names = {str(row["name"]) for row in rows}
+        if column in names:
+            return
+        connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_sql}")
+
 
 def _record_from_row(row: sqlite3.Row) -> MeasurementRecord:
     return MeasurementRecord(
@@ -522,6 +644,7 @@ def _lab_test_from_row(row: sqlite3.Row) -> LabTest:
         alkalinity=_optional_float(row["alkalinity"]),
         cya=_optional_float(row["cya"]),
         calcium_hardness=_optional_float(row["calcium_hardness"]),
+        tds=_optional_float(row["tds"]),
         salt=_optional_float(row["salt"]),
         borates=_optional_float(row["borates"]),
         water_temp=_optional_float(row["water_temp"]),

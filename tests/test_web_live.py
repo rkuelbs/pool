@@ -8,10 +8,11 @@ import pytest
 
 from poolctl.app import build_app_from_mapping
 from poolctl.config import LiveViewConfig
-from poolctl.domain.models import ActuatorId, ActuatorState, Measurement, Quality, SensorId
+from poolctl.domain.models import ActuatorId, ActuatorState, LabTest, Measurement, Quality, SensorId
 from poolctl.services.clock import SimulatedClock
 from poolctl.web.live import (
     build_history_payload,
+    build_history_series_payload,
     build_live_snapshot,
     format_measurement,
     measurement_status,
@@ -104,6 +105,33 @@ def control_config() -> dict[str, object]:
     }
 
 
+class FixedSensor:
+    def __init__(
+        self,
+        *,
+        name: str,
+        sensor_id: SensorId,
+        clock: SimulatedClock,
+        value: float,
+        unit: str,
+    ) -> None:
+        self.name = name
+        self.sensor_id = sensor_id
+        self._clock = clock
+        self._value = value
+        self._unit = unit
+
+    async def read(self) -> Measurement:
+        return Measurement(
+            sensor_id=self.sensor_id,
+            observed_at=self._clock.now(),
+            value=self._value,
+            unit=self._unit,
+            quality=Quality.GOOD,
+            metadata={"driver": self.name},
+        )
+
+
 @pytest.mark.asyncio
 async def test_build_live_snapshot_includes_runtime_sensors_and_actuators() -> None:
     app = build_app_from_mapping(live_config(), clock=make_clock())
@@ -165,6 +193,71 @@ async def test_build_live_snapshot_logs_loggable_measurements(tmp_path: Path) ->
     assert history["points"][0]["sensor_id"] == SensorId.PUMP_OUTPUT_PSI.value
     assert len(flow_history["points"]) == 1
     assert flow_history["points"][0]["sensor_id"] == SensorId.PUMP_FLOW_GPM.value
+
+
+@pytest.mark.asyncio
+async def test_build_live_snapshot_includes_csi_when_inputs_are_available(
+    tmp_path: Path,
+) -> None:
+    clock = make_clock()
+    config = {
+        "runtime": {
+            "stage": "sensor_logging",
+            "driver_profile": "simulated",
+            "enabled_layers": ["acquisition", "logging", "safety_enforcement"],
+            "enabled_actuators": [
+                "pump_motor",
+                "pump_motor_speed",
+                "booster_pump",
+                "chlorine_dosing_pump",
+            ],
+            "enabled_sensor_groups": ["chemistry_loop"],
+        },
+        "acquisition": {
+            "groups": {
+                "chemistry_loop": {
+                    "sensor_ids": ["temp", "raw_ph"],
+                    "read_interval_s": 1.0,
+                    "log_interval_s": 1.0,
+                    "requires_pump_flow": False,
+                    "oversample": {
+                        "sample_count": 1,
+                        "sample_interval_s": 0.0,
+                        "reducer": "last",
+                    },
+                }
+            }
+        },
+        "logging": {"database_path": str(tmp_path / "history.sqlite3")},
+        "live_view": {
+            "sensor_limits": {
+                "calcium_saturation_index": {
+                    "caution_min": -0.6,
+                    "normal_min": -0.3,
+                    "normal_max": 0.3,
+                    "caution_max": 0.6,
+                }
+            }
+        },
+    }
+    app = build_app_from_mapping(
+        config,
+        clock=clock,
+        sensor_drivers=[
+            FixedSensor(name="temp_sensor", sensor_id=SensorId.TEMP, clock=clock, value=84.0, unit="degF"),
+            FixedSensor(name="ph_sensor", sensor_id=SensorId.RAW_PH, clock=clock, value=7.5, unit="pH"),
+        ],
+    )
+    assert app.measurement_logger is not None
+    app.measurement_logger.log_lab_test(LabTest(sampled_at=clock.now(), calcium_hardness=300.0))
+    app.measurement_logger.log_lab_test(LabTest(sampled_at=clock.now(), alkalinity=100.0))
+    app.measurement_logger.log_lab_test(LabTest(sampled_at=clock.now(), tds=1000.0))
+
+    snapshot = await build_live_snapshot(app)
+
+    csi = snapshot["sensors"][SensorId.CALCIUM_SATURATION_INDEX.value]
+    assert csi["label"] == "CSI"
+    assert csi["unit"] == "csi"
 
 
 @pytest.mark.asyncio
@@ -313,3 +406,92 @@ def test_history_payload_can_filter_to_validated_measurements(tmp_path: Path) ->
 
     assert all(point["quality"] == "good" for point in validated["points"])
     assert any(point["quality"] == "suspect" for point in raw["points"])
+
+
+def test_history_series_payload_can_include_lab_test_signals(tmp_path: Path) -> None:
+    app = build_app_from_mapping(
+        logging_live_config(str(tmp_path / "history.sqlite3")),
+        clock=make_clock(),
+    )
+    assert app.measurement_logger is not None
+    sampled_at = app.clock.now()
+    app.measurement_logger.log_lab_test(
+        LabTest(
+            sampled_at=sampled_at,
+            ph=7.55,
+            free_chlorine=3.2,
+            alkalinity=95.0,
+            calcium_hardness=280.0,
+            cya=45.0,
+            tds=1000.0,
+            salt=3100.0,
+            borates=35.0,
+        )
+    )
+
+    payload = build_history_series_payload(
+        app,
+        sensor_ids=(
+            "lab_ph",
+            "lab_free_chlorine",
+            "lab_alkalinity",
+            "lab_calcium_hardness",
+            "lab_cya",
+            "lab_tds",
+            "lab_salt",
+            "lab_borates",
+        ),
+        hours=24.0,
+        limit=100,
+        validated_only=True,
+    )
+
+    by_id = {series["sensor_id"]: series for series in payload["series"]}
+    assert by_id["lab_ph"]["points"][0]["value"] == 7.55
+    assert by_id["lab_free_chlorine"]["points"][0]["value"] == 3.2
+    assert by_id["lab_alkalinity"]["points"][0]["value"] == 95.0
+    assert by_id["lab_calcium_hardness"]["points"][0]["value"] == 280.0
+    assert by_id["lab_cya"]["points"][0]["value"] == 45.0
+    assert by_id["lab_tds"]["points"][0]["value"] == 1000.0
+    assert by_id["lab_salt"]["points"][0]["value"] == 3100.0
+    assert by_id["lab_borates"]["points"][0]["value"] == 35.0
+
+
+def test_history_series_payload_accepts_multiple_standard_sensor_id_strings(tmp_path: Path) -> None:
+    app = build_app_from_mapping(
+        logging_live_config(str(tmp_path / "history.sqlite3")),
+        clock=make_clock(),
+    )
+    assert app.measurement_logger is not None
+
+    now = app.clock.now()
+    app.measurement_logger.log_measurements(
+        (
+            Measurement(
+                sensor_id=SensorId.PUMP_OUTPUT_PSI,
+                observed_at=now,
+                value=12.0,
+                unit="psi",
+                quality=Quality.GOOD,
+            ),
+            Measurement(
+                sensor_id=SensorId.FILTER_OUTPUT_PSI,
+                observed_at=now,
+                value=9.5,
+                unit="psi",
+                quality=Quality.GOOD,
+            ),
+        )
+    )
+
+    payload = build_history_series_payload(
+        app,
+        sensor_ids=("pump_output_psi", "filter_output_psi"),
+        hours=24.0,
+        limit=100,
+        validated_only=True,
+    )
+
+    by_id = {series["sensor_id"]: series for series in payload["series"]}
+    assert by_id["pump_output_psi"]["points"][0]["value"] == 12.0
+    assert by_id["filter_output_psi"]["points"][0]["value"] == 9.5

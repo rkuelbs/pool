@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from poolctl.app import PoolControllerApp, TimerOverrideState
@@ -17,6 +17,7 @@ SENSOR_LABELS = {
     SensorId.PUMP_FLOW_GPM: "Pump flow",
     SensorId.FILTER_RESTRICTION_METRIC: "Filter restriction",
     SensorId.FILTER_RESTRICTION_PERCENT: "Filter restriction %",
+    SensorId.CALCIUM_SATURATION_INDEX: "CSI",
     SensorId.RAW_ORP: "ORP",
     SensorId.ORP_TEMP: "ORP temp",
     SensorId.RAW_PH: "pH",
@@ -24,6 +25,59 @@ SENSOR_LABELS = {
     SensorId.TEMP: "Water temp",
     SensorId.TANK_LEVEL: "Tank level",
 }
+
+LAB_HISTORY_SERIES: dict[str, dict[str, Any]] = {
+    "lab_ph": {
+        "field": "ph",
+        "label": "pH (tested)",
+        "unit": "pH",
+        "decimals": 2,
+        "status_sensor_id": SensorId.RAW_PH,
+    },
+    "lab_free_chlorine": {
+        "field": "free_chlorine",
+        "label": "Free Chlorine (tested)",
+        "unit": "ppm",
+        "decimals": 2,
+    },
+    "lab_alkalinity": {
+        "field": "alkalinity",
+        "label": "Alkalinity (tested)",
+        "unit": "ppm",
+        "decimals": 1,
+    },
+    "lab_calcium_hardness": {
+        "field": "calcium_hardness",
+        "label": "Calcium Hardness (tested)",
+        "unit": "ppm",
+        "decimals": 1,
+    },
+    "lab_cya": {
+        "field": "cya",
+        "label": "CYA (tested)",
+        "unit": "ppm",
+        "decimals": 1,
+    },
+    "lab_tds": {
+        "field": "tds",
+        "label": "TDS (tested)",
+        "unit": "ppm",
+        "decimals": 1,
+    },
+    "lab_salt": {
+        "field": "salt",
+        "label": "Salt (tested)",
+        "unit": "ppm",
+        "decimals": 1,
+    },
+    "lab_borates": {
+        "field": "borates",
+        "label": "Borates (tested)",
+        "unit": "ppm",
+        "decimals": 1,
+    },
+}
+LAB_HISTORY_IDS = frozenset(LAB_HISTORY_SERIES.keys())
 
 ACTUATOR_LABELS = {
     ActuatorId.PUMP_MOTOR: "Pump",
@@ -39,6 +93,9 @@ async def build_live_snapshot(app: PoolControllerApp) -> dict[str, Any]:
     """
     tick = await app.tick()
     latest_measurements = app.acquisition_service.latest_measurements if app.acquisition_service else {}
+    snapshot_measurements = dict(latest_measurements)
+    if tick.csi_measurement is not None:
+        snapshot_measurements[tick.csi_measurement.sensor_id] = tick.csi_measurement
     return {
         "observed_at": tick.observed_at.isoformat(),
         "runtime": {
@@ -52,7 +109,7 @@ async def build_live_snapshot(app: PoolControllerApp) -> dict[str, Any]:
                 measurement,
                 app.live_view_config,
             )
-            for sensor_id, measurement in latest_measurements.items()
+            for sensor_id, measurement in snapshot_measurements.items()
         },
         "actuators": {
             actuator_id.value: {
@@ -170,7 +227,7 @@ def build_history_payload(
 def build_history_series_payload(
     app: PoolControllerApp,
     *,
-    sensor_ids: tuple[SensorId, ...],
+    sensor_ids: tuple[str | SensorId, ...],
     hours: float,
     limit: int,
     validated_only: bool = True,
@@ -188,7 +245,7 @@ def build_history_series_payload(
 
     if app.measurement_logger is None:
         return {
-            "sensor_ids": [sensor_id.value for sensor_id in sensor_ids],
+            "sensor_ids": [sensor_id.value if isinstance(sensor_id, SensorId) else str(sensor_id) for sensor_id in sensor_ids],
             "series": [],
         }
 
@@ -196,34 +253,82 @@ def build_history_series_payload(
     since = now - timedelta(hours=hours)
     bucket_seconds = history_bucket_seconds(hours=hours, resolution=resolution, validated_only=validated_only)
     series = []
-    for sensor_id in sensor_ids:
-        records = app.measurement_logger.history_with_rollup(
-            sensor_id=sensor_id,
+    for sensor_token in sensor_ids:
+        sensor_id: SensorId | None = None
+        if isinstance(sensor_token, SensorId):
+            sensor_id = sensor_token
+        else:
+            token_value = str(sensor_token)
+            if token_value in LAB_HISTORY_SERIES:
+                sensor_id = None
+            else:
+                try:
+                    sensor_id = SensorId(token_value)
+                except ValueError as error:
+                    raise ValueError(f"invalid sensor_id: {token_value}") from error
+
+        if sensor_id is not None:
+            records = app.measurement_logger.history_with_rollup(
+                sensor_id=sensor_id,
+                since=since,
+                until=now,
+                limit=limit,
+                qualities=(Quality.GOOD,) if validated_only else None,
+                bucket_seconds=bucket_seconds,
+                max_points=max_points,
+            )
+            series.append(
+                {
+                    "sensor_id": sensor_id.value,
+                    "label": SENSOR_LABELS.get(sensor_id, sensor_id.value),
+                    "bucket_seconds": bucket_seconds,
+                    "points": [
+                        measurement_payload(
+                            record.sensor_id,
+                            record.to_measurement(),
+                            app.live_view_config,
+                        )
+                        for record in records
+                    ],
+                }
+            )
+            continue
+
+        lab_sensor_id = str(sensor_token)
+        lab_spec = LAB_HISTORY_SERIES.get(lab_sensor_id)
+        if lab_spec is None:
+            raise ValueError(f"invalid sensor_id: {lab_sensor_id}")
+
+        lab_points = app.measurement_logger.lab_value_history(
+            field=str(lab_spec["field"]),
             since=since,
             until=now,
             limit=limit,
-            qualities=(Quality.GOOD,) if validated_only else None,
-            bucket_seconds=bucket_seconds,
-            max_points=max_points,
         )
+        points = [
+            _lab_history_point_payload(
+                sensor_id=lab_sensor_id,
+                label=str(lab_spec["label"]),
+                observed_at=observed_at,
+                value=value,
+                unit=str(lab_spec["unit"]),
+                decimals=int(lab_spec["decimals"]),
+                live_view_config=app.live_view_config,
+                status_sensor_id=lab_spec.get("status_sensor_id"),
+            )
+            for observed_at, value in lab_points
+        ]
         series.append(
             {
-                "sensor_id": sensor_id.value,
-                "label": SENSOR_LABELS.get(sensor_id, sensor_id.value),
-                "bucket_seconds": bucket_seconds,
-                "points": [
-                    measurement_payload(
-                        record.sensor_id,
-                        record.to_measurement(),
-                        app.live_view_config,
-                    )
-                    for record in records
-                ],
+                "sensor_id": lab_sensor_id,
+                "label": str(lab_spec["label"]),
+                "bucket_seconds": None,
+                "points": points,
             }
         )
 
     return {
-        "sensor_ids": [sensor_id.value for sensor_id in sensor_ids],
+        "sensor_ids": [sensor_id.value if isinstance(sensor_id, SensorId) else str(sensor_id) for sensor_id in sensor_ids],
         "validated_only": validated_only,
         "bucket_seconds": bucket_seconds,
         "series": series,
@@ -346,6 +451,9 @@ def format_measurement(measurement: Measurement) -> str:
     if measurement.unit == "restriction_index":
         return f"{value:.2f} R"
 
+    if measurement.unit == "csi":
+        return f"{value:.2f}"
+
     if measurement.unit in {"degF", "degC"}:
         return f"{value:.1f} {measurement.unit}"
 
@@ -353,6 +461,48 @@ def format_measurement(measurement: Measurement) -> str:
         return f"{value:.3f} V"
 
     return f"{value:g} {measurement.unit}"
+
+
+def _lab_history_point_payload(
+    *,
+    sensor_id: str,
+    label: str,
+    observed_at: datetime,
+    value: float,
+    unit: str,
+    decimals: int,
+    live_view_config: LiveViewConfig,
+    status_sensor_id: SensorId | None = None,
+) -> dict[str, Any]:
+    display = f"{value:.{decimals}f} {unit}" if unit != "pH" else f"{value:.{decimals}f}"
+    status = "unknown"
+    status_label = SENSOR_STATUS_LABELS[status]
+    limits = None
+    if status_sensor_id is not None:
+        proxy = Measurement(
+            sensor_id=status_sensor_id,
+            observed_at=observed_at,
+            value=value,
+            unit=unit,
+            quality=Quality.GOOD,
+        )
+        status = measurement_status(status_sensor_id, proxy, live_view_config)
+        status_label = SENSOR_STATUS_LABELS[status]
+        limits = sensor_limits_payload(status_sensor_id, live_view_config)
+    return {
+        "sensor_id": sensor_id,
+        "label": label,
+        "value": value,
+        "unit": unit,
+        "display": display,
+        "quality": Quality.GOOD.value,
+        "status": status,
+        "status_label": status_label,
+        "limits": limits,
+        "kind": "manual",
+        "observed_at": observed_at.isoformat(),
+        "metadata": {"source": "lab_test"},
+    }
 
 
 def safety_payload(app: PoolControllerApp) -> dict[str, Any]:

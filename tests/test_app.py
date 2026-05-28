@@ -12,6 +12,7 @@ from poolctl.domain.models import (
     ActuatorId,
     ActuatorState,
     CommandSource,
+    LabTest,
     Measurement,
     Quality,
     SensorId,
@@ -29,18 +30,20 @@ class FixedSensor:
         sensor_id: SensorId,
         clock: SimulatedClock,
         value: float,
+        unit: str = "psi",
     ) -> None:
         self.name = name
         self.sensor_id = sensor_id
         self._clock = clock
         self._value = value
+        self._unit = unit
 
     async def read(self) -> Measurement:
         return Measurement(
             sensor_id=self.sensor_id,
             observed_at=self._clock.now(),
             value=self._value,
-            unit="psi",
+            unit=self._unit,
             quality=Quality.GOOD,
             metadata={"driver": self.name},
         )
@@ -380,3 +383,80 @@ async def test_chemistry_sampling_refresh_triggers_pump_run_after_long_off_time(
         for result in second.timer_results
     )
     assert app.active_sample_timer_override() is not None
+
+
+@pytest.mark.asyncio
+async def test_tick_computes_csi_from_valid_live_temp_ph_and_latest_sparse_lab_values(
+    tmp_path: Path,
+) -> None:
+    clock = make_clock()
+    temp_sensor = FixedSensor(
+        name="temp_sensor",
+        sensor_id=SensorId.TEMP,
+        clock=clock,
+        value=84.0,
+        unit="degF",
+    )
+    ph_sensor = FixedSensor(
+        name="ph_sensor",
+        sensor_id=SensorId.RAW_PH,
+        clock=clock,
+        value=7.5,
+        unit="pH",
+    )
+    config = {
+        "runtime": {
+            "stage": "sensor_logging",
+            "driver_profile": "simulated",
+            "enabled_layers": ["acquisition", "logging", "safety_enforcement"],
+            "enabled_actuators": [
+                "pump_motor",
+                "pump_motor_speed",
+                "booster_pump",
+                "chlorine_dosing_pump",
+            ],
+            "enabled_sensor_groups": ["chemistry_loop"],
+        },
+        "acquisition": {
+            "groups": {
+                "chemistry_loop": {
+                    "sensor_ids": ["temp", "raw_ph"],
+                    "read_interval_s": 1.0,
+                    "log_interval_s": 1.0,
+                    "requires_pump_flow": False,
+                    "oversample": {
+                        "sample_count": 1,
+                        "sample_interval_s": 0.0,
+                        "reducer": "last",
+                    },
+                }
+            }
+        },
+        "logging": {
+            "database_path": str(tmp_path / "measurements.sqlite3"),
+        },
+    }
+    app = build_app_from_mapping(config, clock=clock, sensor_drivers=[temp_sensor, ph_sensor])
+    assert app.measurement_logger is not None
+
+    app.measurement_logger.log_lab_test(
+        LabTest(sampled_at=clock.now(), alkalinity=100.0)
+    )
+    app.measurement_logger.log_lab_test(
+        LabTest(sampled_at=clock.now(), calcium_hardness=300.0)
+    )
+    app.measurement_logger.log_lab_test(
+        LabTest(sampled_at=clock.now(), tds=1000.0)
+    )
+
+    tick = await app.tick(force_acquisition=True)
+
+    assert tick.csi_measurement is not None
+    assert tick.csi_measurement.sensor_id == SensorId.CALCIUM_SATURATION_INDEX
+    assert abs(tick.csi_measurement.value - 0.1211) < 0.02
+
+    records = app.measurement_logger.history(
+        sensor_id=SensorId.CALCIUM_SATURATION_INDEX,
+        limit=10,
+    )
+    assert len(records) == 1
