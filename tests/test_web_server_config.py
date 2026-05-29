@@ -306,6 +306,7 @@ def test_health_payload_includes_status_fields() -> None:
     assert "modbus" in payload
     assert "acquisition" in payload
     assert "mqtt" in payload
+    assert "weather" in payload
 
 
 def test_lab_test_api_helpers_store_and_list(tmp_path: Path) -> None:

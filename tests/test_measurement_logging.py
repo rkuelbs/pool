@@ -8,6 +8,7 @@ from poolctl.services.measurement_logging import (
     MeasurementLogger,
     MeasurementLoggingConfig,
 )
+from poolctl.services.weather import WeatherObservation
 
 
 def test_measurement_logger_persists_and_queries_history(tmp_path: Path) -> None:
@@ -220,3 +221,47 @@ def test_measurement_logger_history_with_rollup_respects_max_points(tmp_path: Pa
     )
 
     assert len(records) <= 120
+
+
+def test_measurement_logger_persists_and_queries_weather_history(tmp_path: Path) -> None:
+    logger = MeasurementLogger(
+        MeasurementLoggingConfig(database_path=tmp_path / "measurements.sqlite3")
+    )
+    now = datetime(2026, 5, 22, 12, 0, tzinfo=timezone.utc)
+    older = WeatherObservation(
+        observed_at=now - timedelta(hours=1),
+        source="open-meteo",
+        latitude=29.75,
+        longitude=-95.35,
+        values={"temperature_2m": 82.5, "cloud_cover": 40.0, "uv_index": 6.0, "precipitation": 0.0},
+        units_by_field={"temperature_2m": "degF"},
+    )
+    recent = WeatherObservation(
+        observed_at=now,
+        source="open-meteo",
+        latitude=29.75,
+        longitude=-95.35,
+        values={"temperature_2m": 84.0, "cloud_cover": 30.0, "uv_index": 7.0, "precipitation": 0.02},
+        units_by_field={"temperature_2m": "degF"},
+    )
+    logger.log_weather_observation(older)
+    logger.log_weather_observation(recent)
+
+    temp_points = logger.weather_history(
+        field="temperature_2m",
+        since=now - timedelta(hours=2),
+        until=now + timedelta(minutes=1),
+        limit=10,
+    )
+    uv_points = logger.weather_history(
+        field="uv_index",
+        since=now - timedelta(hours=2),
+        until=now + timedelta(minutes=1),
+        limit=10,
+    )
+
+    assert len(temp_points) == 2
+    assert temp_points[0][1] == 82.5
+    assert temp_points[1][1] == 84.0
+    assert len(uv_points) == 2
+    assert uv_points[1][1] == 7.0

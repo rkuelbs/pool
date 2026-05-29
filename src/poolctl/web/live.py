@@ -79,6 +79,30 @@ LAB_HISTORY_SERIES: dict[str, dict[str, Any]] = {
 }
 LAB_HISTORY_IDS = frozenset(LAB_HISTORY_SERIES.keys())
 
+WEATHER_HISTORY_SERIES: dict[str, dict[str, Any]] = {
+    "weather_temperature_2m": {"field": "temperature_2m", "label": "Weather Temp", "unit": "degF", "decimals": 1},
+    "weather_relative_humidity_2m": {"field": "relative_humidity_2m", "label": "Weather RH", "unit": "%", "decimals": 1},
+    "weather_dew_point_2m": {"field": "dew_point_2m", "label": "Weather Dew Point", "unit": "degF", "decimals": 1},
+    "weather_apparent_temperature": {"field": "apparent_temperature", "label": "Weather Feels Like", "unit": "degF", "decimals": 1},
+    "weather_precipitation": {"field": "precipitation", "label": "Weather Precip", "unit": "in", "decimals": 3},
+    "weather_rain": {"field": "rain", "label": "Weather Rain", "unit": "in", "decimals": 3},
+    "weather_showers": {"field": "showers", "label": "Weather Showers", "unit": "in", "decimals": 3},
+    "weather_weather_code": {"field": "weather_code", "label": "Weather Code", "unit": "code", "decimals": 0},
+    "weather_cloud_cover": {"field": "cloud_cover", "label": "Weather Cloud Cover", "unit": "%", "decimals": 1},
+    "weather_wind_speed_10m": {"field": "wind_speed_10m", "label": "Weather Wind Speed", "unit": "mph", "decimals": 1},
+    "weather_wind_direction_10m": {"field": "wind_direction_10m", "label": "Weather Wind Direction", "unit": "deg", "decimals": 0},
+    "weather_wind_gusts_10m": {"field": "wind_gusts_10m", "label": "Weather Wind Gusts", "unit": "mph", "decimals": 1},
+    "weather_shortwave_radiation": {"field": "shortwave_radiation", "label": "Weather Shortwave Rad", "unit": "W/m2", "decimals": 1},
+    "weather_direct_radiation": {"field": "direct_radiation", "label": "Weather Direct Rad", "unit": "W/m2", "decimals": 1},
+    "weather_diffuse_radiation": {"field": "diffuse_radiation", "label": "Weather Diffuse Rad", "unit": "W/m2", "decimals": 1},
+    "weather_uv_index": {"field": "uv_index", "label": "Weather UV Index", "unit": "index", "decimals": 1},
+    "weather_surface_pressure": {"field": "surface_pressure", "label": "Weather Surface Pressure", "unit": "hPa", "decimals": 1},
+    "weather_et0_fao_evapotranspiration": {"field": "et0_fao_evapotranspiration", "label": "Weather ET0", "unit": "in", "decimals": 4},
+    "weather_soil_temperature_0cm": {"field": "soil_temperature_0cm", "label": "Weather Soil Temp", "unit": "degF", "decimals": 1},
+}
+WEATHER_HISTORY_IDS = frozenset(WEATHER_HISTORY_SERIES.keys())
+EXTRA_HISTORY_IDS = LAB_HISTORY_IDS | WEATHER_HISTORY_IDS
+
 ACTUATOR_LABELS = {
     ActuatorId.PUMP_MOTOR: "Pump",
     ActuatorId.PUMP_MOTOR_SPEED: "Pump speed",
@@ -130,6 +154,8 @@ async def build_live_snapshot(app: PoolControllerApp) -> dict[str, Any]:
             "loggable_measurement_count": len(tick.loggable_measurements),
             "logged_measurement_count": tick.logged_measurement_count,
             "logged_lab_test_count": tick.logged_lab_test_count,
+            "logged_weather_count": tick.weather_result.logged_count,
+            "weather_poll_error": tick.weather_result.error,
             "mqtt_result_count": len(tick.mqtt_results),
             "acquisition_failures": [
                 {
@@ -259,7 +285,7 @@ def build_history_series_payload(
             sensor_id = sensor_token
         else:
             token_value = str(sensor_token)
-            if token_value in LAB_HISTORY_SERIES:
+            if token_value in EXTRA_HISTORY_IDS:
                 sensor_id = None
             else:
                 try:
@@ -294,34 +320,68 @@ def build_history_series_payload(
             )
             continue
 
-        lab_sensor_id = str(sensor_token)
-        lab_spec = LAB_HISTORY_SERIES.get(lab_sensor_id)
-        if lab_spec is None:
-            raise ValueError(f"invalid sensor_id: {lab_sensor_id}")
+        token_id = str(sensor_token)
+        lab_spec = LAB_HISTORY_SERIES.get(token_id)
+        if lab_spec is not None:
+            lab_points = app.measurement_logger.lab_value_history(
+                field=str(lab_spec["field"]),
+                since=since,
+                until=now,
+                limit=limit,
+            )
+            points = [
+                _lab_history_point_payload(
+                    sensor_id=token_id,
+                    label=str(lab_spec["label"]),
+                    observed_at=observed_at,
+                    value=value,
+                    unit=str(lab_spec["unit"]),
+                    decimals=int(lab_spec["decimals"]),
+                    live_view_config=app.live_view_config,
+                    status_sensor_id=lab_spec.get("status_sensor_id"),
+                )
+                for observed_at, value in lab_points
+            ]
+            series.append(
+                {
+                    "sensor_id": token_id,
+                    "label": str(lab_spec["label"]),
+                    "bucket_seconds": None,
+                    "points": points,
+                }
+            )
+            continue
 
-        lab_points = app.measurement_logger.lab_value_history(
-            field=str(lab_spec["field"]),
+        weather_spec = WEATHER_HISTORY_SERIES.get(token_id)
+        if weather_spec is None:
+            raise ValueError(f"invalid sensor_id: {token_id}")
+        field = str(weather_spec["field"])
+        weather_points = app.measurement_logger.weather_history(
+            field=field,
             since=since,
             until=now,
             limit=limit,
         )
+        unit = (
+            app.weather_service.latest_unit(field)
+            if app.weather_service is not None
+            else None
+        ) or str(weather_spec["unit"])
         points = [
-            _lab_history_point_payload(
-                sensor_id=lab_sensor_id,
-                label=str(lab_spec["label"]),
+            _weather_history_point_payload(
+                sensor_id=token_id,
+                label=str(weather_spec["label"]),
                 observed_at=observed_at,
                 value=value,
-                unit=str(lab_spec["unit"]),
-                decimals=int(lab_spec["decimals"]),
-                live_view_config=app.live_view_config,
-                status_sensor_id=lab_spec.get("status_sensor_id"),
+                unit=unit,
+                decimals=int(weather_spec["decimals"]),
             )
-            for observed_at, value in lab_points
+            for observed_at, value in weather_points
         ]
         series.append(
             {
-                "sensor_id": lab_sensor_id,
-                "label": str(lab_spec["label"]),
+                "sensor_id": token_id,
+                "label": str(weather_spec["label"]),
                 "bucket_seconds": None,
                 "points": points,
             }
@@ -502,6 +562,37 @@ def _lab_history_point_payload(
         "kind": "manual",
         "observed_at": observed_at.isoformat(),
         "metadata": {"source": "lab_test"},
+    }
+
+
+def _weather_history_point_payload(
+    *,
+    sensor_id: str,
+    label: str,
+    observed_at: datetime,
+    value: float,
+    unit: str,
+    decimals: int,
+) -> dict[str, Any]:
+    if unit in {"%", "code", "index"}:
+        display = f"{value:.{decimals}f} {unit}" if unit != "index" else f"{value:.{decimals}f}"
+    elif unit in {"degF", "degC"}:
+        display = f"{value:.{decimals}f} {unit}"
+    else:
+        display = f"{value:.{decimals}f} {unit}"
+    return {
+        "sensor_id": sensor_id,
+        "label": label,
+        "value": value,
+        "unit": unit,
+        "display": display,
+        "quality": Quality.GOOD.value,
+        "status": "unknown",
+        "status_label": SENSOR_STATUS_LABELS["unknown"],
+        "limits": None,
+        "kind": "raw",
+        "observed_at": observed_at.isoformat(),
+        "metadata": {"source": "weather"},
     }
 
 

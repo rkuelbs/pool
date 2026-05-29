@@ -10,6 +10,7 @@ from poolctl.app import build_app_from_mapping
 from poolctl.config import LiveViewConfig
 from poolctl.domain.models import ActuatorId, ActuatorState, LabTest, Measurement, Quality, SensorId
 from poolctl.services.clock import SimulatedClock
+from poolctl.services.weather import WeatherObservation
 from poolctl.web.live import (
     build_history_payload,
     build_history_series_payload,
@@ -495,3 +496,51 @@ def test_history_series_payload_accepts_multiple_standard_sensor_id_strings(tmp_
     by_id = {series["sensor_id"]: series for series in payload["series"]}
     assert by_id["pump_output_psi"]["points"][0]["value"] == 12.0
     assert by_id["filter_output_psi"]["points"][0]["value"] == 9.5
+
+
+def test_history_series_payload_can_include_weather_signals(tmp_path: Path) -> None:
+    app = build_app_from_mapping(
+        logging_live_config(str(tmp_path / "history.sqlite3")),
+        clock=make_clock(),
+    )
+    assert app.measurement_logger is not None
+    observed_at = app.clock.now()
+    app.measurement_logger.log_weather_observation(
+        WeatherObservation(
+            observed_at=observed_at,
+            source="open-meteo",
+            latitude=29.75,
+            longitude=-95.35,
+            values={
+                "temperature_2m": 83.1,
+                "cloud_cover": 45.0,
+                "precipitation": 0.03,
+                "uv_index": 6.2,
+            },
+            units_by_field={
+                "temperature_2m": "degF",
+                "cloud_cover": "%",
+                "precipitation": "in",
+                "uv_index": "index",
+            },
+        )
+    )
+
+    payload = build_history_series_payload(
+        app,
+        sensor_ids=(
+            "weather_temperature_2m",
+            "weather_cloud_cover",
+            "weather_precipitation",
+            "weather_uv_index",
+        ),
+        hours=24.0,
+        limit=100,
+        validated_only=True,
+    )
+
+    by_id = {series["sensor_id"]: series for series in payload["series"]}
+    assert by_id["weather_temperature_2m"]["points"][0]["value"] == 83.1
+    assert by_id["weather_cloud_cover"]["points"][0]["value"] == 45.0
+    assert by_id["weather_precipitation"]["points"][0]["value"] == 0.03
+    assert by_id["weather_uv_index"]["points"][0]["value"] == 6.2

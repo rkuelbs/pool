@@ -31,7 +31,7 @@ from poolctl.services.measurement_logging import MeasurementLoggingConfig
 from poolctl.services.pump_timer import PumpTimerConfig, PumpTimerOverride
 from poolctl.services.safety import SafetyConfig
 from poolctl.web.live import (
-    LAB_HISTORY_IDS,
+    EXTRA_HISTORY_IDS,
     build_history_payload,
     build_history_series_payload,
     build_live_snapshot,
@@ -217,7 +217,7 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             resolution = _string_query_value(query, "resolution", "auto")
             max_points = _int_query_value(query, "max_points", 1500)
 
-            if len(sensor_ids) == 1 and sensor_ids[0] not in LAB_HISTORY_IDS:
+            if len(sensor_ids) == 1 and sensor_ids[0] not in EXTRA_HISTORY_IDS:
                 payload = build_history_payload(
                     self.app,
                     sensor_id=SensorId(sensor_ids[0]),
@@ -704,7 +704,7 @@ def _sensor_ids_query_value(query: dict[str, list[str]]) -> list[str]:
             parts = [value]
 
         for part in parts:
-            if part in LAB_HISTORY_IDS:
+            if part in EXTRA_HISTORY_IDS:
                 sensor_ids.append(part)
                 continue
             try:
@@ -988,6 +988,11 @@ def build_health_payload(app: PoolControllerApp) -> dict[str, Any]:
             app.mqtt_bridge.status_payload()
             if app.mqtt_bridge is not None
             else {"enabled": False, "connected": False}
+        ),
+        "weather": (
+            app.weather_service.status_payload()
+            if app.weather_service is not None
+            else {"enabled": False}
         ),
     }
 

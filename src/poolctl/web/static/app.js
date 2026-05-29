@@ -30,6 +30,25 @@ const SENSOR_LABELS = {
   lab_tds: "TDS (tested)",
   lab_salt: "Salt (tested)",
   lab_borates: "Borates (tested)",
+  weather_temperature_2m: "Weather Temp",
+  weather_relative_humidity_2m: "Weather RH",
+  weather_dew_point_2m: "Weather Dew Point",
+  weather_apparent_temperature: "Weather Feels Like",
+  weather_precipitation: "Weather Precip",
+  weather_rain: "Weather Rain",
+  weather_showers: "Weather Showers",
+  weather_weather_code: "Weather Code",
+  weather_cloud_cover: "Weather Cloud Cover",
+  weather_wind_speed_10m: "Weather Wind Speed",
+  weather_wind_direction_10m: "Weather Wind Direction",
+  weather_wind_gusts_10m: "Weather Wind Gusts",
+  weather_shortwave_radiation: "Weather Shortwave Rad",
+  weather_direct_radiation: "Weather Direct Rad",
+  weather_diffuse_radiation: "Weather Diffuse Rad",
+  weather_uv_index: "Weather UV Index",
+  weather_surface_pressure: "Weather Surface Pressure",
+  weather_et0_fao_evapotranspiration: "Weather ET0",
+  weather_soil_temperature_0cm: "Weather Soil Temp",
   raw_orp: "ORP",
   orp_temp: "ORP temp",
   raw_ph: "pH",
@@ -52,6 +71,25 @@ const HISTORY_SENSOR_ORDER = [
   "lab_tds",
   "lab_salt",
   "lab_borates",
+  "weather_temperature_2m",
+  "weather_relative_humidity_2m",
+  "weather_dew_point_2m",
+  "weather_apparent_temperature",
+  "weather_precipitation",
+  "weather_rain",
+  "weather_showers",
+  "weather_weather_code",
+  "weather_cloud_cover",
+  "weather_wind_speed_10m",
+  "weather_wind_direction_10m",
+  "weather_wind_gusts_10m",
+  "weather_shortwave_radiation",
+  "weather_direct_radiation",
+  "weather_diffuse_radiation",
+  "weather_uv_index",
+  "weather_surface_pressure",
+  "weather_et0_fao_evapotranspiration",
+  "weather_soil_temperature_0cm",
 ];
 
 const LIVE_SENSOR_ORDER = [...SENSOR_ORDER, "calcium_saturation_index"];
@@ -697,6 +735,12 @@ function renderEvents(tick) {
   }
   if (tick.logged_lab_test_count) {
     lines.push(`Logged lab tests: ${tick.logged_lab_test_count}`);
+  }
+  if (tick.logged_weather_count) {
+    lines.push(`Logged weather rows: ${tick.logged_weather_count}`);
+  }
+  if (tick.weather_poll_error) {
+    lines.push(`Weather poll error: ${tick.weather_poll_error}`);
   }
   if (tick.mqtt_result_count) {
     lines.push(`MQTT commands processed: ${tick.mqtt_result_count}`);

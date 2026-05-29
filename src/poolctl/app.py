@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -52,6 +52,7 @@ from poolctl.services.saturation_index import (
     estimate_calcium_saturation_index,
 )
 from poolctl.services.safety import SafetyConfig, SafetyGate
+from poolctl.services.weather import WeatherConfig, WeatherPollResult, WeatherService
 
 
 @dataclass(frozen=True)
@@ -69,6 +70,7 @@ class AppTickResult:
     logged_lab_test_count: int = 0
     flow_estimates: FlowEstimates = FlowEstimates()
     csi_measurement: Measurement | None = None
+    weather_result: WeatherPollResult = field(default_factory=WeatherPollResult)
 
     @property
     def measurements(self) -> tuple[Measurement, ...]:
@@ -144,6 +146,8 @@ class PoolControllerApp:
     mqtt_bridge: MqttBridge | None = None
     flow_estimation_config: FlowEstimationConfig = FlowEstimationConfig()
     calcium_saturation_index_config: CalciumSaturationIndexConfig = CalciumSaturationIndexConfig()
+    weather_config: WeatherConfig = WeatherConfig()
+    weather_service: WeatherService | None = None
 
     async def tick(self, *, force_acquisition: bool = False) -> AppTickResult:
         await self.router.refresh_states()
@@ -184,6 +188,7 @@ class PoolControllerApp:
         if should_log_csi and csi_measurement is not None:
             loggable_measurements = tuple(loggable_measurements) + (csi_measurement,)
         mqtt_results, logged_lab_test_count = await self._process_mqtt_inputs(acquisition.measurements)
+        weather_result = self._poll_weather()
         logged_measurement_count = self._log_measurements(loggable_measurements)
         self._update_sampling_override()
         timer_results = await self._run_pump_timer()
@@ -215,6 +220,7 @@ class PoolControllerApp:
             logged_lab_test_count=logged_lab_test_count,
             flow_estimates=flow_estimates,
             csi_measurement=csi_measurement,
+            weather_result=weather_result,
         )
 
     def apply_pump_timer_config(self, config: PumpTimerConfig) -> None:
@@ -324,6 +330,18 @@ class PoolControllerApp:
             return 0
 
         return self.measurement_logger.log_measurements(measurements)
+
+    def _poll_weather(self) -> WeatherPollResult:
+        if self.weather_service is None:
+            return WeatherPollResult()
+        return self.weather_service.poll_due(
+            now=self.clock.now(),
+            log_observation=(
+                self.measurement_logger.log_weather_observation
+                if self.measurement_logger is not None
+                else None
+            ),
+        )
 
     def _update_sampling_override(self) -> None:
         if not self.chemistry_sampling_refresh.enabled:
@@ -538,6 +556,7 @@ def build_app_from_mapping(
         **_chemistry_sampling_refresh_values(data)
     )
     mqtt_config = MqttBridgeConfig.from_mapping(data)
+    weather_config = WeatherConfig.from_mapping(data)
 
     built_clock = clock if clock is not None else _default_clock(runtime_config)
     simulated_plant: SimulatedPlant | None = None
@@ -612,6 +631,10 @@ def build_app_from_mapping(
     if runtime_config.layer_enabled(FeatureLayer.MQTT_BRIDGE) and mqtt_config.enabled:
         mqtt_bridge = MqttBridge(mqtt_config, clock=built_clock)
 
+    weather_service: WeatherService | None = None
+    if weather_config.enabled:
+        weather_service = WeatherService(weather_config)
+
     return PoolControllerApp(
         runtime_config=runtime_config,
         safety_config=safety_config,
@@ -632,6 +655,8 @@ def build_app_from_mapping(
         mqtt_bridge=mqtt_bridge,
         flow_estimation_config=flow_estimation_config,
         calcium_saturation_index_config=calcium_saturation_index_config,
+        weather_config=weather_config,
+        weather_service=weather_service,
     )
 
 

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from poolctl.domain.models import LabTest, Measurement, MeasurementKind, Quality, SensorId
+from poolctl.services.weather import WEATHER_FIELDS, WeatherObservation
 
 ROLLUP_BUCKET_SECONDS = (60, 3600, 86400)
 
@@ -466,6 +467,81 @@ class MeasurementLogger:
         )
         return tuple(reversed(descending))
 
+    def log_weather_observation(self, observation: WeatherObservation) -> int:
+        columns = (
+            "timestamp",
+            "source",
+            "latitude",
+            "longitude",
+            *WEATHER_FIELDS,
+        )
+        placeholders = ", ".join("?" for _ in columns)
+        values: list[Any] = [
+            observation.observed_at.isoformat(),
+            observation.source,
+            observation.latitude,
+            observation.longitude,
+        ]
+        values.extend(observation.values.get(field) for field in WEATHER_FIELDS)
+
+        with self._connect() as connection:
+            connection.execute(
+                f"""
+                INSERT OR REPLACE INTO weather_observations (
+                    {", ".join(columns)}
+                )
+                VALUES ({placeholders})
+                """,
+                values,
+            )
+        return 1
+
+    def weather_history(
+        self,
+        *,
+        field: str,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int = 1000,
+    ) -> tuple[tuple[datetime, float], ...]:
+        if limit < 1:
+            raise ValueError("limit must be at least 1")
+        if field not in WEATHER_FIELDS:
+            raise ValueError(f"unsupported weather field: {field}")
+
+        clauses = [f"{field} IS NOT NULL"]
+        parameters: list[str | int] = []
+        if since is not None:
+            clauses.append("timestamp >= ?")
+            parameters.append(since.isoformat())
+        if until is not None:
+            clauses.append("timestamp <= ?")
+            parameters.append(until.isoformat())
+        parameters.append(limit)
+        where_clause = " AND ".join(clauses)
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT timestamp, {field} AS value
+                FROM weather_observations
+                WHERE {where_clause}
+                ORDER BY timestamp DESC
+                LIMIT ?
+                """,
+                parameters,
+            ).fetchall()
+
+        descending = tuple(
+            (
+                _parse_datetime(str(row["timestamp"])),
+                float(row["value"]),
+            )
+            for row in rows
+            if row["value"] is not None
+        )
+        return tuple(reversed(descending))
+
     def _init_schema(self) -> None:
         with self._connect() as connection:
             connection.execute("PRAGMA journal_mode = WAL")
@@ -518,6 +594,27 @@ class MeasurementLogger:
                 """
             )
             self._ensure_column(connection, "lab_tests", "tds", "REAL")
+            weather_columns = "\n".join(
+                f"                    {field} REAL,"
+                for field in WEATHER_FIELDS
+            )
+            connection.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS weather_observations (
+                    timestamp TEXT PRIMARY KEY,
+                    source TEXT NOT NULL,
+                    latitude REAL NOT NULL,
+                    longitude REAL NOT NULL,
+{weather_columns.rstrip(",")}
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_weather_observations_time
+                ON weather_observations (timestamp)
+                """
+            )
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS measurement_rollups (

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -20,6 +20,7 @@ from poolctl.domain.models import (
 from poolctl.drivers.simulated.actuators import build_default_simulated_actuators
 from poolctl.drivers.simulated.plant import SimulatedPlant
 from poolctl.services.clock import SimulatedClock
+import poolctl.services.weather as weather_service_module
 
 
 class FixedSensor:
@@ -228,6 +229,69 @@ def test_raspberry_pi_profile_can_use_injected_drivers() -> None:
     assert app.runtime_config.driver_profile == DriverProfile.RASPBERRY_PI
     assert app.simulated_plant is None
     assert app.acquisition_service is None
+
+
+@pytest.mark.asyncio
+async def test_tick_fetches_weather_and_logs_hourly_observation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = make_clock()
+    config = {
+        "runtime": {
+            "stage": "sensor_logging",
+            "driver_profile": "simulated",
+            "enabled_layers": ["logging"],
+            "enabled_sensor_groups": [],
+        },
+        "logging": {
+            "database_path": str(tmp_path / "weather.sqlite3"),
+        },
+        "weather": {
+            "enabled": True,
+            "latitude": 29.75,
+            "longitude": -95.35,
+            "poll_interval_s": 3600.0,
+            "past_hours": 2,
+            "forecast_hours": 48,
+        },
+    }
+
+    def fake_fetch_json(_url: str, _timeout_s: float) -> dict[str, object]:
+        hourly: dict[str, object] = {
+            "time": [
+                "2026-05-21T10:00",
+                "2026-05-21T11:00",
+                "2026-05-21T12:00",
+                "2026-05-21T13:00",
+            ]
+        }
+        hourly_units: dict[str, str] = {"time": "iso8601"}
+        for index, field in enumerate(weather_service_module.WEATHER_FIELDS):
+            hourly[field] = [float(index), float(index + 1), float(index + 2), float(index + 3)]
+            hourly_units[field] = "°F" if "temperature" in field else "mm"
+        hourly_units["cloud_cover"] = "%"
+        hourly_units["uv_index"] = "index"
+        return {"hourly": hourly, "hourly_units": hourly_units}
+
+    monkeypatch.setattr(weather_service_module, "_default_fetch_json", fake_fetch_json)
+    app = build_app_from_mapping(config, clock=clock)
+    assert app.measurement_logger is not None
+
+    tick = await app.tick(force_acquisition=True)
+
+    assert tick.weather_result.updated is True
+    assert tick.weather_result.logged_count == 1
+    assert app.weather_service is not None
+    assert app.weather_service.latest_forecast is not None
+
+    points = app.measurement_logger.weather_history(
+        field="temperature_2m",
+        since=clock.now() - timedelta(hours=4),
+        until=clock.now() + timedelta(hours=1),
+        limit=10,
+    )
+    assert len(points) == 1
 
 
 def test_raspberry_pi_profile_builds_modbus_relay_actuators_from_config() -> None:
