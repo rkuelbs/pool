@@ -274,3 +274,16 @@ calcium_saturation_index:
   enabled: true
   temp_sensor_id: temp
   ph_sensor_id: raw_ph
+weather:
+  enabled: true
+  latitude: 32.9949
+  longitude: -96.8995
+  poll_interval_s: 3600
+  past_hours: 2
+  forecast_hours: 48
+  request_timeout_s: 15
+  temperature_unit: fahrenheit
+  wind_speed_unit: mph
+  precipitation_unit: inch
+  source: open-meteo
+  endpoint: https://api.open-meteo.com/v1/forecast

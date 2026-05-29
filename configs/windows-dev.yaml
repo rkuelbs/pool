@@ -256,3 +256,16 @@ flow_estimation:
   filter_restriction:
     clean_value: 2.0
     dirty_value: 8.0
+weather:
+  enabled: true
+  latitude: 32.9949
+  longitude: -96.8995
+  poll_interval_s: 3600
+  past_hours: 2
+  forecast_hours: 48
+  request_timeout_s: 15
+  temperature_unit: fahrenheit
+  wind_speed_unit: mph
+  precipitation_unit: inch
+  source: open-meteo
+  endpoint: https://api.open-meteo.com/v1/forecast
