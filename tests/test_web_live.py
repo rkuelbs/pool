@@ -151,7 +151,9 @@ async def test_build_live_snapshot_includes_runtime_sensors_and_actuators() -> N
     assert snapshot["safety"]["freeze_protection"]["enabled"] is False
     assert snapshot["safety"]["freeze_protection"]["active"] is False
     assert snapshot["flows"]["pump_flow_gpm"]["display"] == "0.0 gpm"
-    assert snapshot["flows"]["booster_flow_gpm"]["value"] is None
+    assert snapshot["flows"]["return_flow_gpm"]["value"] == 0.0
+    assert snapshot["flows"]["bubbler_flow_gpm"]["value"] == 0.0
+    assert snapshot["flows"]["booster_flow_gpm"]["value"] == 0.0
     assert snapshot["flows"]["filter_restriction_metric"]["display"] == "-- R"
     assert snapshot["flows"]["filter_restriction_percent"]["display"] == "--%"
 
@@ -188,12 +190,20 @@ async def test_build_live_snapshot_logs_loggable_measurements(tmp_path: Path) ->
         hours=1.0,
         limit=10,
     )
+    return_flow_history = build_history_payload(
+        app,
+        sensor_id=SensorId.RETURN_FLOW_GPM,
+        hours=1.0,
+        limit=10,
+    )
 
-    assert snapshot["tick"]["logged_measurement_count"] == 4
+    assert snapshot["tick"]["logged_measurement_count"] == 7
     assert len(history["points"]) == 1
     assert history["points"][0]["sensor_id"] == SensorId.PUMP_OUTPUT_PSI.value
     assert len(flow_history["points"]) == 1
     assert flow_history["points"][0]["sensor_id"] == SensorId.PUMP_FLOW_GPM.value
+    assert len(return_flow_history["points"]) == 1
+    assert return_flow_history["points"][0]["sensor_id"] == SensorId.RETURN_FLOW_GPM.value
 
 
 @pytest.mark.asyncio

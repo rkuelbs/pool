@@ -16,6 +16,14 @@ def _pressure(value: float) -> Measurement:
     )
 
 
+def _sensor_pressure(sensor_id: SensorId, value: float) -> Measurement:
+    return Measurement(
+        sensor_id=sensor_id,
+        value=value,
+        unit="psi",
+    )
+
+
 def test_flow_estimation_returns_zero_when_pump_is_off() -> None:
     estimates = estimate_flows(
         measurements={
@@ -37,6 +45,9 @@ def test_flow_estimation_returns_zero_when_pump_is_off() -> None:
     assert payload["pump_flow_gpm"]["display"] == "0.0 gpm"
     assert payload["pump_flow_low_gpm"]["value"] is None
     assert payload["pump_flow_high_gpm"]["value"] is None
+    assert payload["return_flow_gpm"]["value"] == 0.0
+    assert payload["bubbler_flow_gpm"]["value"] == 0.0
+    assert payload["booster_flow_gpm"]["value"] == 0.0
     assert payload["filter_restriction_metric"]["value"] is None
     assert payload["filter_restriction_percent"]["value"] is None
 
@@ -114,6 +125,40 @@ def test_flow_estimation_constants_are_configurable() -> None:
     assert abs(estimates.pump_flow_gpm - expected) < 1e-9
 
 
+def test_flow_estimation_branch_flows_use_configured_quadratic_models() -> None:
+    config = FlowEstimationConfig.from_mapping(
+        {
+            "flow_estimation": {
+                "branch_pressure": {
+                    "return_flow": {"a": 1.0, "b": 0.5},
+                    "bubbler_flow": {"a": 0.5, "b": 0.25},
+                    "booster_flow": {"a": 2.0, "b": 1.0},
+                }
+            }
+        }
+    )
+    estimates = estimate_flows(
+        measurements={
+            SensorId.PUMP_OUTPUT_PSI: _pressure(10.0),
+            SensorId.RETURN_PSI: _sensor_pressure(SensorId.RETURN_PSI, 11.0),
+            SensorId.BUBBLER_PSI: _sensor_pressure(SensorId.BUBBLER_PSI, 5.5),
+            SensorId.BOOSTER_PSI: _sensor_pressure(SensorId.BOOSTER_PSI, 12.0),
+        },
+        actuator_states={
+            ActuatorId.PUMP_MOTOR: ActuatorState.ON,
+            ActuatorId.PUMP_MOTOR_SPEED: ActuatorState.HIGH,
+        },
+        config=config,
+    )
+
+    assert estimates.return_flow_gpm is not None
+    assert estimates.bubbler_flow_gpm is not None
+    assert estimates.booster_flow_gpm is not None
+    assert abs(estimates.return_flow_gpm - math.sqrt(20.0)) < 1e-9
+    assert abs(estimates.bubbler_flow_gpm - math.sqrt(20.0)) < 1e-9
+    assert abs(estimates.booster_flow_gpm - math.sqrt(10.0)) < 1e-9
+
+
 def test_filter_restriction_metric_and_percent_are_computed_when_flow_positive() -> None:
     pressure = 10.0
     estimates = estimate_flows(
@@ -189,6 +234,29 @@ def test_filter_restriction_config_requires_dirty_greater_than_clean() -> None:
                     "filter_restriction": {
                         "clean_value": 2.0,
                         "dirty_value": 2.0,
+                    }
+                }
+            }
+        )
+
+
+def test_flow_estimation_quadratic_model_rejects_nonpositive_b() -> None:
+    with pytest.raises(ValueError):
+        FlowEstimationConfig.from_mapping(
+            {
+                "flow_estimation": {
+                    "branch_pressure": {
+                        "return_flow": {"a": 0.0, "b": 0.0},
+                    }
+                }
+            }
+        )
+    with pytest.raises(ValueError):
+        FlowEstimationConfig.from_mapping(
+            {
+                "flow_estimation": {
+                    "branch_pressure": {
+                        "return_flow": {"a": 0.0, "b": -1.0},
                     }
                 }
             }

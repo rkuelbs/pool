@@ -169,10 +169,14 @@ class PoolControllerApp:
         )
         csi_measurement = self._csi_derived_measurement(latest_measurements)
         source_logged_sensor_ids = {measurement.sensor_id for measurement in acquisition.loggable_measurements}
-        should_log_flow_derived = (
-            SensorId.PUMP_OUTPUT_PSI in source_logged_sensor_ids
-            or SensorId.FILTER_OUTPUT_PSI in source_logged_sensor_ids
-        )
+        flow_source_sensor_ids = {
+            SensorId.PUMP_OUTPUT_PSI,
+            SensorId.FILTER_OUTPUT_PSI,
+            SensorId.RETURN_PSI,
+            SensorId.BUBBLER_PSI,
+            SensorId.BOOSTER_PSI,
+        }
+        should_log_flow_derived = bool(source_logged_sensor_ids & flow_source_sensor_ids)
         should_log_csi = (
             csi_measurement is not None
             and (
@@ -813,6 +817,42 @@ def _flow_derived_measurements(
                 unit="gpm",
                 quality=Quality.GOOD,
                 metadata={"driver": "flow_estimation", "source": "pump_output_psi"},
+            )
+        )
+    if flow_estimates.return_flow_gpm is not None:
+        measurements.append(
+            Measurement(
+                sensor_id=SensorId.RETURN_FLOW_GPM,
+                observed_at=observed_at,
+                kind=MeasurementKind.ESTIMATED,
+                value=round(flow_estimates.return_flow_gpm, 3),
+                unit="gpm",
+                quality=Quality.GOOD,
+                metadata={"driver": "flow_estimation", "source": "return_psi"},
+            )
+        )
+    if flow_estimates.bubbler_flow_gpm is not None:
+        measurements.append(
+            Measurement(
+                sensor_id=SensorId.BUBBLER_FLOW_GPM,
+                observed_at=observed_at,
+                kind=MeasurementKind.ESTIMATED,
+                value=round(flow_estimates.bubbler_flow_gpm, 3),
+                unit="gpm",
+                quality=Quality.GOOD,
+                metadata={"driver": "flow_estimation", "source": "bubbler_psi"},
+            )
+        )
+    if flow_estimates.booster_flow_gpm is not None:
+        measurements.append(
+            Measurement(
+                sensor_id=SensorId.BOOSTER_FLOW_GPM,
+                observed_at=observed_at,
+                kind=MeasurementKind.ESTIMATED,
+                value=round(flow_estimates.booster_flow_gpm, 3),
+                unit="gpm",
+                quality=Quality.GOOD,
+                metadata={"driver": "flow_estimation", "source": "booster_psi"},
             )
         )
 

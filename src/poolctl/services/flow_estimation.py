@@ -29,12 +29,32 @@ class PumpPressureFlowModelConfig:
 
 
 @dataclass(frozen=True)
+class LinearPressureFlowModelConfig:
+    """
+    Quadratic pressure-to-flow model:
+
+    pressure_psi = a + (b * flow_gpm^2)
+    flow_gpm = sqrt((pressure_psi - a) / b)
+    """
+
+    a: float = 0.0
+    b: float = 1.0
+
+    def __post_init__(self) -> None:
+        if self.b <= 0:
+            raise ValueError("quadratic flow model coefficient b must be greater than zero")
+
+
+@dataclass(frozen=True)
 class FlowEstimationConfig:
     """
     Configurable flow model constants.
     """
 
     pump_pressure_model: PumpPressureFlowModelConfig = PumpPressureFlowModelConfig()
+    return_flow_model: LinearPressureFlowModelConfig = LinearPressureFlowModelConfig()
+    bubbler_flow_model: LinearPressureFlowModelConfig = LinearPressureFlowModelConfig()
+    booster_flow_model: LinearPressureFlowModelConfig = LinearPressureFlowModelConfig()
     filter_restriction_clean: float = 1.0
     filter_restriction_dirty: float = 3.0
 
@@ -46,6 +66,7 @@ class FlowEstimationConfig:
     def from_mapping(cls, data: Mapping[str, Any]) -> FlowEstimationConfig:
         section = _mapping_value(data, "flow_estimation", default={})
         pump_section = _mapping_value(section, "pump_pressure", default={})
+        branch_section = _mapping_value(section, "branch_pressure", default={})
         filter_section = _mapping_value(section, "filter_restriction", default={})
         return cls(
             pump_pressure_model=PumpPressureFlowModelConfig(
@@ -69,6 +90,18 @@ class FlowEstimationConfig:
                     "c_no_flow_high",
                     PumpPressureFlowModelConfig.c_no_flow_high,
                 ),
+            ),
+            return_flow_model=_linear_model_from_mapping(
+                _mapping_value(branch_section, "return_flow", default={}),
+                default=LinearPressureFlowModelConfig(),
+            ),
+            bubbler_flow_model=_linear_model_from_mapping(
+                _mapping_value(branch_section, "bubbler_flow", default={}),
+                default=LinearPressureFlowModelConfig(),
+            ),
+            booster_flow_model=_linear_model_from_mapping(
+                _mapping_value(branch_section, "booster_flow", default={}),
+                default=LinearPressureFlowModelConfig(),
             ),
             filter_restriction_clean=_float_value(filter_section, "clean_value", 1.0),
             filter_restriction_dirty=_float_value(filter_section, "dirty_value", 3.0),
@@ -115,6 +148,9 @@ def estimate_flows(
     config: FlowEstimationConfig = FlowEstimationConfig(),
 ) -> FlowEstimates:
     pump_flow_gpm: float | None = None
+    return_flow_gpm: float | None = None
+    bubbler_flow_gpm: float | None = None
+    booster_flow_gpm: float | None = None
     pump_state = actuator_states.get(ActuatorId.PUMP_MOTOR)
     speed_state = actuator_states.get(ActuatorId.PUMP_MOTOR_SPEED)
     pump_measurement = measurements.get(SensorId.PUMP_OUTPUT_PSI)
@@ -122,6 +158,9 @@ def estimate_flows(
 
     if pump_state != ActuatorState.ON:
         pump_flow_gpm = 0.0
+        return_flow_gpm = 0.0
+        bubbler_flow_gpm = 0.0
+        booster_flow_gpm = 0.0
     elif isinstance(pump_pressure, int | float):
         model = config.pump_pressure_model
         if speed_state == ActuatorState.LOW:
@@ -131,12 +170,27 @@ def estimate_flows(
                 c_dynamic=model.c_dynamic,
                 pressure_scale_psi=model.pressure_scale_psi,
             )
+            return_flow_gpm = _quadratic_flow_from_pressure(
+                pressure_psi=_measurement_value(measurements, SensorId.RETURN_PSI),
+                model=config.return_flow_model,
+            )
+            bubbler_flow_gpm = _quadratic_flow_from_pressure(
+                pressure_psi=_measurement_value(measurements, SensorId.BUBBLER_PSI),
+                model=config.bubbler_flow_model,
+            )
+            booster_flow_gpm = _quadratic_flow_from_pressure(
+                pressure_psi=_measurement_value(measurements, SensorId.BOOSTER_PSI),
+                model=config.booster_flow_model,
+            )
             return _with_filter_restriction(
                 measurements=measurements,
                 config=config,
                 estimates=FlowEstimates(
                     pump_flow_gpm=pump_flow_gpm,
                     pump_flow_low_gpm=pump_flow_gpm,
+                    return_flow_gpm=return_flow_gpm,
+                    bubbler_flow_gpm=bubbler_flow_gpm,
+                    booster_flow_gpm=booster_flow_gpm,
                 ),
             )
         if speed_state == ActuatorState.HIGH:
@@ -146,19 +200,53 @@ def estimate_flows(
                 c_dynamic=model.c_dynamic,
                 pressure_scale_psi=model.pressure_scale_psi,
             )
+            return_flow_gpm = _quadratic_flow_from_pressure(
+                pressure_psi=_measurement_value(measurements, SensorId.RETURN_PSI),
+                model=config.return_flow_model,
+            )
+            bubbler_flow_gpm = _quadratic_flow_from_pressure(
+                pressure_psi=_measurement_value(measurements, SensorId.BUBBLER_PSI),
+                model=config.bubbler_flow_model,
+            )
+            booster_flow_gpm = _quadratic_flow_from_pressure(
+                pressure_psi=_measurement_value(measurements, SensorId.BOOSTER_PSI),
+                model=config.booster_flow_model,
+            )
             return _with_filter_restriction(
                 measurements=measurements,
                 config=config,
                 estimates=FlowEstimates(
                     pump_flow_gpm=pump_flow_gpm,
                     pump_flow_high_gpm=pump_flow_gpm,
+                    return_flow_gpm=return_flow_gpm,
+                    bubbler_flow_gpm=bubbler_flow_gpm,
+                    booster_flow_gpm=booster_flow_gpm,
                 ),
             )
+
+    if pump_state == ActuatorState.ON:
+        return_flow_gpm = _quadratic_flow_from_pressure(
+            pressure_psi=_measurement_value(measurements, SensorId.RETURN_PSI),
+            model=config.return_flow_model,
+        )
+        bubbler_flow_gpm = _quadratic_flow_from_pressure(
+            pressure_psi=_measurement_value(measurements, SensorId.BUBBLER_PSI),
+            model=config.bubbler_flow_model,
+        )
+        booster_flow_gpm = _quadratic_flow_from_pressure(
+            pressure_psi=_measurement_value(measurements, SensorId.BOOSTER_PSI),
+            model=config.booster_flow_model,
+        )
 
     return _with_filter_restriction(
         measurements=measurements,
         config=config,
-        estimates=FlowEstimates(pump_flow_gpm=pump_flow_gpm),
+        estimates=FlowEstimates(
+            pump_flow_gpm=pump_flow_gpm,
+            return_flow_gpm=return_flow_gpm,
+            bubbler_flow_gpm=bubbler_flow_gpm,
+            booster_flow_gpm=booster_flow_gpm,
+        ),
     )
 
 
@@ -173,6 +261,20 @@ def _pump_flow_from_pressure(
     if term <= 0:
         return 0.0
     return math.sqrt(term / c_dynamic)
+
+
+def _quadratic_flow_from_pressure(
+    *,
+    pressure_psi: float | None,
+    model: LinearPressureFlowModelConfig,
+) -> float | None:
+    if pressure_psi is None:
+        return None
+    term = (pressure_psi - model.a) / model.b
+    if term <= 0:
+        return 0.0
+    return math.sqrt(term)
+
 
 def _with_filter_restriction(
     *,
@@ -294,3 +396,14 @@ def _float_value(data: Mapping[str, Any], key: str, default: float) -> float:
     if not isinstance(value, int | float):
         raise ValueError(f"{key} must be a number")
     return float(value)
+
+
+def _linear_model_from_mapping(
+    data: Mapping[str, Any],
+    *,
+    default: LinearPressureFlowModelConfig,
+) -> LinearPressureFlowModelConfig:
+    return LinearPressureFlowModelConfig(
+        a=_float_value(data, "a", default.a),
+        b=_float_value(data, "b", default.b),
+    )
