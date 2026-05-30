@@ -257,6 +257,12 @@ class SharedModbusRtuBus:
                 stopbits=1,
             )
 
+        # Some pymodbus versions keep the serial port open after the first
+        # successful connect(). Re-calling connect() can attempt a second open
+        # and fail with "Could not exclusively lock port".
+        if bool(getattr(self._client, "connected", False)):
+            return self._client
+
         connected = await self._client.connect()
         if not connected:
             raise RuntimeError(f"could not connect to Modbus RTU bus on {self._config.port}")
