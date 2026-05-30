@@ -48,7 +48,12 @@ class SharedModbusRtuBus:
 
     async def write_coil(self, *, slave_id: int, coil_address: int, value: bool) -> None:
         async def _call(client: Any) -> Any:
-            return await client.write_coil(coil_address, value, slave=slave_id)
+            return await self._call_with_slave_id(
+                client.write_coil,
+                coil_address,
+                value,
+                slave_id=slave_id,
+            )
 
         response = await self._request("write_coil", _call)
         _raise_for_modbus_error(response, "write coil")
@@ -61,7 +66,12 @@ class SharedModbusRtuBus:
         count: int,
     ) -> tuple[bool, ...]:
         async def _call(client: Any) -> Any:
-            return await client.read_coils(start_address, count=count, slave=slave_id)
+            return await self._call_with_slave_id(
+                client.read_coils,
+                start_address,
+                count=count,
+                slave_id=slave_id,
+            )
 
         response = await self._request("read_coils", _call)
         _raise_for_modbus_error(response, "read coils")
@@ -80,10 +90,11 @@ class SharedModbusRtuBus:
         count: int,
     ) -> tuple[int, ...]:
         async def _call(client: Any) -> Any:
-            return await client.read_holding_registers(
+            return await self._call_with_slave_id(
+                client.read_holding_registers,
                 start_address,
                 count=count,
-                slave=slave_id,
+                slave_id=slave_id,
             )
 
         response = await self._request("read_holding_registers", _call)
@@ -106,7 +117,12 @@ class SharedModbusRtuBus:
         value: int,
     ) -> None:
         async def _call(client: Any) -> Any:
-            return await client.write_register(register_address, value, slave=slave_id)
+            return await self._call_with_slave_id(
+                client.write_register,
+                register_address,
+                value,
+                slave_id=slave_id,
+            )
 
         response = await self._request("write_holding_register", _call)
         _raise_for_modbus_error(response, "write holding register")
@@ -119,10 +135,11 @@ class SharedModbusRtuBus:
         count: int,
     ) -> tuple[int, ...]:
         async def _call(client: Any) -> Any:
-            return await client.read_input_registers(
+            return await self._call_with_slave_id(
+                client.read_input_registers,
                 start_address,
                 count=count,
-                slave=slave_id,
+                slave_id=slave_id,
             )
 
         response = await self._request("read_input_registers", _call)
@@ -145,6 +162,25 @@ class SharedModbusRtuBus:
         if hasattr(close_result, "__await__"):
             await close_result
         self._client = None
+
+    async def _call_with_slave_id(
+        self,
+        method: Callable[..., Awaitable[Any]],
+        *args: Any,
+        slave_id: int,
+        **kwargs: Any,
+    ) -> Any:
+        """
+        Compatibility shim for pymodbus API differences:
+        - older versions use `unit=...`
+        - newer versions use `slave=...`
+        """
+        try:
+            return await method(*args, slave=slave_id, **kwargs)
+        except TypeError as error:
+            if "unexpected keyword argument 'slave'" not in str(error):
+                raise
+        return await method(*args, unit=slave_id, **kwargs)
 
     async def _request(
         self,
