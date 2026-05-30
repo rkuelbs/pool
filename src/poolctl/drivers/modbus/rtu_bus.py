@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -175,12 +176,34 @@ class SharedModbusRtuBus:
         - older versions use `unit=...`
         - newer versions use `slave=...`
         """
+        # Prefer explicit parameter names when discoverable.
         try:
-            return await method(*args, slave=slave_id, **kwargs)
-        except TypeError as error:
-            if "unexpected keyword argument 'slave'" not in str(error):
-                raise
-        return await method(*args, unit=slave_id, **kwargs)
+            signature = inspect.signature(method)
+            parameter_names = set(signature.parameters)
+        except Exception:
+            parameter_names = set()
+
+        candidate_keys: list[str] = []
+        for key in ("slave", "unit", "device_id"):
+            if key in parameter_names:
+                candidate_keys.append(key)
+        if not candidate_keys:
+            candidate_keys = ["slave", "unit", "device_id"]
+
+        last_type_error: TypeError | None = None
+        for key in candidate_keys:
+            try:
+                return await method(*args, **kwargs, **{key: slave_id})
+            except TypeError as error:
+                last_type_error = error
+
+        # Final fallback for APIs that require the slave id as positional.
+        try:
+            return await method(*args, slave_id, **kwargs)
+        except TypeError:
+            if last_type_error is not None:
+                raise last_type_error
+            raise
 
     async def _request(
         self,
