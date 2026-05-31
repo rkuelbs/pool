@@ -107,6 +107,9 @@ class DFRobotOrpSensor:
     Registers:
       - 0x0000: ORP mV, signed, actual value
       - 0x0001: temperature C, signed, actual temperature * 10
+
+    The sensor reports temperature in C; we normalize to degF for
+    consistency with the rest of poolctl temperature signals.
     """
 
     name = "dfrobot_sen0709_orp"
@@ -130,6 +133,7 @@ class DFRobotOrpSensor:
         observed_at = self._clock.now()
         raw_orp_mv = signed_16(orp_register)
         temp_c = signed_16(temp_register) / 10.0
+        temp_f = (temp_c * 9.0 / 5.0) + 32.0
 
         return [
             Measurement(
@@ -150,14 +154,15 @@ class DFRobotOrpSensor:
                 sensor_id=SensorId.ORP_TEMP,
                 observed_at=observed_at,
                 kind=MeasurementKind.RAW,
-                value=round(temp_c, 1),
-                unit="degC",
+                value=round(temp_f, 1),
+                unit="degF",
                 quality=Quality.GOOD,
                 metadata={
                     "driver": self.name,
                     "modbus_slave_id": self._slave_id,
                     "raw_register": temp_register,
                     "register_address": "0x0001",
+                    "raw_temp_c": round(temp_c, 1),
                 },
             ),
         ]

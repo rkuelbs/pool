@@ -12,6 +12,7 @@ runtime:
     - chlorine_dosing_pump
   enabled_sensor_groups:
     - pressures
+    - chemistry_loop
 
 pump_timer:
   timezone: America/Chicago
@@ -255,10 +256,10 @@ live_view:
       normal_max: 800.0
       caution_max: 900.0
     orp_temp:
-      caution_min: 2.0
-      normal_min: 18.0
-      normal_max: 32.0
-      caution_max: 40.0
+      caution_min: 35.0
+      normal_min: 65.0
+      normal_max: 90.0
+      caution_max: 100.0
     raw_ph:
       caution_min: 6.8
       normal_min: 7.2

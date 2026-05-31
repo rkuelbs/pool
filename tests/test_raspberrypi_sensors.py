@@ -102,8 +102,9 @@ async def test_dfrobot_orp_sensor_reads_signed_orp_and_temperature() -> None:
     assert measurements[0].metadata["modbus_slave_id"] == 3
     assert measurements[0].metadata["raw_register"] == 0x0135
 
-    assert measurements[1].value == 25.7
-    assert measurements[1].unit == "degC"
+    assert measurements[1].value == 78.3
+    assert measurements[1].unit == "degF"
+    assert measurements[1].metadata["raw_temp_c"] == 25.7
     assert measurements[1].observed_at == clock.now()
 
 
@@ -120,7 +121,7 @@ async def test_dfrobot_orp_sensor_converts_signed_negative_orp() -> None:
     measurements = await sensor.read_all()
 
     assert measurements[0].value == -16.0
-    assert measurements[1].value == 25.0
+    assert measurements[1].value == 77.0
 
 
 def test_dfrobot_water_quality_sensor_config_uses_configurable_addresses() -> None:
