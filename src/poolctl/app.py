@@ -24,7 +24,10 @@ from poolctl.domain.models import (
 from poolctl.drivers.base import ActuatorDriver, MultiSensorDriver, SensorDriver
 from poolctl.drivers.modbus.rtu_bus import ModbusRtuBusRegistry
 from poolctl.drivers.raspberrypi.actuators import build_raspberrypi_actuators_from_mapping
-from poolctl.drivers.raspberrypi.sensors import build_raspberrypi_sensors_from_mapping
+from poolctl.drivers.raspberrypi.sensors import (
+    build_raspberrypi_sensor_drivers_from_mapping,
+    build_raspberrypi_sensors_from_mapping,
+)
 from poolctl.drivers.simulated.actuators import build_default_simulated_actuators
 from poolctl.drivers.simulated.plant import SimulatedPlant
 from poolctl.drivers.simulated.sensors import build_default_simulated_sensors
@@ -593,8 +596,13 @@ def build_app_from_mapping(
             ),
             runtime_config.enabled_actuators,
         )
+        raspberrypi_sensor_drivers = (
+            build_raspberrypi_sensor_drivers_from_mapping(data, clock=built_clock)
+            if sensor_drivers is None
+            else ()
+        )
         built_sensor_drivers = _filter_sensor_drivers(
-            sensor_drivers if sensor_drivers is not None else (),
+            tuple(sensor_drivers) if sensor_drivers is not None else raspberrypi_sensor_drivers,
             acquisition_config,
         )
         if not built_multi_sensor_drivers:

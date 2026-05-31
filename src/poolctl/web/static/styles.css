@@ -112,6 +112,29 @@ h2 {
   color: #9c1c13;
 }
 
+.badge.caution {
+  background: #fff4d5;
+  border-color: #f0ce6a;
+  color: #6f5200;
+}
+
+.badge.alarm {
+  background: #ffe8e5;
+  border-color: #f0a49c;
+  color: #9c1c13;
+}
+
+.badge.invalid,
+.badge.unknown {
+  background: #e5eaf0;
+  border-color: #b2bfcb;
+  color: #485566;
+}
+
+.badge.hidden {
+  display: none;
+}
+
 .timestamp {
   color: var(--muted);
   font-size: 12px;

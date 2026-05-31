@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -9,7 +10,9 @@ from poolctl.drivers.base import MultiSensorDriver
 from poolctl.drivers.raspberrypi.sensors import (
     DFRobotOrpSensor,
     DFRobotPhSensor,
+    RaspberryPiCpuTempSensor,
     DFRobotWaterQualitySensorConfig,
+    build_raspberrypi_sensor_drivers_from_mapping,
     build_raspberrypi_sensors_from_mapping,
 )
 from poolctl.services.clock import SimulatedClock
@@ -164,3 +167,37 @@ def test_build_raspberrypi_sensors_from_mapping_returns_multi_sensor_drivers() -
 
     assert len(sensors) == 1
     assert all(isinstance(sensor, MultiSensorDriver) for sensor in sensors)
+
+
+@pytest.mark.asyncio
+async def test_raspberrypi_cpu_temp_sensor_reads_sysfs_millidegrees(
+    tmp_path: Path,
+) -> None:
+    clock = make_clock()
+    sensor_file = tmp_path / "cpu_temp"
+    sensor_file.write_text("51437\n", encoding="utf-8")
+    sensor = RaspberryPiCpuTempSensor(clock=clock, sensor_file=sensor_file)
+
+    measurement = await sensor.read()
+
+    assert measurement.sensor_id == SensorId.CPU_TEMP
+    assert measurement.value == 51.4
+    assert measurement.unit == "degC"
+    assert measurement.kind == MeasurementKind.RAW
+    assert measurement.quality == Quality.GOOD
+    assert measurement.metadata["raw_milli_c"] == 51437
+
+
+def test_build_raspberrypi_sensor_drivers_from_mapping_allows_cpu_temp_path_override(
+    tmp_path: Path,
+) -> None:
+    clock = make_clock()
+    path = tmp_path / "cpu_override"
+    drivers = build_raspberrypi_sensor_drivers_from_mapping(
+        {"cpu_temp_sensor": {"path": str(path)}},
+        clock=clock,
+    )
+
+    assert len(drivers) == 1
+    driver = drivers[0]
+    assert isinstance(driver, RaspberryPiCpuTempSensor)

@@ -9,6 +9,7 @@ const SENSOR_ORDER = [
   "raw_ph",
   "raw_ph_voltage",
   "temp",
+  "cpu_temp",
   "tank_level",
 ];
 
@@ -57,6 +58,7 @@ const SENSOR_LABELS = {
   raw_ph: "pH",
   raw_ph_voltage: "pH Vraw",
   temp: "Water temp",
+  cpu_temp: "CPU temp",
   tank_level: "Tank level",
 };
 
@@ -256,6 +258,7 @@ function render(payload) {
   document.getElementById("updatedAt").textContent = new Date(payload.observed_at).toLocaleString();
 
   renderSafetyBadge(payload.safety);
+  renderCpuTempBadge(payload.runtime, payload.sensors || {});
   renderFreezeStatus(payload.safety);
   renderCsiStatus(payload.sensors || {});
   renderTimerOverride(payload.timer_override);
@@ -284,6 +287,35 @@ function renderSafetyBadge(safety) {
     return;
   }
   badge.textContent = "Safety OK";
+}
+
+function renderCpuTempBadge(runtime, sensors) {
+  const badge = document.getElementById("cpuTempBadge");
+  if (!badge) {
+    return;
+  }
+
+  const isRaspberryPi = runtime && runtime.driver_profile === "raspberry_pi";
+  const cpuTemp = sensors ? sensors.cpu_temp : null;
+  if (!isRaspberryPi || !cpuTemp) {
+    badge.classList.add("hidden");
+    return;
+  }
+
+  badge.classList.remove("hidden", "ok", "fault", "caution", "alarm", "invalid", "unknown");
+  const status = cpuTemp.status || "unknown";
+  if (status === "normal") {
+    badge.classList.add("ok");
+  } else if (status === "caution") {
+    badge.classList.add("caution");
+  } else if (status === "alarm") {
+    badge.classList.add("alarm");
+  } else if (status === "invalid") {
+    badge.classList.add("invalid");
+  } else {
+    badge.classList.add("unknown");
+  }
+  badge.textContent = `CPU Temp: ${cpuTemp.display || "--"}`;
 }
 
 function renderTimerOverride(override) {

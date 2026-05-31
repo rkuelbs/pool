@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from poolctl.domain.models import (
@@ -10,7 +11,7 @@ from poolctl.domain.models import (
     Quality,
     SensorId,
 )
-from poolctl.drivers.base import MultiSensorDriver
+from poolctl.drivers.base import MultiSensorDriver, SensorDriver
 from poolctl.drivers.modbus.registers import (
     ModbusRegisterDeviceConfig,
     ModbusRegisterTransport,
@@ -162,6 +163,42 @@ class DFRobotOrpSensor:
         ]
 
 
+class RaspberryPiCpuTempSensor:
+    """
+    Raspberry Pi SoC temperature sensor from Linux thermal sysfs.
+    """
+
+    name = "raspberrypi_cpu_temp"
+    sensor_id = SensorId.CPU_TEMP
+
+    def __init__(
+        self,
+        *,
+        clock: Clock,
+        sensor_file: Path = Path("/sys/class/thermal/thermal_zone0/temp"),
+    ) -> None:
+        self._clock = clock
+        self._sensor_file = sensor_file
+
+    async def read(self) -> Measurement:
+        raw_text = self._sensor_file.read_text(encoding="utf-8").strip()
+        raw_milli_c = int(raw_text)
+        temp_c = raw_milli_c / 1000.0
+        return Measurement(
+            sensor_id=self.sensor_id,
+            observed_at=self._clock.now(),
+            kind=MeasurementKind.RAW,
+            value=round(temp_c, 1),
+            unit="degC",
+            quality=Quality.GOOD,
+            metadata={
+                "driver": self.name,
+                "source": str(self._sensor_file),
+                "raw_milli_c": raw_milli_c,
+            },
+        )
+
+
 def build_raspberrypi_sensors_from_mapping(
     data: Mapping[str, Any],
     *,
@@ -239,3 +276,40 @@ def _optional_analog_device_config(
         "modbus_analog_input",
         default_slave_id=4,
     )
+
+
+def build_raspberrypi_sensor_drivers_from_mapping(
+    data: Mapping[str, Any],
+    *,
+    clock: Clock,
+) -> list[SensorDriver]:
+    path_value = _string_value(
+        _mapping_value(data, "cpu_temp_sensor", default={}),
+        "path",
+        "/sys/class/thermal/thermal_zone0/temp",
+    )
+    return [
+        RaspberryPiCpuTempSensor(
+            clock=clock,
+            sensor_file=Path(path_value),
+        )
+    ]
+
+
+def _mapping_value(
+    data: Mapping[str, Any],
+    key: str,
+    *,
+    default: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    value = data.get(key, default)
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{key} must be a mapping")
+    return value
+
+
+def _string_value(data: Mapping[str, Any], key: str, default: str) -> str:
+    value = data.get(key, default)
+    if not isinstance(value, str):
+        raise ValueError(f"{key} must be a string")
+    return value

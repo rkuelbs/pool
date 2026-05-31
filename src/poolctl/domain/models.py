@@ -52,6 +52,7 @@ class SensorId(str, Enum):
     RAW_PH_VOLTAGE = "raw_ph_voltage"
 
     TEMP = "temp"
+    CPU_TEMP = "cpu_temp"
     TANK_LEVEL = "tank_level"
 
 

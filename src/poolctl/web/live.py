@@ -26,6 +26,7 @@ SENSOR_LABELS = {
     SensorId.RAW_PH: "pH",
     SensorId.RAW_PH_VOLTAGE: "pH Vraw",
     SensorId.TEMP: "Water temp",
+    SensorId.CPU_TEMP: "CPU temp",
     SensorId.TANK_LEVEL: "Tank level",
 }
 

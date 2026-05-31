@@ -4,12 +4,14 @@ runtime:
   enabled_layers:
     - pump_timer
     - logging
+    - acquisition
   enabled_actuators:
     - pump_motor
     - pump_motor_speed
     - booster_pump
     - chlorine_dosing_pump
-  enabled_sensor_groups: []
+  enabled_sensor_groups:
+    - pressures
 
 pump_timer:
   timezone: America/Chicago
@@ -184,6 +186,7 @@ acquisition:
         - return_psi
         - bubbler_psi
         - booster_psi
+        - cpu_temp
       read_interval_s: 0.5
       log_interval_s: 30.0
       requires_pump_flow: false
@@ -271,6 +274,11 @@ live_view:
       normal_min: 18.0
       normal_max: 32.0
       caution_max: 40.0
+    cpu_temp:
+      caution_min: 0.0
+      normal_min: 0.0
+      normal_max: 70.0
+      caution_max: 80.0
     tank_level:
       caution_min: 5.0
       normal_min: 20.0
