@@ -5,6 +5,8 @@ import asyncio
 import csv
 import io
 import json
+import threading
+from collections.abc import Coroutine
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from http import HTTPStatus
@@ -45,11 +47,39 @@ MAX_EVENT_COUNT = 500
 EnumT = TypeVar("EnumT", bound=Enum)
 
 
+class AsyncRuntime:
+    """
+    Run all async app calls on one persistent event loop.
+    """
+
+    def __init__(self) -> None:
+        self._loop = asyncio.new_event_loop()
+        self._thread = threading.Thread(
+            target=self._run_loop,
+            name="poolctl-web-async-loop",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def _run_loop(self) -> None:
+        asyncio.set_event_loop(self._loop)
+        self._loop.run_forever()
+
+    def run(self, coroutine: Coroutine[Any, Any, Any]) -> Any:
+        future = asyncio.run_coroutine_threadsafe(coroutine, self._loop)
+        return future.result()
+
+    def close(self) -> None:
+        self._loop.call_soon_threadsafe(self._loop.stop)
+        self._thread.join(timeout=2.0)
+
+
 class PoolCtlWebHandler(BaseHTTPRequestHandler):
     app: PoolControllerApp
     config_path: Path
     event_log: list[dict[str, Any]]
     event_ids: set[str]
+    async_runtime: AsyncRuntime
 
     def do_GET(self) -> None:
         path = urlparse(self.path).path
@@ -194,7 +224,7 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
 
     def _serve_live_snapshot(self) -> None:
         try:
-            payload = asyncio.run(build_live_snapshot(self.app))
+            payload = self.async_runtime.run(build_live_snapshot(self.app))
             self._record_live_events(payload)
         except Exception as error:
             self._serve_json(
@@ -320,7 +350,7 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
     def _serve_command_result(self) -> None:
         try:
             payload = self._read_json_body()
-            result = asyncio.run(route_command(self.app, payload))
+            result = self.async_runtime.run(route_command(self.app, payload))
             self._record_command_event(payload, result)
         except ValueError as error:
             self._serve_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
@@ -593,6 +623,7 @@ def create_server(
 ) -> ThreadingHTTPServer:
     clock = simulation_clock(config_path, speedup=sim_speedup)
     app = build_app_from_config(config_path, clock=clock)
+    async_runtime = AsyncRuntime()
 
     class BoundPoolCtlWebHandler(PoolCtlWebHandler):
         pass
@@ -601,7 +632,10 @@ def create_server(
     BoundPoolCtlWebHandler.config_path = Path(config_path)
     BoundPoolCtlWebHandler.event_log = []
     BoundPoolCtlWebHandler.event_ids = set()
-    return ThreadingHTTPServer((host, port), BoundPoolCtlWebHandler)
+    BoundPoolCtlWebHandler.async_runtime = async_runtime
+    server = ThreadingHTTPServer((host, port), BoundPoolCtlWebHandler)
+    setattr(server, "_poolctl_async_runtime", async_runtime)
+    return server
 
 
 async def route_command(app: PoolControllerApp, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1334,6 +1368,9 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        async_runtime = getattr(server, "_poolctl_async_runtime", None)
+        if isinstance(async_runtime, AsyncRuntime):
+            async_runtime.close()
         server.server_close()
 
 
