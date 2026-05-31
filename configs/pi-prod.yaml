@@ -3,11 +3,12 @@ runtime:
   driver_profile: raspberry_pi
   enabled_layers:
     - pump_timer
-    - safety_enforcement
+    - logging
   enabled_actuators:
     - pump_motor
     - pump_motor_speed
     - booster_pump
+    - chlorine_dosing_pump
   enabled_sensor_groups: []
 
 pump_timer:
