@@ -17,15 +17,10 @@ pump_timer:
   timezone: America/Chicago
   schedules:
   - name: morning_filter
-    start: 08:00
-    end: '12:00'
+    start: 01:00
+    end: '23:55'
     pump_speed: high
-    booster: false
-  - name: afternoon_filter
-    start: '15:00'
-    end: '18:00'
-    pump_speed: low
-    booster: false
+    booster: 'off'
 modbus_relay:
   port: /dev/ttyUSB0
   slave_id: 3
