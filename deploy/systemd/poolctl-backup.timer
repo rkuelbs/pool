@@ -1,0 +1,10 @@
+[Unit]
+Description=run poolctl backup hourly
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

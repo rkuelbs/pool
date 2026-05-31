@@ -1,0 +1,19 @@
+[Unit]
+Description=pool automation controller
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__APP_USER__
+Group=__APP_GROUP__
+WorkingDirectory=__PROJECT_DIR__
+Environment=PYTHONUNBUFFERED=1
+ExecStart=__VENV_DIR__/bin/python -m poolctl.web.server --config __CONFIG_PATH__ --host __WEB_HOST__ --port __WEB_PORT__
+Restart=always
+RestartSec=3
+KillSignal=SIGINT
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

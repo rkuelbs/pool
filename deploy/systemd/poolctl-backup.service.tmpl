@@ -1,0 +1,9 @@
+[Unit]
+Description=poolctl sqlite backup
+After=network.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/local/bin/poolctl-backup.sh

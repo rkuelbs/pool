@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SRC_DB="__BACKUP_DB_PATH__"
+BACKUP_DIR="__BACKUP_DIR__"
+KEEP_COUNT=__BACKUP_KEEP_COUNT__
+
+if ! command -v sqlite3 >/dev/null 2>&1; then
+  echo "sqlite3 command not found. Install with: sudo apt install -y sqlite3"
+  exit 1
+fi
+
+if [ ! -f "$SRC_DB" ]; then
+  echo "source database not found: $SRC_DB"
+  exit 1
+fi
+
+mkdir -p "$BACKUP_DIR"
+chmod 0750 "$BACKUP_DIR"
+
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+TMP_DB="${BACKUP_DIR}/poolctl-${STAMP}.sqlite3.tmp"
+OUT_DB="${BACKUP_DIR}/poolctl-${STAMP}.sqlite3"
+OUT_GZ="${OUT_DB}.gz"
+OUT_SHA="${OUT_GZ}.sha256"
+
+if ! sqlite3 "$SRC_DB" "PRAGMA quick_check;" | grep -qx "ok"; then
+  echo "source database quick_check failed; skipping backup to preserve previous backups"
+  exit 1
+fi
+
+sqlite3 "$SRC_DB" ".backup '$TMP_DB'"
+
+if ! sqlite3 "$TMP_DB" "PRAGMA integrity_check;" | grep -qx "ok"; then
+  echo "backup integrity_check failed; not publishing corrupted backup"
+  rm -f "$TMP_DB"
+  exit 1
+fi
+
+mv "$TMP_DB" "$OUT_DB"
+gzip -9 "$OUT_DB"
+sha256sum "$OUT_GZ" > "$OUT_SHA"
+
+mapfile -t BACKUPS < <(find "$BACKUP_DIR" -maxdepth 1 -type f -name 'poolctl-*.sqlite3.gz' | sort)
+COUNT="${#BACKUPS[@]}"
+
+if [ "$COUNT" -gt "$KEEP_COUNT" ]; then
+  REMOVE_COUNT=$((COUNT - KEEP_COUNT))
+  for ((i = 0; i < REMOVE_COUNT; i++)); do
+    OLD="${BACKUPS[$i]}"
+    rm -f "$OLD" "${OLD}.sha256"
+  done
+fi
+
+echo "backup created: $OUT_GZ"
