@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import concurrent.futures
 import csv
 import io
 import json
@@ -59,17 +60,69 @@ class AsyncRuntime:
             name="poolctl-web-async-loop",
             daemon=True,
         )
+        self._app_lock: asyncio.Lock | None = None
+        self._tick_future: concurrent.futures.Future[Any] | None = None
+        self._state_lock = threading.Lock()
+        self._latest_live_payload: dict[str, Any] | None = None
+        self._last_tick_error: str | None = None
         self._thread.start()
 
     def _run_loop(self) -> None:
         asyncio.set_event_loop(self._loop)
+        self._app_lock = asyncio.Lock()
         self._loop.run_forever()
 
     def run(self, coroutine: Coroutine[Any, Any, Any]) -> Any:
         future = asyncio.run_coroutine_threadsafe(coroutine, self._loop)
         return future.result()
 
+    async def _run_serial(self, coroutine: Coroutine[Any, Any, Any]) -> Any:
+        if self._app_lock is None:
+            raise RuntimeError("async runtime app lock is not initialized")
+        async with self._app_lock:
+            return await coroutine
+
+    def run_serial(self, coroutine: Coroutine[Any, Any, Any]) -> Any:
+        future = asyncio.run_coroutine_threadsafe(self._run_serial(coroutine), self._loop)
+        return future.result()
+
+    def start_tick_loop(self, app: PoolControllerApp, *, interval_s: float) -> None:
+        if interval_s <= 0:
+            return
+        if self._tick_future is not None:
+            return
+        self._tick_future = asyncio.run_coroutine_threadsafe(
+            self._tick_worker(app=app, interval_s=interval_s),
+            self._loop,
+        )
+
+    def latest_live_payload(self) -> dict[str, Any] | None:
+        with self._state_lock:
+            return dict(self._latest_live_payload) if self._latest_live_payload is not None else None
+
+    async def _tick_worker(self, *, app: PoolControllerApp, interval_s: float) -> None:
+        while True:
+            started = self._loop.time()
+            try:
+                payload = await self._run_serial(build_live_snapshot(app))
+                with self._state_lock:
+                    self._latest_live_payload = payload
+                    self._last_tick_error = None
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                with self._state_lock:
+                    self._last_tick_error = str(error)
+            elapsed = self._loop.time() - started
+            await asyncio.sleep(max(0.0, interval_s - elapsed))
+
     def close(self) -> None:
+        if self._tick_future is not None:
+            self._tick_future.cancel()
+            try:
+                self._tick_future.result(timeout=2.0)
+            except Exception:
+                pass
         self._loop.call_soon_threadsafe(self._loop.stop)
         self._thread.join(timeout=2.0)
 
@@ -224,7 +277,9 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
 
     def _serve_live_snapshot(self) -> None:
         try:
-            payload = self.async_runtime.run(build_live_snapshot(self.app))
+            payload = self.async_runtime.latest_live_payload()
+            if payload is None:
+                payload = self.async_runtime.run_serial(build_live_snapshot(self.app))
             self._record_live_events(payload)
         except Exception as error:
             self._serve_json(
@@ -350,7 +405,7 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
     def _serve_command_result(self) -> None:
         try:
             payload = self._read_json_body()
-            result = self.async_runtime.run(route_command(self.app, payload))
+            result = self.async_runtime.run_serial(route_command(self.app, payload))
             self._record_command_event(payload, result)
         except ValueError as error:
             self._serve_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
@@ -620,10 +675,12 @@ def create_server(
     host: str,
     port: int,
     sim_speedup: float | None = None,
+    tick_interval_s: float = 1.0,
 ) -> ThreadingHTTPServer:
     clock = simulation_clock(config_path, speedup=sim_speedup)
     app = build_app_from_config(config_path, clock=clock)
     async_runtime = AsyncRuntime()
+    async_runtime.start_tick_loop(app, interval_s=tick_interval_s)
 
     class BoundPoolCtlWebHandler(PoolCtlWebHandler):
         pass
@@ -1353,6 +1410,12 @@ def main() -> None:
         default=None,
         help="Use an accelerated clock for simulated configs, e.g. 60 means 1 real second = 1 simulated minute.",
     )
+    parser.add_argument(
+        "--tick-interval-s",
+        type=float,
+        default=1.0,
+        help="Dedicated runtime loop period in seconds. Set <=0 to disable background loop.",
+    )
     args = parser.parse_args()
 
     server = create_server(
@@ -1360,6 +1423,7 @@ def main() -> None:
         host=args.host,
         port=args.port,
         sim_speedup=args.sim_speedup,
+        tick_interval_s=args.tick_interval_s,
     )
 
     print(f"poolctl live dashboard: http://{args.host}:{args.port}")

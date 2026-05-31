@@ -2,8 +2,7 @@
 
 This folder includes an installer that sets up:
 
-- `poolctl.service` (web server + runtime)
-- `poolctl-ticker.service` (drives continuous `tick()` calls even without dashboard open)
+- `poolctl.service` (web server + dedicated runtime loop)
 - `poolctl-backup.service` + `poolctl-backup.timer` (hourly SQLite backups)
 
 ## Install
@@ -32,12 +31,13 @@ VENV_DIR=/home/pool/projects/pool/venv \
 CONFIG_PATH=/home/pool/projects/pool/configs/pi-prod.yaml \
 BACKUP_DB_PATH=/home/pool/projects/pool/data/pi-prod.sqlite3 \
 BACKUP_DIR=/var/backups/poolctl \
+TICK_INTERVAL_S=1.0 \
 ./deploy/systemd/install-pi-services.sh
 ```
 
 ## Check status/logs
 
 ```bash
-sudo systemctl status poolctl.service poolctl-ticker.service poolctl-backup.timer
+sudo systemctl status poolctl.service poolctl-backup.timer
 journalctl -u poolctl.service -f
 ```

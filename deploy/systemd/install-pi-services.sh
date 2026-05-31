@@ -17,6 +17,7 @@ VENV_DIR="${VENV_DIR:-$PROJECT_DIR/venv}"
 CONFIG_PATH="${CONFIG_PATH:-$PROJECT_DIR/configs/pi-prod.yaml}"
 WEB_HOST="${WEB_HOST:-0.0.0.0}"
 WEB_PORT="${WEB_PORT:-8000}"
+TICK_INTERVAL_S="${TICK_INTERVAL_S:-1.0}"
 BACKUP_DB_PATH="${BACKUP_DB_PATH:-$PROJECT_DIR/data/pi-prod.sqlite3}"
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/poolctl}"
 BACKUP_KEEP_COUNT="${BACKUP_KEEP_COUNT:-720}"
@@ -49,6 +50,7 @@ render_template() {
     -e "s|__CONFIG_PATH__|$CONFIG_PATH|g" \
     -e "s|__WEB_HOST__|$WEB_HOST|g" \
     -e "s|__WEB_PORT__|$WEB_PORT|g" \
+    -e "s|__TICK_INTERVAL_S__|$TICK_INTERVAL_S|g" \
     -e "s|__BACKUP_DB_PATH__|$BACKUP_DB_PATH|g" \
     -e "s|__BACKUP_DIR__|$BACKUP_DIR|g" \
     -e "s|__BACKUP_KEEP_COUNT__|$BACKUP_KEEP_COUNT|g" \
@@ -59,14 +61,12 @@ TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 render_template "$SCRIPT_DIR/poolctl.service.tmpl" "$TMP_DIR/poolctl.service"
-render_template "$SCRIPT_DIR/poolctl-ticker.service.tmpl" "$TMP_DIR/poolctl-ticker.service"
 render_template "$SCRIPT_DIR/poolctl-backup.service.tmpl" "$TMP_DIR/poolctl-backup.service"
 render_template "$SCRIPT_DIR/poolctl-backup.sh.tmpl" "$TMP_DIR/poolctl-backup.sh"
 cp "$SCRIPT_DIR/poolctl-backup.timer" "$TMP_DIR/poolctl-backup.timer"
 
 echo "Installing systemd units and backup script..."
 $SUDO install -m 0644 "$TMP_DIR/poolctl.service" /etc/systemd/system/poolctl.service
-$SUDO install -m 0644 "$TMP_DIR/poolctl-ticker.service" /etc/systemd/system/poolctl-ticker.service
 $SUDO install -m 0644 "$TMP_DIR/poolctl-backup.service" /etc/systemd/system/poolctl-backup.service
 $SUDO install -m 0644 "$TMP_DIR/poolctl-backup.timer" /etc/systemd/system/poolctl-backup.timer
 $SUDO install -m 0750 "$TMP_DIR/poolctl-backup.sh" /usr/local/bin/poolctl-backup.sh
@@ -79,8 +79,8 @@ $SUDO chmod 0750 "$BACKUP_DIR"
 echo "Reloading systemd and enabling services..."
 $SUDO systemctl daemon-reload
 $SUDO systemctl enable --now poolctl.service
-$SUDO systemctl enable --now poolctl-ticker.service
 $SUDO systemctl enable --now poolctl-backup.timer
+$SUDO systemctl disable --now poolctl-ticker.service >/dev/null 2>&1 || true
 
 echo
 echo "Installed with:"
@@ -91,11 +91,12 @@ echo "  VENV_DIR=$VENV_DIR"
 echo "  CONFIG_PATH=$CONFIG_PATH"
 echo "  WEB_HOST=$WEB_HOST"
 echo "  WEB_PORT=$WEB_PORT"
+echo "  TICK_INTERVAL_S=$TICK_INTERVAL_S"
 echo "  BACKUP_DB_PATH=$BACKUP_DB_PATH"
 echo "  BACKUP_DIR=$BACKUP_DIR"
 echo "  BACKUP_KEEP_COUNT=$BACKUP_KEEP_COUNT"
 echo
 echo "Status:"
-echo "  $SUDO systemctl status poolctl.service poolctl-ticker.service poolctl-backup.timer"
+echo "  $SUDO systemctl status poolctl.service poolctl-backup.timer"
 echo "Logs:"
 echo "  journalctl -u poolctl.service -f"
