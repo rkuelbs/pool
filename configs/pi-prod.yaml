@@ -2,55 +2,48 @@ runtime:
   stage: open_loop_timer
   driver_profile: raspberry_pi
   enabled_layers:
-    - pump_timer
-    - logging
-    - acquisition
+  - pump_timer
+  - logging
+  - acquisition
   enabled_actuators:
-    - pump_motor
-    - pump_motor_speed
-    - booster_pump
-    - chlorine_dosing_pump
+  - pump_motor
+  - pump_motor_speed
+  - booster_pump
+  - chlorine_dosing_pump
   enabled_sensor_groups:
-    - pressures
-    - chemistry_loop
-
+  - pressures
+  - chemistry_loop
 pump_timer:
   timezone: America/Chicago
   schedules:
-    - name: morning_filter
-      start: "08:00"
-      end: "12:00"
-      pump_speed: high
-      booster: off
-
-    - name: afternoon_filter
-      start: "15:00"
-      end: "18:00"
-      pump_speed: low
-      booster: off
-
+  - name: morning_filter
+    start: 08:00
+    end: '12:00'
+    pump_speed: high
+    booster: false
+  - name: afternoon_filter
+    start: '15:00'
+    end: '18:00'
+    pump_speed: low
+    booster: false
 modbus_relay:
   port: /dev/ttyUSB0
   slave_id: 3
   baudrate: 4800
   timeout_s: 1.0
-
   relays:
     pump_motor: 1
     pump_motor_speed: 2
     booster_pump: 3
     chlorine_dosing_pump: 4
-
   pump_speed_relay:
-    low_state: on
-    high_state: off
-
+    low_state: true
+    high_state: false
 modbus_orp_sensor:
   port: /dev/ttyUSB0
   slave_id: 1
   baudrate: 4800
   timeout_s: 1.0
-
 modbus_analog_input:
   port: /dev/ttyUSB0
   slave_id: 2
@@ -101,7 +94,6 @@ modbus_analog_input:
         value_1: 0.0
         voltage_2: 5.0
         value_2: 14.0
-
 flow_estimation:
   pump_pressure:
     pressure_scale_psi: 0.4335
@@ -121,7 +113,6 @@ flow_estimation:
   filter_restriction:
     clean_value: 2.0
     dirty_value: 8.0
-
 safety:
   pressure_sensor_ids:
     pump_output: pump_output_psi
@@ -138,7 +129,6 @@ safety:
     high_speed_off_above_temp: 34.0
     min_run_seconds: 600.0
     threshold_unit: degF
-
   thresholds:
     chlorine_min_return_psi: 2.0
     chlorine_min_pump_output_psi: 6.0
@@ -147,12 +137,10 @@ safety:
     pump_low_prime_min_output_psi: 1.0
     pump_output_overpressure_psi: 30.0
     pump_high_prime_min_output_psi: 5.0
-
   timeouts:
     booster_low_pressure_grace_s: 10.0
     pump_low_prime_seconds: 30.0
     pump_high_prime_timeout_s: 30.0
-
 logging:
   database_path: data/pi-prod.sqlite3
 mqtt:
@@ -172,57 +160,46 @@ mqtt:
   publish_health: true
   allow_remote_commands: false
   allow_remote_lab_tests: true
-
 acquisition:
-  chemistry_sampling_refresh:
-    enabled: true
-    max_pump_off_s: 21600.0
-    run_duration_s: 1200.0
-    pump_speed: high
   groups:
     pressures:
       sensor_ids:
-        - pump_output_psi
-        - filter_output_psi
-        - return_psi
-        - bubbler_psi
-        - booster_psi
-        - cpu_temp
+      - pump_output_psi
+      - filter_output_psi
+      - return_psi
+      - bubbler_psi
+      - booster_psi
+      - cpu_temp
       read_interval_s: 0.5
-      log_interval_s: 30.0
+      log_interval_s: 30
       requires_pump_flow: false
+      min_pump_on_seconds: 0
+      required_pump_speed: null
       oversample:
         sample_count: 3
-        sample_interval_s: 0.0
+        sample_interval_s: 0
         reducer: median
-
     chemistry_loop:
       sensor_ids:
-        - raw_orp
-        - orp_temp
-        - raw_ph
-        - raw_ph_voltage
-        - temp
-      read_interval_s: 5.0
-      log_interval_s: 120.0
+      - raw_orp
+      - orp_temp
+      - raw_ph
+      - raw_ph_voltage
+      - temp
+      read_interval_s: 5
+      log_interval_s: 120
       requires_pump_flow: true
-      min_pump_on_seconds: 60.0
+      min_pump_on_seconds: 60
+      required_pump_speed: null
       oversample:
         sample_count: 10
         sample_interval_s: 0.1
         reducer: median
-
-    chemical_tank:
-      sensor_ids:
-        - tank_level
-      read_interval_s: 30.0
-      log_interval_s: 300.0
-      requires_pump_flow: false
-      oversample:
-        sample_count: 3
-        sample_interval_s: 0.0
-        reducer: median
-
+  chemistry_sampling_refresh:
+    enabled: true
+    max_pump_off_s: 21600
+    run_duration_s: 1200
+    pump_speed: high
 live_view:
   sensor_limits:
     pump_output_psi:
