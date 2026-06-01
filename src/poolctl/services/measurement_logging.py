@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -787,11 +788,13 @@ def _downsample_records(
     if max_points is None or max_points < 1 or len(records) <= max_points:
         return records
 
-    stride = max(1, len(records) // max_points)
+    stride = max(1, math.ceil(len(records) / max_points))
     sampled = records[::stride]
     if sampled[-1].measurement_id != records[-1].measurement_id:
         sampled = (*sampled, records[-1])
-    return tuple(sampled[:max_points])
+    if len(sampled) > max_points:
+        sampled = (*sampled[: max_points - 1], records[-1])
+    return tuple(sampled)
 
 
 def _mapping_value(

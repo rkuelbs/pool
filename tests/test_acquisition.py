@@ -265,6 +265,50 @@ async def test_poll_due_separates_read_interval_from_log_interval() -> None:
 
 
 @pytest.mark.asyncio
+async def test_log_interval_does_not_block_when_clock_moves_backwards() -> None:
+    clock = make_clock()
+    sensor = FakeSensor(
+        name="cpu_temp",
+        sensor_id=SensorId.CPU_TEMP,
+        clock=clock,
+        values=[50.0, 51.0],
+        unit="degC",
+    )
+    service = AcquisitionService(
+        config=AcquisitionConfig(
+            groups=(
+                AcquisitionGroupConfig(
+                    name="pressures",
+                    sensor_ids=(SensorId.CPU_TEMP,),
+                    read_interval_s=0.5,
+                    log_interval_s=30.0,
+                ),
+            )
+        ),
+        clock=clock,
+        sensor_drivers=[sensor],
+    )
+
+    first = await service.poll_due(
+        actuator_states=no_actuator_states(),
+        state_started_at=no_state_started_at(),
+    )
+    assert first.loggable_measurements == first.measurements
+
+    # Simulate system clock being corrected backwards (e.g. NTP step).
+    service._last_logged_at[SensorId.CPU_TEMP] = clock.now() + timedelta(hours=8)  # type: ignore[attr-defined]
+    await clock.advance(0.5)
+
+    second = await service.poll_due(
+        actuator_states=no_actuator_states(),
+        state_started_at=no_state_started_at(),
+    )
+    assert second.measurements[0].value == 51.0
+    assert second.loggable_measurements == second.measurements
+    assert second.log_decisions[0].reason == "clock_moved_backwards"
+
+
+@pytest.mark.asyncio
 async def test_sensor_failures_do_not_block_other_measurements() -> None:
     clock = make_clock()
     good_sensor = FakeSensor(

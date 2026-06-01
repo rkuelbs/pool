@@ -223,6 +223,40 @@ def test_measurement_logger_history_with_rollup_respects_max_points(tmp_path: Pa
     assert len(records) <= 120
 
 
+def test_measurement_logger_raw_history_downsample_preserves_recent_points(
+    tmp_path: Path,
+) -> None:
+    logger = MeasurementLogger(
+        MeasurementLoggingConfig(database_path=tmp_path / "measurements.sqlite3")
+    )
+    start = datetime(2026, 5, 22, 0, 0, tzinfo=timezone.utc)
+    samples = tuple(
+        Measurement(
+            sensor_id=SensorId.CPU_TEMP,
+            observed_at=start + timedelta(seconds=30 * index),
+            value=50.0 + float(index) * 0.01,
+            unit="degC",
+            quality=Quality.GOOD,
+        )
+        for index in range(2880)
+    )
+    logger.log_measurements(samples)
+
+    records = logger.history_with_rollup(
+        sensor_id=SensorId.CPU_TEMP,
+        since=start,
+        until=start + timedelta(days=1),
+        limit=5000,
+        qualities=(Quality.GOOD,),
+        bucket_seconds=None,
+        max_points=1800,
+    )
+
+    assert len(records) <= 1800
+    assert records[0].observed_at == samples[0].observed_at
+    assert records[-1].observed_at == samples[-1].observed_at
+
+
 def test_measurement_logger_persists_and_queries_weather_history(tmp_path: Path) -> None:
     logger = MeasurementLogger(
         MeasurementLoggingConfig(database_path=tmp_path / "measurements.sqlite3")

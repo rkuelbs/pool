@@ -507,6 +507,12 @@ class AcquisitionService:
         last_logged_at = self._last_logged_at.get(measurement.sensor_id)
         if last_logged_at is not None:
             elapsed_s = (now - last_logged_at).total_seconds()
+            if elapsed_s < 0:
+                return MeasurementLogDecision(
+                    measurement=measurement,
+                    should_log=True,
+                    reason="clock_moved_backwards",
+                )
             if elapsed_s < group.log_interval_s:
                 return MeasurementLogDecision(
                     measurement=measurement,
