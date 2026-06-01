@@ -181,7 +181,6 @@ acquisition:
       - orp_temp
       - raw_ph
       - raw_ph_voltage
-      - temp
       read_interval_s: 5
       log_interval_s: 120
       requires_pump_flow: true
