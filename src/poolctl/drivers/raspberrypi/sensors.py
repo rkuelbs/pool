@@ -220,13 +220,23 @@ class RaspberryPiCpuFanRpmSensor:
         sensor_path_glob: str = "/sys/devices/platform/cooling_fan/hwmon/*/fan1_input",
     ) -> None:
         self._clock = clock
-        self._sensor_path_glob = sensor_path_glob
+        self._sensor_path_globs = (
+            sensor_path_glob,
+            "/sys/class/hwmon/hwmon*/fan1_input",
+        )
 
     async def read(self) -> Measurement:
-        candidates = sorted(glob(self._sensor_path_glob))
-        if not candidates:
+        source_glob: str | None = None
+        candidates: list[str] = []
+        for candidate_glob in self._sensor_path_globs:
+            candidates = sorted(glob(candidate_glob))
+            if candidates:
+                source_glob = candidate_glob
+                break
+        if not candidates or source_glob is None:
             raise FileNotFoundError(
-                f"fan RPM sensor file not found for glob: {self._sensor_path_glob}"
+                "fan RPM sensor file not found for globs: "
+                + ", ".join(self._sensor_path_globs)
             )
         sensor_path = Path(candidates[0])
         raw_text = sensor_path.read_text(encoding="utf-8").strip()
@@ -241,7 +251,7 @@ class RaspberryPiCpuFanRpmSensor:
             metadata={
                 "driver": self.name,
                 "source": str(sensor_path),
-                "source_glob": self._sensor_path_glob,
+                "source_glob": source_glob,
                 "raw_rpm": raw_rpm,
             },
         )
