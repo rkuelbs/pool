@@ -261,6 +261,7 @@ function render(payload) {
 
   renderSafetyBadge(payload.safety);
   renderCpuTempBadge(payload.runtime, payload.sensors || {});
+  renderCpuFanLine(payload.runtime, payload.sensors || {});
   renderFreezeStatus(payload.safety);
   renderCsiStatus(payload.sensors || {});
   renderTimerOverride(payload.timer_override);
@@ -318,6 +319,23 @@ function renderCpuTempBadge(runtime, sensors) {
     badge.classList.add("unknown");
   }
   badge.textContent = `CPU Temp: ${cpuTemp.display || "--"}`;
+}
+
+function renderCpuFanLine(runtime, sensors) {
+  const line = document.getElementById("cpuFanLine");
+  if (!line) {
+    return;
+  }
+
+  const isRaspberryPi = runtime && runtime.driver_profile === "raspberry_pi";
+  if (!isRaspberryPi) {
+    line.classList.add("hidden");
+    return;
+  }
+
+  const cpuFan = sensors ? sensors.cpu_fan_rpm : null;
+  line.classList.remove("hidden");
+  line.textContent = `CPU Fan: ${cpuFan && cpuFan.display ? cpuFan.display : "--"}`;
 }
 
 function renderTimerOverride(override) {

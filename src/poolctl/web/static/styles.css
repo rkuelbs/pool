@@ -135,6 +135,10 @@ h2 {
   display: none;
 }
 
+.timestamp.hidden {
+  display: none;
+}
+
 .timestamp {
   color: var(--muted);
   font-size: 12px;
