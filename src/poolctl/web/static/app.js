@@ -10,6 +10,7 @@ const SENSOR_ORDER = [
   "raw_ph_voltage",
   "temp",
   "cpu_temp",
+  "cpu_fan_rpm",
   "tank_level",
 ];
 
@@ -59,6 +60,7 @@ const SENSOR_LABELS = {
   raw_ph_voltage: "pH Vraw",
   temp: "Water temp",
   cpu_temp: "CPU temp",
+  cpu_fan_rpm: "CPU fan",
   tank_level: "Tank level",
 };
 

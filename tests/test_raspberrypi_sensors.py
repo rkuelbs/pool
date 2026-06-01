@@ -10,6 +10,7 @@ from poolctl.drivers.base import MultiSensorDriver
 from poolctl.drivers.raspberrypi.sensors import (
     DFRobotOrpSensor,
     DFRobotPhSensor,
+    RaspberryPiCpuFanRpmSensor,
     RaspberryPiCpuTempSensor,
     DFRobotWaterQualitySensorConfig,
     build_raspberrypi_sensor_drivers_from_mapping,
@@ -194,11 +195,38 @@ def test_build_raspberrypi_sensor_drivers_from_mapping_allows_cpu_temp_path_over
 ) -> None:
     clock = make_clock()
     path = tmp_path / "cpu_override"
+    fan_path = tmp_path / "fan" / "fan1_input"
     drivers = build_raspberrypi_sensor_drivers_from_mapping(
-        {"cpu_temp_sensor": {"path": str(path)}},
+        {
+            "cpu_temp_sensor": {"path": str(path)},
+            "cpu_fan_sensor": {"path_glob": str(fan_path)},
+        },
         clock=clock,
     )
 
-    assert len(drivers) == 1
-    driver = drivers[0]
-    assert isinstance(driver, RaspberryPiCpuTempSensor)
+    assert len(drivers) == 2
+    assert isinstance(drivers[0], RaspberryPiCpuTempSensor)
+    assert isinstance(drivers[1], RaspberryPiCpuFanRpmSensor)
+
+
+@pytest.mark.asyncio
+async def test_raspberrypi_cpu_fan_rpm_sensor_reads_sysfs_glob(
+    tmp_path: Path,
+) -> None:
+    clock = make_clock()
+    fan_file = tmp_path / "cooling_fan" / "hwmon" / "hwmon9" / "fan1_input"
+    fan_file.parent.mkdir(parents=True, exist_ok=True)
+    fan_file.write_text("2789\n", encoding="utf-8")
+    sensor = RaspberryPiCpuFanRpmSensor(
+        clock=clock,
+        sensor_path_glob=str(tmp_path / "cooling_fan" / "hwmon" / "*" / "fan1_input"),
+    )
+
+    measurement = await sensor.read()
+
+    assert measurement.sensor_id == SensorId.CPU_FAN_RPM
+    assert measurement.value == 2789.0
+    assert measurement.unit == "rpm"
+    assert measurement.kind == MeasurementKind.RAW
+    assert measurement.quality == Quality.GOOD
+    assert measurement.metadata["raw_rpm"] == 2789

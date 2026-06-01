@@ -188,6 +188,7 @@ acquisition:
         - bubbler_psi
         - booster_psi
         - cpu_temp
+        - cpu_fan_rpm
       read_interval_s: 0.5
       log_interval_s: 30.0
       requires_pump_flow: false

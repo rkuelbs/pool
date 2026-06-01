@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from glob import glob
 from pathlib import Path
 from typing import Any
 
@@ -204,6 +205,48 @@ class RaspberryPiCpuTempSensor:
         )
 
 
+class RaspberryPiCpuFanRpmSensor:
+    """
+    Raspberry Pi 5 fan RPM sensor from Linux hwmon sysfs.
+    """
+
+    name = "raspberrypi_cpu_fan_rpm"
+    sensor_id = SensorId.CPU_FAN_RPM
+
+    def __init__(
+        self,
+        *,
+        clock: Clock,
+        sensor_path_glob: str = "/sys/devices/platform/cooling_fan/hwmon/*/fan1_input",
+    ) -> None:
+        self._clock = clock
+        self._sensor_path_glob = sensor_path_glob
+
+    async def read(self) -> Measurement:
+        candidates = sorted(glob(self._sensor_path_glob))
+        if not candidates:
+            raise FileNotFoundError(
+                f"fan RPM sensor file not found for glob: {self._sensor_path_glob}"
+            )
+        sensor_path = Path(candidates[0])
+        raw_text = sensor_path.read_text(encoding="utf-8").strip()
+        raw_rpm = int(raw_text)
+        return Measurement(
+            sensor_id=self.sensor_id,
+            observed_at=self._clock.now(),
+            kind=MeasurementKind.RAW,
+            value=float(raw_rpm),
+            unit="rpm",
+            quality=Quality.GOOD,
+            metadata={
+                "driver": self.name,
+                "source": str(sensor_path),
+                "source_glob": self._sensor_path_glob,
+                "raw_rpm": raw_rpm,
+            },
+        )
+
+
 def build_raspberrypi_sensors_from_mapping(
     data: Mapping[str, Any],
     *,
@@ -288,15 +331,24 @@ def build_raspberrypi_sensor_drivers_from_mapping(
     *,
     clock: Clock,
 ) -> list[SensorDriver]:
-    path_value = _string_value(
+    cpu_temp_path = _string_value(
         _mapping_value(data, "cpu_temp_sensor", default={}),
         "path",
         "/sys/class/thermal/thermal_zone0/temp",
     )
+    cpu_fan_path_glob = _string_value(
+        _mapping_value(data, "cpu_fan_sensor", default={}),
+        "path_glob",
+        "/sys/devices/platform/cooling_fan/hwmon/*/fan1_input",
+    )
     return [
         RaspberryPiCpuTempSensor(
             clock=clock,
-            sensor_file=Path(path_value),
+            sensor_file=Path(cpu_temp_path),
+        ),
+        RaspberryPiCpuFanRpmSensor(
+            clock=clock,
+            sensor_path_glob=cpu_fan_path_glob,
         )
     ]
 
