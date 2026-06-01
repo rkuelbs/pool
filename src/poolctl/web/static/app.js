@@ -168,6 +168,9 @@ const HISTORY_SERIES_COLORS = [
   "#9a6f2f",
   "#b23aa6",
 ];
+const HISTORY_AXIS_SPAN_RATIO_THRESHOLD = 5.0;
+const HISTORY_AXIS_CENTER_SPREAD_FACTOR = 2.0;
+const HISTORY_AXIS_EPSILON = 1e-6;
 
 let historyLoading = false;
 let lastHistoryLoadedAt = 0;
@@ -999,8 +1002,10 @@ function drawHistoryChartSeries(series) {
     const side = index % 2 === 0 ? "left" : "right";
     const slot = Math.floor(index / 2);
     const values = entry.points.map((point) => point._value);
-    let minValue = Math.min(...values);
-    let maxValue = Math.max(...values);
+    const rawMinValue = Math.min(...values);
+    const rawMaxValue = Math.max(...values);
+    let minValue = rawMinValue;
+    let maxValue = rawMaxValue;
     if (minValue === maxValue) {
       minValue -= 1;
       maxValue += 1;
@@ -1019,6 +1024,10 @@ function drawHistoryChartSeries(series) {
         side,
         slot,
         axisX,
+        rawMinValue,
+        rawMaxValue,
+        rawRange: rawMaxValue - rawMinValue,
+        rawCenter: (rawMaxValue + rawMinValue) / 2,
         minValue,
         maxValue,
         range: maxValue - minValue,
@@ -1026,74 +1035,125 @@ function drawHistoryChartSeries(series) {
     };
   });
 
-  for (let index = 0; index <= 4; index += 1) {
-    const y = margin.top + (plotHeight * index) / 4;
-    chart.appendChild(svgLine(margin.left, y, margin.left + plotWidth, y, "history-grid"));
-  }
+  const axisMode = chooseHistoryAxisMode(withAxes);
 
-  withAxes.forEach((entry) => {
-    const { axis } = entry;
-    const axisLine = svgLine(axis.axisX, margin.top, axis.axisX, margin.top + plotHeight, "history-grid");
-    axisLine.style.stroke = colorWithAlpha(entry.color, 0.55);
-    chart.appendChild(axisLine);
+  if (axisMode === "single") {
+    const singleValues = allPoints.map((point) => point._value);
+    let minValue = Math.min(...singleValues);
+    let maxValue = Math.max(...singleValues);
+    if (minValue === maxValue) {
+      minValue -= 1;
+      maxValue += 1;
+    }
+    const valuePadding = (maxValue - minValue) * 0.08;
+    minValue -= valuePadding;
+    maxValue += valuePadding;
 
-    for (let tick = 0; tick <= 4; tick += 1) {
-      const ratio = tick / 4;
-      const y = margin.top + plotHeight * ratio;
-      const value = axis.maxValue - axis.range * ratio;
-      const label = svgText(
-        formatAxisTick(value, axis.range),
+    for (let index = 0; index <= 4; index += 1) {
+      const y = margin.top + (plotHeight * index) / 4;
+      chart.appendChild(svgLine(margin.left, y, margin.left + plotWidth, y, "history-grid"));
+
+      const labelValue = maxValue - ((maxValue - minValue) * index) / 4;
+      chart.appendChild(svgText(labelValue.toFixed(1), margin.left - 8, y + 4, "history-axis-label", "end"));
+    }
+
+    withAxes.forEach((entry) => {
+      const coordinates = entry.points.map((point) => {
+        const x =
+          minTime === maxTime
+            ? margin.left + plotWidth
+            : margin.left + ((point._time - minTime) / (maxTime - minTime)) * plotWidth;
+        const y = margin.top + plotHeight - ((point._value - minValue) / (maxValue - minValue)) * plotHeight;
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+      });
+
+      const polyline = document.createElementNS(SVG_NS, "polyline");
+      polyline.setAttribute("class", "history-line");
+      polyline.setAttribute("style", `stroke:${entry.color}`);
+      polyline.setAttribute("points", coordinates.join(" "));
+      chart.appendChild(polyline);
+
+      const latest = entry.points[entry.points.length - 1];
+      const [latestX, latestY] = coordinates[coordinates.length - 1].split(",");
+      const point = document.createElementNS(SVG_NS, "circle");
+      point.setAttribute("class", "history-point");
+      point.setAttribute("cx", latestX);
+      point.setAttribute("cy", latestY);
+      point.setAttribute("r", "3.5");
+      point.setAttribute("fill", entry.color);
+      point.setAttribute("title", `${entry.label}: ${latest.display}`);
+      chart.appendChild(point);
+    });
+  } else {
+    for (let index = 0; index <= 4; index += 1) {
+      const y = margin.top + (plotHeight * index) / 4;
+      chart.appendChild(svgLine(margin.left, y, margin.left + plotWidth, y, "history-grid"));
+    }
+
+    withAxes.forEach((entry) => {
+      const { axis } = entry;
+      const axisLine = svgLine(axis.axisX, margin.top, axis.axisX, margin.top + plotHeight, "history-grid");
+      axisLine.style.stroke = colorWithAlpha(entry.color, 0.55);
+      chart.appendChild(axisLine);
+
+      for (let tick = 0; tick <= 4; tick += 1) {
+        const ratio = tick / 4;
+        const y = margin.top + plotHeight * ratio;
+        const value = axis.maxValue - axis.range * ratio;
+        const label = svgText(
+          formatAxisTick(value, axis.range),
+          axis.side === "left" ? axis.axisX - 6 : axis.axisX + 6,
+          y + 4,
+          "history-axis-label",
+          axis.side === "left" ? "end" : "start",
+        );
+        label.setAttribute("style", `fill:${entry.color}`);
+        chart.appendChild(label);
+      }
+
+      const unit = entry.points[0].unit || "";
+      const axisTitle = svgText(
+        unit ? `${entry.label} (${unit})` : entry.label,
         axis.side === "left" ? axis.axisX - 6 : axis.axisX + 6,
-        y + 4,
+        margin.top - 6,
         "history-axis-label",
         axis.side === "left" ? "end" : "start",
       );
-      label.setAttribute("style", `fill:${entry.color}`);
-      chart.appendChild(label);
-    }
-
-    const unit = entry.points[0].unit || "";
-    const axisTitle = svgText(
-      unit ? `${entry.label} (${unit})` : entry.label,
-      axis.side === "left" ? axis.axisX - 6 : axis.axisX + 6,
-      margin.top - 6,
-      "history-axis-label",
-      axis.side === "left" ? "end" : "start",
-    );
-    axisTitle.setAttribute("style", `fill:${entry.color};font-weight:700`);
-    chart.appendChild(axisTitle);
-  });
-
-  withAxes.forEach((entry) => {
-    const coordinates = entry.points.map((point) => {
-      const x =
-        minTime === maxTime
-          ? margin.left + plotWidth
-          : margin.left + ((point._time - minTime) / (maxTime - minTime)) * plotWidth;
-      const y =
-        margin.top +
-        plotHeight -
-        ((point._value - entry.axis.minValue) / (entry.axis.maxValue - entry.axis.minValue)) * plotHeight;
-      return `${x.toFixed(1)},${y.toFixed(1)}`;
+      axisTitle.setAttribute("style", `fill:${entry.color};font-weight:700`);
+      chart.appendChild(axisTitle);
     });
 
-    const polyline = document.createElementNS(SVG_NS, "polyline");
-    polyline.setAttribute("class", "history-line");
-    polyline.setAttribute("style", `stroke:${entry.color}`);
-    polyline.setAttribute("points", coordinates.join(" "));
-    chart.appendChild(polyline);
+    withAxes.forEach((entry) => {
+      const coordinates = entry.points.map((point) => {
+        const x =
+          minTime === maxTime
+            ? margin.left + plotWidth
+            : margin.left + ((point._time - minTime) / (maxTime - minTime)) * plotWidth;
+        const y =
+          margin.top +
+          plotHeight -
+          ((point._value - entry.axis.minValue) / (entry.axis.maxValue - entry.axis.minValue)) * plotHeight;
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+      });
 
-    const latest = entry.points[entry.points.length - 1];
-    const [latestX, latestY] = coordinates[coordinates.length - 1].split(",");
-    const point = document.createElementNS(SVG_NS, "circle");
-    point.setAttribute("class", "history-point");
-    point.setAttribute("cx", latestX);
-    point.setAttribute("cy", latestY);
-    point.setAttribute("r", "3.5");
-    point.setAttribute("fill", entry.color);
-    point.setAttribute("title", `${entry.label}: ${latest.display}`);
-    chart.appendChild(point);
-  });
+      const polyline = document.createElementNS(SVG_NS, "polyline");
+      polyline.setAttribute("class", "history-line");
+      polyline.setAttribute("style", `stroke:${entry.color}`);
+      polyline.setAttribute("points", coordinates.join(" "));
+      chart.appendChild(polyline);
+
+      const latest = entry.points[entry.points.length - 1];
+      const [latestX, latestY] = coordinates[coordinates.length - 1].split(",");
+      const point = document.createElementNS(SVG_NS, "circle");
+      point.setAttribute("class", "history-point");
+      point.setAttribute("cx", latestX);
+      point.setAttribute("cy", latestY);
+      point.setAttribute("r", "3.5");
+      point.setAttribute("fill", entry.color);
+      point.setAttribute("title", `${entry.label}: ${latest.display}`);
+      chart.appendChild(point);
+    });
+  }
 
   const xTickCount = 5;
   for (let index = 0; index < xTickCount; index += 1) {
@@ -1133,6 +1193,38 @@ function formatAxisTick(value, range) {
     return value.toFixed(2);
   }
   return value.toFixed(3);
+}
+
+function chooseHistoryAxisMode(seriesWithAxes) {
+  if (!seriesWithAxes || seriesWithAxes.length <= 1) {
+    return "single";
+  }
+
+  const positiveSpans = seriesWithAxes
+    .map((entry) => Number(entry.axis.rawRange))
+    .filter((span) => Number.isFinite(span) && span > HISTORY_AXIS_EPSILON);
+  if (!positiveSpans.length) {
+    return "single";
+  }
+
+  const largest = Math.max(...positiveSpans);
+  const smallest = Math.min(...positiveSpans);
+  if (!Number.isFinite(largest) || !Number.isFinite(smallest) || smallest <= 0) {
+    return "multi";
+  }
+
+  const spanRatio = largest / smallest;
+  const centers = seriesWithAxes
+    .map((entry) => Number(entry.axis.rawCenter))
+    .filter((center) => Number.isFinite(center));
+  if (!centers.length) {
+    return spanRatio <= HISTORY_AXIS_SPAN_RATIO_THRESHOLD ? "single" : "multi";
+  }
+  const centerSpread = Math.max(...centers) - Math.min(...centers);
+
+  const spanSimilar = spanRatio <= HISTORY_AXIS_SPAN_RATIO_THRESHOLD;
+  const centerSimilar = centerSpread <= HISTORY_AXIS_CENTER_SPREAD_FACTOR * largest;
+  return spanSimilar && centerSimilar ? "single" : "multi";
 }
 
 function installHistoryHover(chart, series, axis) {
