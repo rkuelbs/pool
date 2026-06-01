@@ -948,76 +948,149 @@ function drawHistoryChartSeries(series) {
 
   const width = 720;
   const height = 260;
-  const margin = { top: 18, right: 20, bottom: 34, left: 54 };
-  const plotWidth = width - margin.left - margin.right;
-  const plotHeight = height - margin.top - margin.bottom;
+  const axisSpacing = 44;
+  const chartSeries = series
+    .map((entry, seriesIndex) => {
+      const color =
+        colorMap[entry.sensor_id] || HISTORY_SERIES_COLORS[seriesIndex % HISTORY_SERIES_COLORS.length];
+      const points = (entry.points || [])
+        .map((point) => {
+          const value = Number(point.value);
+          const time = new Date(point.observed_at).getTime();
+          if (!Number.isFinite(value) || !Number.isFinite(time)) {
+            return null;
+          }
+          return { ...point, _value: value, _time: time };
+        })
+        .filter((point) => point !== null);
+      return {
+        sensor_id: entry.sensor_id,
+        label: entry.label || entry.sensor_id,
+        color,
+        points,
+      };
+    })
+    .filter((entry) => entry.points.length > 0);
 
-  const points = series.flatMap((entry) =>
-    (entry.points || []).map((point) => ({ ...point, sensor_id: entry.sensor_id })),
-  );
-
-  if (!points.length) {
+  const allPoints = chartSeries.flatMap((entry) => entry.points);
+  if (!allPoints.length) {
     chart.appendChild(svgText("No logged measurements yet", width / 2, height / 2, "history-empty"));
     status.textContent = "Waiting for loggable samples";
     return;
   }
 
-  const values = points.map((point) => Number(point.value));
-  const times = points.map((point) => new Date(point.observed_at).getTime());
+  const times = allPoints.map((point) => point._time);
   const minTime = Math.min(...times);
   const maxTime = Math.max(...times);
-  let minValue = Math.min(...values);
-  let maxValue = Math.max(...values);
 
-  if (minValue === maxValue) {
-    minValue -= 1;
-    maxValue += 1;
-  }
+  // Alternate per-series axes left/right so each trace gets its own fitted scale.
+  const leftAxisCount = Math.ceil(chartSeries.length / 2);
+  const rightAxisCount = Math.floor(chartSeries.length / 2);
+  const margin = {
+    top: 18,
+    right: 22 + Math.max(0, rightAxisCount) * axisSpacing,
+    bottom: 34,
+    left: 44 + Math.max(0, leftAxisCount - 1) * axisSpacing,
+  };
+  const plotWidth = Math.max(140, width - margin.left - margin.right);
+  const plotHeight = height - margin.top - margin.bottom;
 
-  const valuePadding = (maxValue - minValue) * 0.08;
-  minValue -= valuePadding;
-  maxValue += valuePadding;
+  const withAxes = chartSeries.map((entry, index) => {
+    const side = index % 2 === 0 ? "left" : "right";
+    const slot = Math.floor(index / 2);
+    const values = entry.points.map((point) => point._value);
+    let minValue = Math.min(...values);
+    let maxValue = Math.max(...values);
+    if (minValue === maxValue) {
+      minValue -= 1;
+      maxValue += 1;
+    }
+    const valuePadding = (maxValue - minValue) * 0.08;
+    minValue -= valuePadding;
+    maxValue += valuePadding;
+    const axisX =
+      side === "left"
+        ? margin.left - slot * axisSpacing
+        : width - margin.right + slot * axisSpacing;
+
+    return {
+      ...entry,
+      axis: {
+        side,
+        slot,
+        axisX,
+        minValue,
+        maxValue,
+        range: maxValue - minValue,
+      },
+    };
+  });
 
   for (let index = 0; index <= 4; index += 1) {
     const y = margin.top + (plotHeight * index) / 4;
-    chart.appendChild(svgLine(margin.left, y, width - margin.right, y, "history-grid"));
-
-    const labelValue = maxValue - ((maxValue - minValue) * index) / 4;
-    chart.appendChild(svgText(labelValue.toFixed(1), margin.left - 8, y + 4, "history-axis-label", "end"));
+    chart.appendChild(svgLine(margin.left, y, margin.left + plotWidth, y, "history-grid"));
   }
 
-  series.forEach((entry, seriesIndex) => {
-    const entryPoints = entry.points || [];
-    if (!entryPoints.length) {
-      return;
+  withAxes.forEach((entry) => {
+    const { axis } = entry;
+    const axisLine = svgLine(axis.axisX, margin.top, axis.axisX, margin.top + plotHeight, "history-grid");
+    axisLine.style.stroke = colorWithAlpha(entry.color, 0.55);
+    chart.appendChild(axisLine);
+
+    for (let tick = 0; tick <= 4; tick += 1) {
+      const ratio = tick / 4;
+      const y = margin.top + plotHeight * ratio;
+      const value = axis.maxValue - axis.range * ratio;
+      const label = svgText(
+        formatAxisTick(value, axis.range),
+        axis.side === "left" ? axis.axisX - 6 : axis.axisX + 6,
+        y + 4,
+        "history-axis-label",
+        axis.side === "left" ? "end" : "start",
+      );
+      label.setAttribute("style", `fill:${entry.color}`);
+      chart.appendChild(label);
     }
 
-    const color =
-      colorMap[entry.sensor_id] || HISTORY_SERIES_COLORS[seriesIndex % HISTORY_SERIES_COLORS.length];
-    const coordinates = entryPoints.map((point) => {
-      const pointTime = new Date(point.observed_at).getTime();
+    const unit = entry.points[0].unit || "";
+    const axisTitle = svgText(
+      unit ? `${entry.label} (${unit})` : entry.label,
+      axis.side === "left" ? axis.axisX - 6 : axis.axisX + 6,
+      margin.top - 6,
+      "history-axis-label",
+      axis.side === "left" ? "end" : "start",
+    );
+    axisTitle.setAttribute("style", `fill:${entry.color};font-weight:700`);
+    chart.appendChild(axisTitle);
+  });
+
+  withAxes.forEach((entry) => {
+    const coordinates = entry.points.map((point) => {
       const x =
         minTime === maxTime
           ? margin.left + plotWidth
-          : margin.left + ((pointTime - minTime) / (maxTime - minTime)) * plotWidth;
-      const y = margin.top + plotHeight - ((Number(point.value) - minValue) / (maxValue - minValue)) * plotHeight;
+          : margin.left + ((point._time - minTime) / (maxTime - minTime)) * plotWidth;
+      const y =
+        margin.top +
+        plotHeight -
+        ((point._value - entry.axis.minValue) / (entry.axis.maxValue - entry.axis.minValue)) * plotHeight;
       return `${x.toFixed(1)},${y.toFixed(1)}`;
     });
 
     const polyline = document.createElementNS(SVG_NS, "polyline");
     polyline.setAttribute("class", "history-line");
-    polyline.setAttribute("style", `stroke:${color}`);
+    polyline.setAttribute("style", `stroke:${entry.color}`);
     polyline.setAttribute("points", coordinates.join(" "));
     chart.appendChild(polyline);
 
-    const latest = entryPoints[entryPoints.length - 1];
+    const latest = entry.points[entry.points.length - 1];
     const [latestX, latestY] = coordinates[coordinates.length - 1].split(",");
     const point = document.createElementNS(SVG_NS, "circle");
     point.setAttribute("class", "history-point");
     point.setAttribute("cx", latestX);
     point.setAttribute("cy", latestY);
     point.setAttribute("r", "3.5");
-    point.setAttribute("fill", color);
+    point.setAttribute("fill", entry.color);
     point.setAttribute("title", `${entry.label}: ${latest.display}`);
     chart.appendChild(point);
   });
@@ -1040,14 +1113,26 @@ function drawHistoryChartSeries(series) {
   installHistoryHover(chart, series, {
     minTime,
     maxTime,
-    minValue,
-    maxValue,
     margin,
     plotWidth,
     plotHeight,
   });
 
-  status.textContent = `${points.length} points across ${series.length} sensors`;
+  status.textContent = `${allPoints.length} points across ${withAxes.length} sensors`;
+}
+
+function formatAxisTick(value, range) {
+  const absRange = Math.abs(range);
+  if (absRange >= 1000) {
+    return value.toFixed(0);
+  }
+  if (absRange >= 100) {
+    return value.toFixed(1);
+  }
+  if (absRange >= 10) {
+    return value.toFixed(2);
+  }
+  return value.toFixed(3);
 }
 
 function installHistoryHover(chart, series, axis) {
