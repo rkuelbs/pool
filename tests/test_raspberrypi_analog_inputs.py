@@ -17,6 +17,7 @@ class FakeAnalogTransport:
     def __init__(self, registers: tuple[int, ...]) -> None:
         self.registers = registers
         self.reads: list[tuple[int, int]] = []
+        self.writes: list[tuple[int, int]] = []
 
     async def read_input_registers(
         self,
@@ -26,6 +27,14 @@ class FakeAnalogTransport:
     ) -> tuple[int, ...]:
         self.reads.append((start_address, count))
         return self.registers[:count]
+
+    async def write_holding_register(
+        self,
+        *,
+        register_address: int,
+        value: int,
+    ) -> None:
+        self.writes.append((register_address, value))
 
 
 def make_clock() -> SimulatedClock:
@@ -42,6 +51,7 @@ def analog_mapping() -> dict[str, object]:
             "baudrate": 9600,
             "timeout_s": 1.0,
             "raw_to_volts_scale": 0.001,
+            "startup_channel_mode": None,
             "sensors": {
                 "pump_output_psi": {
                     "channel": 1,
@@ -88,6 +98,7 @@ async def test_waveshare_analog_driver_emits_calibrated_measurements() -> None:
     measurements = await driver.read_all()
 
     assert transport.reads == [(0x0000, 8)]
+    assert transport.writes == []
     by_sensor = {measurement.sensor_id: measurement for measurement in measurements}
 
     assert by_sensor[SensorId.PUMP_OUTPUT_PSI].value == 15.0
@@ -96,6 +107,38 @@ async def test_waveshare_analog_driver_emits_calibrated_measurements() -> None:
     assert by_sensor[SensorId.RAW_PH].unit == "pH"
     assert by_sensor[SensorId.RAW_PH_VOLTAGE].value == 2.8
     assert by_sensor[SensorId.RAW_PH_VOLTAGE].unit == "V"
+
+
+@pytest.mark.asyncio
+async def test_waveshare_analog_driver_applies_startup_channel_mode_once() -> None:
+    mapping = analog_mapping()
+    analog_section = mapping["modbus_analog_input"]
+    assert isinstance(analog_section, dict)
+    analog_section["raw_to_volts_scale"] = 0.0005
+    analog_section["startup_channel_mode"] = 0
+
+    config = WaveshareAnalogInputConfig.from_mapping(mapping)
+    transport = FakeAnalogTransport((2500, 2800, 0, 0, 0, 0, 0, 0))
+    driver = WaveshareAnalogInput8ChDriver(
+        transport=transport,
+        clock=make_clock(),
+        config=config,
+    )
+
+    await driver.read_all()
+    await driver.read_all()
+
+    assert transport.writes == [
+        (0x1000, 0),
+        (0x1001, 0),
+        (0x1002, 0),
+        (0x1003, 0),
+        (0x1004, 0),
+        (0x1005, 0),
+        (0x1006, 0),
+        (0x1007, 0),
+    ]
+    assert transport.reads == [(0x0000, 8), (0x0000, 8)]
 
 
 def test_build_waveshare_analog_driver_returns_none_without_sensor_map() -> None:

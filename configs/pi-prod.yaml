@@ -46,6 +46,7 @@ modbus_analog_input:
   timeout_s: 1
   raw_to_volts_scale: 0.0005
   raw_to_volts_offset: 0
+  startup_channel_mode: 0
   sensors:
     pump_output_psi:
       channel: 5

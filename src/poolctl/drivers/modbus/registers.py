@@ -35,6 +35,17 @@ class ModbusRegisterTransport(Protocol):
         """
         ...
 
+    async def write_holding_register(
+        self,
+        *,
+        register_address: int,
+        value: int,
+    ) -> None:
+        """
+        Write one holding register using function code 0x06.
+        """
+        ...
+
 
 @dataclass(frozen=True)
 class ModbusRegisterDeviceConfig:
@@ -105,6 +116,21 @@ class PymodbusRtuRegisterTransport:
                 slave_id=self._config.slave_id,
                 start_address=start_address,
                 count=count,
+            )
+        except Exception as error:
+            raise SensorReadError(str(error)) from error
+
+    async def write_holding_register(
+        self,
+        *,
+        register_address: int,
+        value: int,
+    ) -> None:
+        try:
+            await self._shared_bus().write_holding_register(
+                slave_id=self._config.slave_id,
+                register_address=register_address,
+                value=value,
             )
         except Exception as error:
             raise SensorReadError(str(error)) from error

@@ -22,6 +22,8 @@ SUPPORTED_ANALOG_SENSOR_IDS = {
     SensorId.BOOSTER_PSI,
     SensorId.RAW_PH,
 }
+CHANNEL_MODE_REGISTER_BASE = 0x1000
+CHANNEL_COUNT = 8
 
 
 @dataclass(frozen=True)
@@ -76,6 +78,7 @@ class WaveshareAnalogInputConfig:
     device: ModbusRegisterDeviceConfig
     raw_to_volts_scale: float = 0.0005
     raw_to_volts_offset: float = 0.0
+    startup_channel_mode: int | None = None
     sensors: tuple[AnalogChannelConfig, ...] = ()
 
     @classmethod
@@ -125,6 +128,7 @@ class WaveshareAnalogInputConfig:
             ),
             raw_to_volts_scale=_float_value(section, "raw_to_volts_scale", 0.0005),
             raw_to_volts_offset=_float_value(section, "raw_to_volts_offset", 0.0),
+            startup_channel_mode=_optional_int_value(section, "startup_channel_mode"),
             sensors=tuple(sensors),
         )
 
@@ -146,8 +150,10 @@ class WaveshareAnalogInput8ChDriver:
         self._transport = transport
         self._clock = clock
         self._config = config
+        self._startup_mode_applied = False
 
     async def read_all(self) -> list[Measurement]:
+        await self._apply_startup_channel_mode()
         registers = await self._transport.read_input_registers(
             start_address=0x0000,
             count=8,
@@ -220,6 +226,21 @@ class WaveshareAnalogInput8ChDriver:
 
         return measurements
 
+    async def _apply_startup_channel_mode(self) -> None:
+        startup_mode = self._config.startup_channel_mode
+        if startup_mode is None or self._startup_mode_applied:
+            return
+
+        if startup_mode < 0 or startup_mode > 0xFFFF:
+            raise ValueError("startup_channel_mode must be between 0 and 65535")
+
+        for channel_index in range(CHANNEL_COUNT):
+            await self._transport.write_holding_register(
+                register_address=CHANNEL_MODE_REGISTER_BASE + channel_index,
+                value=startup_mode,
+            )
+        self._startup_mode_applied = True
+
 
 def build_waveshare_analog_driver_from_mapping(
     data: Mapping[str, Any],
@@ -269,3 +290,12 @@ def _float_value(data: Mapping[str, Any], key: str, default: float) -> float:
     if not isinstance(value, int | float):
         raise ValueError(f"{key} must be a number")
     return float(value)
+
+
+def _optional_int_value(data: Mapping[str, Any], key: str) -> int | None:
+    value = data.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, int):
+        raise ValueError(f"{key} must be an integer")
+    return value

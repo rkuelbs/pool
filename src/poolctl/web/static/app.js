@@ -2467,6 +2467,7 @@ function renderAnalogConfig(config) {
   document.getElementById("analogTimeout").value = String(config.timeout_s ?? 1.0);
   document.getElementById("analogScale").value = String(config.raw_to_volts_scale ?? 0.0005);
   document.getElementById("analogOffset").value = String(config.raw_to_volts_offset ?? 0.0);
+  document.getElementById("analogStartupChannelMode").value = config.startup_channel_mode ?? "";
 
   const rows = document.getElementById("analogSensorRows");
   rows.replaceChildren();
@@ -2550,6 +2551,7 @@ function collectAnalogConfig() {
     timeout_s: Number(document.getElementById("analogTimeout").value),
     raw_to_volts_scale: Number(document.getElementById("analogScale").value),
     raw_to_volts_offset: Number(document.getElementById("analogOffset").value),
+    startup_channel_mode: numberOrNull(document.getElementById("analogStartupChannelMode").value),
     sensors,
   };
 }

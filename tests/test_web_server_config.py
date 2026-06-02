@@ -279,6 +279,7 @@ def test_analog_input_update_writes_yaml(tmp_path: Path) -> None:
             "timeout_s": 1.0,
             "raw_to_volts_scale": 0.001,
             "raw_to_volts_offset": 0.0,
+            "startup_channel_mode": 0,
             "sensors": {
                 "raw_ph": {
                     "channel": 6,
@@ -297,6 +298,7 @@ def test_analog_input_update_writes_yaml(tmp_path: Path) -> None:
 
     serialized = serialize_analog_input_config(path)
     assert serialized["modbus_analog_input"]["sensors"]["raw_ph"]["channel"] == 6
+    assert serialized["modbus_analog_input"]["startup_channel_mode"] == 0
 
 
 def test_health_payload_includes_status_fields() -> None:
