@@ -6,6 +6,7 @@ import concurrent.futures
 import csv
 import io
 import json
+import os
 import threading
 from collections.abc import Coroutine
 from datetime import datetime, timedelta, timezone
@@ -256,6 +257,10 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
 
         if path == "/api/lab_tests":
             self._serve_add_lab_test()
+            return
+
+        if path == "/api/system/restart":
+            self._serve_restart_service()
             return
 
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
@@ -559,6 +564,16 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             return
         self._serve_json(result)
 
+    def _serve_restart_service(self) -> None:
+        self._discard_request_body()
+        request_process_restart()
+        self._serve_json(
+            {
+                "restarting": True,
+                "message": "Restart requested. Service should return in a few seconds.",
+            }
+        )
+
     def _record_live_events(self, payload: dict[str, Any]) -> None:
         observed_at = str(payload.get("observed_at", self.app.clock.now().isoformat()))
         for failure in payload.get("tick", {}).get("acquisition_failures", []):
@@ -657,6 +672,11 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
 
         return payload
 
+    def _discard_request_body(self) -> None:
+        content_length = int(self.headers.get("Content-Length", "0"))
+        if content_length > 0:
+            self.rfile.read(content_length)
+
     def _serve_json(
         self,
         payload: dict[str, Any],
@@ -753,6 +773,13 @@ def _load_config_mapping(path: str | Path) -> dict[str, Any]:
 def _save_config_mapping(path: str | Path, data: dict[str, Any]) -> None:
     with Path(path).open("w", encoding="utf-8") as config_file:
         yaml.safe_dump(data, config_file, sort_keys=False)
+
+
+def request_process_restart(delay_s: float = 0.4) -> None:
+    def _restart() -> None:
+        os._exit(0)
+
+    threading.Timer(delay_s, _restart).start()
 
 
 def _enum_payload_value(

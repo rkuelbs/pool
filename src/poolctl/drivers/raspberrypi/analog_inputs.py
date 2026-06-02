@@ -68,12 +68,13 @@ class WaveshareAnalogInputConfig:
       volts = raw_register * raw_to_volts_scale + raw_to_volts_offset
 
     Common defaults:
-      - 0.001 when registers are reported in mV
+      - 0.0005 when module channel mode is 0-5V and registers are reported in mV
+      - 0.001 when module channel mode is 0-10V and registers are reported in mV
       - (10.0 / 4095.0) when registers are AD code for a 0-10V range
     """
 
     device: ModbusRegisterDeviceConfig
-    raw_to_volts_scale: float = 0.001
+    raw_to_volts_scale: float = 0.0005
     raw_to_volts_offset: float = 0.0
     sensors: tuple[AnalogChannelConfig, ...] = ()
 
@@ -122,7 +123,7 @@ class WaveshareAnalogInputConfig:
                 "modbus_analog_input",
                 default_slave_id=4,
             ),
-            raw_to_volts_scale=_float_value(section, "raw_to_volts_scale", 0.001),
+            raw_to_volts_scale=_float_value(section, "raw_to_volts_scale", 0.0005),
             raw_to_volts_offset=_float_value(section, "raw_to_volts_offset", 0.0),
             sensors=tuple(sensors),
         )

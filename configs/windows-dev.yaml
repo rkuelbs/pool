@@ -202,7 +202,7 @@ modbus_analog_input:
   slave_id: 4
   baudrate: 9600
   timeout_s: 1.0
-  raw_to_volts_scale: 0.001
+  raw_to_volts_scale: 0.0005
   raw_to_volts_offset: 0.0
   sensors:
     pump_output_psi:

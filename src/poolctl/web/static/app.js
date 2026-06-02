@@ -187,8 +187,13 @@ let analogConfigLoading = false;
 let timerOverrideBusy = false;
 let healthLoading = false;
 let lastHealthLoadedAt = 0;
+let topStatusLoading = false;
+let lastTopStatusLoadedAt = 0;
 let labTestLoading = false;
 let liveMode = "schematic";
+let latestLivePayload = null;
+let configAutoRefreshPaused = false;
+let configDraftDirty = false;
 let pumpPrimeThresholds = {
   lowPrimeMinPsi: 1.0,
   highPrimeMinPsi: 5.0,
@@ -197,6 +202,7 @@ let pumpPrimeThresholds = {
 async function loadLive() {
   const response = await fetch("/api/live", { cache: "no-store" });
   const payload = await parseApiResponse(response, "live API failed");
+  latestLivePayload = payload;
   render(payload);
 }
 
@@ -258,23 +264,69 @@ function setControlsDisabled(disabled) {
 }
 
 function render(payload) {
-  document.getElementById("runtimeLine").textContent =
-    `${payload.runtime.stage} / ${payload.runtime.driver_profile}`;
-  document.getElementById("updatedAt").textContent = new Date(payload.observed_at).toLocaleString();
-
-  renderSafetyBadge(payload.safety);
-  renderCpuTempBadge(payload.runtime, payload.sensors || {});
-  renderCpuFanLine(payload.runtime, payload.sensors || {});
+  renderTopStatus(payload);
+  renderAnalogLiveVoltages(payload.sensors || {});
+  renderConfigDebugInfo(payload);
   renderFreezeStatus(payload.safety);
   renderCsiStatus(payload.sensors || {});
   renderTimerOverride(payload.timer_override);
+  renderEvents(payload.tick);
+  if (PAGE_MODE !== "live") {
+    return;
+  }
   renderDiagramSensors(payload.sensors);
   renderFlowPlaceholders(payload.flows || {});
   renderComponentStates(payload.actuators || {}, payload.sensors || {}, payload.flows || {});
   renderMobileLive(payload.sensors || {}, payload.actuators || {}, payload.flows || {});
   renderSensorList(payload.sensors);
   renderActuatorList(payload.actuators);
-  renderEvents(payload.tick);
+}
+
+function renderTopStatus(payload) {
+  document.getElementById("runtimeLine").textContent =
+    `${payload.runtime.stage} / ${payload.runtime.driver_profile}`;
+  document.getElementById("updatedAt").textContent = new Date(payload.observed_at).toLocaleString();
+  const restartButton = document.getElementById("configRestartService");
+  if (restartButton) {
+    const isPi = payload.runtime && payload.runtime.driver_profile === "raspberry_pi";
+    restartButton.disabled = !isPi;
+  }
+
+  renderSafetyBadge(payload.safety);
+  renderCpuTempBadge(payload.runtime, payload.sensors || {});
+  renderCpuFanLine(payload.runtime, payload.sensors || {});
+}
+
+async function refreshTopStatus(force) {
+  const now = Date.now();
+  if (topStatusLoading) {
+    return;
+  }
+  if (!force && now - lastTopStatusLoadedAt < 3000) {
+    return;
+  }
+  topStatusLoading = true;
+  try {
+    const response = await fetch("/api/live", { cache: "no-store" });
+    const payload = await parseApiResponse(response, "live API failed");
+    latestLivePayload = payload;
+    renderTopStatus(payload);
+    renderAnalogLiveVoltages(payload.sensors || {});
+    renderConfigDebugInfo(payload);
+    renderFreezeStatus(payload.safety);
+    renderCsiStatus(payload.sensors || {});
+    renderTimerOverride(payload.timer_override);
+    lastTopStatusLoadedAt = now;
+  } catch (error) {
+    const badge = document.getElementById("safetyBadge");
+    if (badge) {
+      badge.classList.remove("ok");
+      badge.classList.add("fault");
+      badge.textContent = "Dashboard error";
+    }
+  } finally {
+    topStatusLoading = false;
+  }
 }
 
 function renderSafetyBadge(safety) {
@@ -398,6 +450,77 @@ function renderCsiStatus(sensors) {
   if (node) {
     node.textContent = text;
   }
+}
+
+function renderAnalogLiveVoltages(sensors) {
+  const container = document.getElementById("analogLiveVoltages");
+  if (!container) {
+    return;
+  }
+  container.replaceChildren();
+
+  const rows = [];
+  Object.entries(sensors || {}).forEach(([sensorId, sensor]) => {
+    if (!sensor) {
+      return;
+    }
+    if (sensorId === "raw_ph_voltage" && sensor.value !== null && sensor.value !== undefined) {
+      rows.push({
+        key: sensorId,
+        label: SENSOR_LABELS[sensorId] || sensorId,
+        channel: sensor.metadata && sensor.metadata.channel ? sensor.metadata.channel : null,
+        volts: Number(sensor.value),
+        display: sensor.display || `${sensor.value} V`,
+      });
+      return;
+    }
+    const metadata = sensor.metadata || {};
+    if (!Object.prototype.hasOwnProperty.call(metadata, "raw_voltage")) {
+      return;
+    }
+    const volts = Number(metadata.raw_voltage);
+    if (!Number.isFinite(volts)) {
+      return;
+    }
+    rows.push({
+      key: sensorId,
+      label: SENSOR_LABELS[sensorId] || sensorId,
+      channel: metadata.channel || null,
+      volts,
+      display: `${volts.toFixed(4)} V`,
+    });
+  });
+
+  if (!rows.length) {
+    const empty = document.createElement("div");
+    empty.className = "state-row";
+    empty.innerHTML = '<span class="state-name">No analog voltage data yet</span><span class="state-value">--</span>';
+    container.appendChild(empty);
+    return;
+  }
+
+  rows
+    .sort((left, right) => left.key.localeCompare(right.key))
+    .forEach((row) => {
+      const line = document.createElement("div");
+      line.className = "state-row";
+      const channelText = row.channel ? ` (CH${row.channel})` : "";
+      line.innerHTML =
+        `<span class="state-name">${row.label}${channelText}</span>` +
+        `<span class="state-value">${row.display}</span>`;
+      container.appendChild(line);
+    });
+}
+
+function renderConfigDebugInfo(payload) {
+  const status = document.getElementById("configSyncStatus");
+  if (!status || PAGE_MODE !== "config") {
+    return;
+  }
+  const observedAt = payload && payload.observed_at ? new Date(payload.observed_at).toLocaleTimeString() : "--";
+  const mode = configAutoRefreshPaused ? "paused" : "active";
+  const dirty = configDraftDirty ? "unsaved edits" : "clean";
+  status.textContent = `Config refresh ${mode} | Draft ${dirty} | Live ${observedAt}`;
 }
 
 async function refreshHealth(force) {
@@ -1685,6 +1808,147 @@ function initializeTimerControls() {
   loadPumpTimerConfig();
 }
 
+function markConfigDraftDirty() {
+  if (PAGE_MODE !== "config") {
+    return;
+  }
+  configDraftDirty = true;
+  configAutoRefreshPaused = true;
+  updateConfigRefreshControls();
+}
+
+function clearConfigDraftState(resumeRefresh) {
+  configDraftDirty = false;
+  if (resumeRefresh) {
+    configAutoRefreshPaused = false;
+  }
+  updateConfigRefreshControls();
+}
+
+function updateConfigRefreshControls() {
+  const toggle = document.getElementById("configRefreshToggle");
+  const status = document.getElementById("configSyncStatus");
+  if (!toggle || !status) {
+    return;
+  }
+  toggle.textContent = configAutoRefreshPaused ? "Resume Live Refresh" : "Pause Live Refresh";
+  if (configAutoRefreshPaused && configDraftDirty) {
+    status.textContent = "Config refresh paused (unsaved edits)";
+    return;
+  }
+  if (configAutoRefreshPaused) {
+    status.textContent = "Config refresh paused";
+    return;
+  }
+  status.textContent = "Config refresh active";
+}
+
+async function loadAllConfigSections() {
+  await Promise.all([
+    loadRuntimeConfig(),
+    loadSafetyConfig(),
+    loadAcquisitionConfig(),
+    loadLoggingConfig(),
+    loadAnalogConfig(),
+  ]);
+}
+
+async function revertConfigDraft() {
+  const status = document.getElementById("configSyncStatus");
+  if (status) {
+    status.textContent = "Reloading config from disk...";
+  }
+  await loadAllConfigSections();
+  clearConfigDraftState(true);
+}
+
+async function toggleConfigRefresh() {
+  if (!configAutoRefreshPaused) {
+    configAutoRefreshPaused = true;
+    updateConfigRefreshControls();
+    return;
+  }
+  if (configDraftDirty) {
+    await revertConfigDraft();
+    return;
+  }
+  configAutoRefreshPaused = false;
+  updateConfigRefreshControls();
+}
+
+async function requestServiceRestart() {
+  const status = document.getElementById("configSyncStatus");
+  try {
+    if (status) {
+      status.textContent = "Restart requested...";
+    }
+    const response = await fetch("/api/system/restart", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const payload = await parseApiResponse(response, "restart request failed");
+    if (status) {
+      status.textContent = payload.message || "Restart requested";
+    }
+  } catch (error) {
+    if (status) {
+      status.textContent = `Restart failed: ${error.message}`;
+    }
+  }
+}
+
+function initializeConfigEditorControls() {
+  const toggle = document.getElementById("configRefreshToggle");
+  const revert = document.getElementById("configRevert");
+  const restart = document.getElementById("configRestartService");
+  if (!toggle || !revert || !restart) {
+    return;
+  }
+
+  toggle.addEventListener("click", () => {
+    toggleConfigRefresh().catch((error) => {
+      const status = document.getElementById("configSyncStatus");
+      if (status) {
+        status.textContent = error.message;
+      }
+    });
+  });
+  revert.addEventListener("click", () => {
+    revertConfigDraft().catch((error) => {
+      const status = document.getElementById("configSyncStatus");
+      if (status) {
+        status.textContent = error.message;
+      }
+    });
+  });
+  restart.addEventListener("click", requestServiceRestart);
+
+  document.addEventListener("input", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+    if (!target.closest('[data-view-section="config"]')) {
+      return;
+    }
+    markConfigDraftDirty();
+  });
+
+  document.addEventListener("change", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+    if (!target.closest('[data-view-section="config"]')) {
+      return;
+    }
+    markConfigDraftDirty();
+  });
+
+  updateConfigRefreshControls();
+}
+
 async function loadRuntimeConfig() {
   if (runtimeConfigLoading) {
     return;
@@ -1724,6 +1988,7 @@ async function saveRuntimeConfig() {
     });
     const payload = await parseApiResponse(response, "runtime config save failed");
     setRuntimeStatus(payload.message || "Runtime config saved");
+    clearConfigDraftState(true);
   } catch (error) {
     setRuntimeStatus(error.message);
   }
@@ -1853,6 +2118,7 @@ async function saveSafetyConfig() {
     });
     const payload = await parseApiResponse(response, "safety config save failed");
     setSafetyStatus(payload.applied_live ? "Safety config saved and applied live" : "Safety config saved");
+    clearConfigDraftState(true);
   } catch (error) {
     setSafetyStatus(error.message);
   }
@@ -1934,6 +2200,7 @@ async function saveAcquisitionConfig() {
     });
     const payload = await parseApiResponse(response, "acquisition config save failed");
     setAcqStatus(payload.message || "Acquisition config saved");
+    clearConfigDraftState(true);
   } catch (error) {
     setAcqStatus(error.message);
   }
@@ -2127,6 +2394,7 @@ async function saveLoggingConfig() {
     });
     const payload = await parseApiResponse(response, "logging config save failed");
     setLoggingStatus(payload.message || "Logging config saved");
+    clearConfigDraftState(true);
   } catch (error) {
     setLoggingStatus(error.message);
   }
@@ -2172,6 +2440,7 @@ async function saveAnalogConfig() {
     });
     const payload = await parseApiResponse(response, "analog input config save failed");
     setAnalogStatus(payload.message || "Analog input config saved");
+    clearConfigDraftState(true);
   } catch (error) {
     setAnalogStatus(error.message);
   }
@@ -2184,6 +2453,7 @@ function setAnalogStatus(message) {
 function initializeAnalogControls() {
   document.getElementById("analogAddSensor").addEventListener("click", () => {
     document.getElementById("analogSensorRows").appendChild(analogSensorRow());
+    markConfigDraftDirty();
   });
   document.getElementById("analogReload").addEventListener("click", loadAnalogConfig);
   document.getElementById("analogSave").addEventListener("click", saveAnalogConfig);
@@ -2195,7 +2465,7 @@ function renderAnalogConfig(config) {
   document.getElementById("analogSlaveId").value = String(config.slave_id ?? 4);
   document.getElementById("analogBaudrate").value = String(config.baudrate ?? 9600);
   document.getElementById("analogTimeout").value = String(config.timeout_s ?? 1.0);
-  document.getElementById("analogScale").value = String(config.raw_to_volts_scale ?? 0.001);
+  document.getElementById("analogScale").value = String(config.raw_to_volts_scale ?? 0.0005);
   document.getElementById("analogOffset").value = String(config.raw_to_volts_offset ?? 0.0);
 
   const rows = document.getElementById("analogSensorRows");
@@ -2226,6 +2496,7 @@ function analogSensorRow(sensorId = "", mapping = {}) {
     if (!document.querySelectorAll('[data-analog-sensor="true"]').length) {
       document.getElementById("analogSensorRows").appendChild(analogSensorRow());
     }
+    markConfigDraftDirty();
   });
   head.append(title, remove);
 
@@ -2526,21 +2797,20 @@ async function poll() {
       await loadLive();
       await refreshHealth(false);
     } else if (PAGE_MODE === "history") {
+      await refreshTopStatus(false);
       await refreshHistory(false);
       await refreshFaultTimeline(false);
       await loadLabTests();
       await refreshHealth(false);
     } else if (PAGE_MODE === "schedule") {
+      await refreshTopStatus(false);
       await loadPumpTimerConfig();
       await refreshHealth(false);
     } else if (PAGE_MODE === "config") {
-      await Promise.all([
-        loadRuntimeConfig(),
-        loadSafetyConfig(),
-        loadAcquisitionConfig(),
-        loadLoggingConfig(),
-        loadAnalogConfig(),
-      ]);
+      await refreshTopStatus(false);
+      if (!configAutoRefreshPaused) {
+        await loadAllConfigSections();
+      }
       await refreshHealth(false);
     }
   } catch (error) {
@@ -2594,6 +2864,7 @@ function initializeForPage() {
     return;
   }
   if (PAGE_MODE === "config") {
+    initializeConfigEditorControls();
     initializeRuntimeControls();
     initializeSafetyControls();
     initializeAcquisitionControls();

@@ -16,6 +16,7 @@
         <div class="status-strip">
           <span id="safetyBadge" class="badge">Starting</span>
           <span id="cpuTempBadge" class="badge hidden">CPU Temp: --</span>
+          <span id="cpuFanLine" class="timestamp hidden">CPU Fan: --</span>
           <span id="updatedAt" class="timestamp">--</span>
           <span id="healthLine" class="timestamp">--</span>
         </div>
@@ -204,8 +205,14 @@
       <section class="history-panel" aria-label="Runtime config" data-view-section="config">
         <div class="history-header">
           <h2>Runtime Config</h2>
-          <button id="runtimeReload" type="button">Reload</button>
+          <div class="history-controls">
+            <button id="configRefreshToggle" type="button">Pause Live Refresh</button>
+            <button id="configRevert" type="button">Revert Unsaved</button>
+            <button id="configRestartService" type="button">Restart Service</button>
+            <button id="runtimeReload" type="button">Reload</button>
+          </div>
         </div>
+        <div id="configSyncStatus" class="history-status">Config refresh active</div>
         <div class="config-grid">
           <label>Stage
             <select id="runtimeStage"></select>
@@ -396,6 +403,10 @@
           <label>Raw to Volts Scale <input id="analogScale" type="number" step="0.0001"></label>
           <label>Raw to Volts Offset <input id="analogOffset" type="number" step="0.0001"></label>
         </div>
+        <div class="history-header">
+          <h2>Live Analog Voltages</h2>
+        </div>
+        <div id="analogLiveVoltages" class="state-list"></div>
         <div id="analogSensorRows" class="config-rows"></div>
         <div class="timer-actions">
           <button id="analogSave" type="button">Save Analog Config</button>
