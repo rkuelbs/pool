@@ -43,52 +43,52 @@ modbus_analog_input:
   port: /dev/ttyUSB0
   slave_id: 2
   baudrate: 4800
-  timeout_s: 1.0
+  timeout_s: 1
   raw_to_volts_scale: 0.001
-  raw_to_volts_offset: 0.0
+  raw_to_volts_offset: 0
   sensors:
     pump_output_psi:
-      channel: 1
-      calibration:
-        voltage_1: 0.0
-        value_1: 0.0
-        voltage_2: 5.0
-        value_2: 30.0
-    filter_output_psi:
-      channel: 2
-      calibration:
-        voltage_1: 0.0
-        value_1: 0.0
-        voltage_2: 5.0
-        value_2: 30.0
-    return_psi:
-      channel: 3
-      calibration:
-        voltage_1: 0.0
-        value_1: 0.0
-        voltage_2: 5.0
-        value_2: 20.0
-    bubbler_psi:
-      channel: 4
-      calibration:
-        voltage_1: 0.0
-        value_1: 0.0
-        voltage_2: 5.0
-        value_2: 20.0
-    booster_psi:
       channel: 5
       calibration:
-        voltage_1: 0.0
-        value_1: 0.0
-        voltage_2: 5.0
-        value_2: 80.0
-    raw_ph:
+        voltage_1: 0
+        value_1: 0
+        voltage_2: 5
+        value_2: 30
+    filter_output_psi:
       channel: 6
       calibration:
-        voltage_1: 0.0
-        value_1: 0.0
-        voltage_2: 5.0
-        value_2: 14.0
+        voltage_1: 0
+        value_1: 0
+        voltage_2: 5
+        value_2: 30
+    return_psi:
+      channel: 7
+      calibration:
+        voltage_1: 0
+        value_1: 0
+        voltage_2: 5
+        value_2: 20
+    bubbler_psi:
+      channel: 8
+      calibration:
+        voltage_1: 0
+        value_1: 0
+        voltage_2: 5
+        value_2: 20
+    booster_psi:
+      channel: 1
+      calibration:
+        voltage_1: 0
+        value_1: 0
+        voltage_2: 5
+        value_2: 80
+    raw_ph:
+      channel: 4
+      calibration:
+        voltage_1: 0
+        value_1: 0
+        voltage_2: 5
+        value_2: 14
 flow_estimation:
   pump_pressure:
     pressure_scale_psi: 0.4335
@@ -116,26 +116,26 @@ safety:
   freeze_protection:
     enabled: false
     source: temp
-    temp_sensor: temp
+    temp_sensor: orp_temp
     ph_temp_sensor: orp_temp
-    low_speed_on_below_temp: 35.0
-    low_speed_off_above_temp: 37.0
-    high_speed_on_below_temp: 33.0
-    high_speed_off_above_temp: 34.0
-    min_run_seconds: 600.0
+    low_speed_on_below_temp: 35
+    low_speed_off_above_temp: 37
+    high_speed_on_below_temp: 33
+    high_speed_off_above_temp: 34
+    min_run_seconds: 600
     threshold_unit: degF
   thresholds:
-    chlorine_min_return_psi: 2.0
-    chlorine_min_pump_output_psi: 6.0
-    booster_max_psi: 60.0
-    booster_min_psi: 30.0
-    pump_low_prime_min_output_psi: 1.0
-    pump_output_overpressure_psi: 30.0
-    pump_high_prime_min_output_psi: 5.0
+    chlorine_min_return_psi: 2
+    chlorine_min_pump_output_psi: 6
+    booster_max_psi: 60
+    booster_min_psi: 30
+    pump_low_prime_min_output_psi: 1
+    pump_output_overpressure_psi: 30
+    pump_high_prime_min_output_psi: 5
   timeouts:
-    booster_low_pressure_grace_s: 10.0
-    pump_low_prime_seconds: 30.0
-    pump_high_prime_timeout_s: 30.0
+    booster_low_pressure_grace_s: 10
+    pump_low_prime_seconds: 30
+    pump_high_prime_timeout_s: 30
 logging:
   database_path: data/pi-prod.sqlite3
 mqtt:
