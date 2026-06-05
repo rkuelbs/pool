@@ -10,6 +10,7 @@ const SENSOR_ORDER = [
   "raw_ph_voltage",
   "temp",
   "cpu_temp",
+  "cpu_load_percent",
   "cpu_fan_rpm",
   "tank_level",
 ];
@@ -61,6 +62,7 @@ const SENSOR_LABELS = {
   raw_ph_voltage: "pH Vraw",
   temp: "Water temp",
   cpu_temp: "CPU temp",
+  cpu_load_percent: "CPU load",
   cpu_fan_rpm: "CPU fan",
   tank_level: "Tank level",
 };
@@ -296,6 +298,7 @@ function renderTopStatus(payload) {
 
   renderSafetyBadge(payload.safety);
   renderCpuTempBadge(payload.runtime, payload.sensors || {});
+  renderCpuLoadLine(payload.runtime, payload.sensors || {});
   renderCpuFanLine(payload.runtime, payload.sensors || {});
 }
 
@@ -393,6 +396,23 @@ function renderCpuFanLine(runtime, sensors) {
   const cpuFan = sensors ? sensors.cpu_fan_rpm : null;
   line.classList.remove("hidden");
   line.textContent = `CPU Fan: ${cpuFan && cpuFan.display ? cpuFan.display : "--"}`;
+}
+
+function renderCpuLoadLine(runtime, sensors) {
+  const line = document.getElementById("cpuLoadLine");
+  if (!line) {
+    return;
+  }
+
+  const isRaspberryPi = runtime && runtime.driver_profile === "raspberry_pi";
+  if (!isRaspberryPi) {
+    line.classList.add("hidden");
+    return;
+  }
+
+  const cpuLoad = sensors ? sensors.cpu_load_percent : null;
+  line.classList.remove("hidden");
+  line.textContent = `CPU Load: ${cpuLoad && cpuLoad.display ? cpuLoad.display : "--"}`;
 }
 
 function renderTimerOverride(override) {

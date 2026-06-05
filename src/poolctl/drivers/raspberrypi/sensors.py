@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from glob import glob
@@ -205,6 +206,59 @@ class RaspberryPiCpuTempSensor:
         )
 
 
+class RaspberryPiCpuLoadSensor:
+    """
+    Raspberry Pi CPU utilization derived from successive /proc/stat samples.
+    """
+
+    name = "raspberrypi_cpu_load"
+    sensor_id = SensorId.CPU_LOAD_PERCENT
+
+    def __init__(
+        self,
+        *,
+        clock: Clock,
+        stat_file: Path = Path("/proc/stat"),
+        cpu_count: int | None = None,
+    ) -> None:
+        self._clock = clock
+        self._stat_file = stat_file
+        self._cpu_count = max(1, cpu_count or (os.cpu_count() or 1))
+        self._previous_total: int | None = None
+        self._previous_idle: int | None = None
+
+    async def read(self) -> Measurement:
+        raw_text = self._stat_file.read_text(encoding="utf-8")
+        total, idle = _parse_proc_stat_cpu_totals(raw_text)
+
+        value = 0.0
+        if self._previous_total is not None and self._previous_idle is not None:
+            total_delta = total - self._previous_total
+            idle_delta = idle - self._previous_idle
+            if total_delta > 0:
+                busy_delta = max(0, total_delta - idle_delta)
+                value = max(0.0, min(100.0, 100.0 * busy_delta / total_delta))
+
+        self._previous_total = total
+        self._previous_idle = idle
+
+        return Measurement(
+            sensor_id=self.sensor_id,
+            observed_at=self._clock.now(),
+            kind=MeasurementKind.RAW,
+            value=round(value, 1),
+            unit="percent",
+            quality=Quality.GOOD,
+            metadata={
+                "driver": self.name,
+                "source": str(self._stat_file),
+                "cpu_count": self._cpu_count,
+                "raw_total_jiffies": total,
+                "raw_idle_jiffies": idle,
+            },
+        )
+
+
 class RaspberryPiCpuFanRpmSensor:
     """
     Raspberry Pi 5 fan RPM sensor from Linux hwmon sysfs.
@@ -351,10 +405,19 @@ def build_raspberrypi_sensor_drivers_from_mapping(
         "path_glob",
         "/sys/devices/platform/cooling_fan/hwmon/*/fan1_input",
     )
+    cpu_load_stat_path = _string_value(
+        _mapping_value(data, "cpu_load_sensor", default={}),
+        "path",
+        "/proc/stat",
+    )
     return [
         RaspberryPiCpuTempSensor(
             clock=clock,
             sensor_file=Path(cpu_temp_path),
+        ),
+        RaspberryPiCpuLoadSensor(
+            clock=clock,
+            stat_file=Path(cpu_load_stat_path),
         ),
         RaspberryPiCpuFanRpmSensor(
             clock=clock,
@@ -380,3 +443,17 @@ def _string_value(data: Mapping[str, Any], key: str, default: str) -> str:
     if not isinstance(value, str):
         raise ValueError(f"{key} must be a string")
     return value
+
+
+def _parse_proc_stat_cpu_totals(raw_text: str) -> tuple[int, int]:
+    for line in raw_text.splitlines():
+        if not line.startswith("cpu "):
+            continue
+        parts = line.split()
+        if len(parts) < 5:
+            break
+        values = [int(part) for part in parts[1:]]
+        total = sum(values)
+        idle = values[3] + (values[4] if len(values) > 4 else 0)
+        return total, idle
+    raise ValueError("could not parse aggregate cpu totals from /proc/stat")

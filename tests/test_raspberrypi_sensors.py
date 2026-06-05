@@ -11,6 +11,7 @@ from poolctl.drivers.raspberrypi.sensors import (
     DFRobotOrpSensor,
     DFRobotPhSensor,
     RaspberryPiCpuFanRpmSensor,
+    RaspberryPiCpuLoadSensor,
     RaspberryPiCpuTempSensor,
     DFRobotWaterQualitySensorConfig,
     build_raspberrypi_sensor_drivers_from_mapping,
@@ -195,18 +196,21 @@ def test_build_raspberrypi_sensor_drivers_from_mapping_allows_cpu_temp_path_over
 ) -> None:
     clock = make_clock()
     path = tmp_path / "cpu_override"
+    load_path = tmp_path / "proc_stat"
     fan_path = tmp_path / "fan" / "fan1_input"
     drivers = build_raspberrypi_sensor_drivers_from_mapping(
         {
             "cpu_temp_sensor": {"path": str(path)},
+            "cpu_load_sensor": {"path": str(load_path)},
             "cpu_fan_sensor": {"path_glob": str(fan_path)},
         },
         clock=clock,
     )
 
-    assert len(drivers) == 2
+    assert len(drivers) == 3
     assert isinstance(drivers[0], RaspberryPiCpuTempSensor)
-    assert isinstance(drivers[1], RaspberryPiCpuFanRpmSensor)
+    assert isinstance(drivers[1], RaspberryPiCpuLoadSensor)
+    assert isinstance(drivers[2], RaspberryPiCpuFanRpmSensor)
 
 
 @pytest.mark.asyncio
@@ -230,3 +234,31 @@ async def test_raspberrypi_cpu_fan_rpm_sensor_reads_sysfs_glob(
     assert measurement.kind == MeasurementKind.RAW
     assert measurement.quality == Quality.GOOD
     assert measurement.metadata["raw_rpm"] == 2789
+
+
+@pytest.mark.asyncio
+async def test_raspberrypi_cpu_load_sensor_reads_proc_stat(
+    tmp_path: Path,
+) -> None:
+    clock = make_clock()
+    stat_file = tmp_path / "proc_stat"
+    stat_file.write_text("cpu  100 0 50 850 0 0 0 0 0 0\n", encoding="utf-8")
+    sensor = RaspberryPiCpuLoadSensor(clock=clock, stat_file=stat_file, cpu_count=4)
+
+    first = await sensor.read()
+    stat_file.write_text("cpu  130 0 70 900 0 0 0 0 0 0\n", encoding="utf-8")
+    second = await sensor.read()
+
+    assert first.sensor_id == SensorId.CPU_LOAD_PERCENT
+    assert first.value == 0.0
+    assert first.unit == "percent"
+    assert first.kind == MeasurementKind.RAW
+    assert first.quality == Quality.GOOD
+    assert first.metadata["raw_total_jiffies"] == 1000
+    assert first.metadata["raw_idle_jiffies"] == 850
+
+    assert second.sensor_id == SensorId.CPU_LOAD_PERCENT
+    assert second.value == 50.0
+    assert second.unit == "percent"
+    assert second.metadata["raw_total_jiffies"] == 1100
+    assert second.metadata["raw_idle_jiffies"] == 900

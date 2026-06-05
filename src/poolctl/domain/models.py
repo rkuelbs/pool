@@ -54,6 +54,7 @@ class SensorId(str, Enum):
 
     TEMP = "temp"
     CPU_TEMP = "cpu_temp"
+    CPU_LOAD_PERCENT = "cpu_load_percent"
     CPU_FAN_RPM = "cpu_fan_rpm"
     TANK_LEVEL = "tank_level"
 
