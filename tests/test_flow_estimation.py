@@ -43,6 +43,8 @@ def test_flow_estimation_returns_zero_when_pump_is_off() -> None:
 
     assert payload["pump_flow_gpm"]["value"] == 0.0
     assert payload["pump_flow_gpm"]["display"] == "0.0 gpm"
+    assert payload["pump_dynamic_head_psi"]["value"] == 0.0
+    assert payload["pump_dynamic_head_psi"]["display"] == "0.0 psi"
     assert payload["pump_flow_low_gpm"]["value"] is None
     assert payload["pump_flow_high_gpm"]["value"] is None
     assert payload["return_flow_gpm"]["value"] == 0.0
@@ -63,8 +65,11 @@ def test_flow_estimation_uses_high_speed_pressure_model() -> None:
     )
 
     expected = math.sqrt((93.5 - (pressure / 0.4335)) / 0.00525)
+    expected_head = pressure + (0.4335 * 0.00035 * (expected ** 2))
     assert estimates.pump_flow_gpm is not None
     assert abs(estimates.pump_flow_gpm - expected) < 1e-9
+    assert estimates.pump_dynamic_head_psi is not None
+    assert abs(estimates.pump_dynamic_head_psi - expected_head) < 1e-9
     assert estimates.pump_flow_high_gpm == estimates.pump_flow_gpm
     assert estimates.pump_flow_low_gpm is None
 
@@ -80,8 +85,11 @@ def test_flow_estimation_uses_low_speed_pressure_model() -> None:
     )
 
     expected = math.sqrt((22.25 - (pressure / 0.4335)) / 0.00525)
+    expected_head = pressure + (0.4335 * 0.00035 * (expected ** 2))
     assert estimates.pump_flow_gpm is not None
     assert abs(estimates.pump_flow_gpm - expected) < 1e-9
+    assert estimates.pump_dynamic_head_psi is not None
+    assert abs(estimates.pump_dynamic_head_psi - expected_head) < 1e-9
     assert estimates.pump_flow_low_gpm == estimates.pump_flow_gpm
     assert estimates.pump_flow_high_gpm is None
 
@@ -105,6 +113,7 @@ def test_flow_estimation_constants_are_configurable() -> None:
                 "pump_pressure": {
                     "pressure_scale_psi": 0.05,
                     "c_dynamic": 0.01,
+                    "c_suction": 0.02,
                     "c_no_flow_low": 10.0,
                     "c_no_flow_high": 20.0,
                 }
@@ -123,6 +132,21 @@ def test_flow_estimation_constants_are_configurable() -> None:
     expected = math.sqrt((20.0 - (0.5 / 0.05)) / 0.01)
     assert estimates.pump_flow_gpm is not None
     assert abs(estimates.pump_flow_gpm - expected) < 1e-9
+    assert estimates.pump_dynamic_head_psi is not None
+    assert abs(estimates.pump_dynamic_head_psi - (0.5 + (0.05 * 0.02 * (expected ** 2)))) < 1e-9
+
+
+def test_flow_estimation_rejects_negative_c_suction() -> None:
+    with pytest.raises(ValueError):
+        FlowEstimationConfig.from_mapping(
+            {
+                "flow_estimation": {
+                    "pump_pressure": {
+                        "c_suction": -0.001,
+                    }
+                }
+            }
+        )
 
 
 def test_flow_estimation_branch_flows_use_configured_quadratic_models() -> None:

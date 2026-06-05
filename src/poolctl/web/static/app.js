@@ -21,6 +21,7 @@ const SENSOR_LABELS = {
   bubbler_psi: "Bubbler",
   booster_psi: "Booster",
   pump_flow_gpm: "Pump flow",
+  pump_dynamic_head_psi: "Pump dynamic head",
   return_flow_gpm: "Return flow",
   bubbler_flow_gpm: "Bubbler flow",
   booster_flow_gpm: "Booster flow",
@@ -68,6 +69,7 @@ const HISTORY_SENSOR_ORDER = [
   ...SENSOR_ORDER,
   "calcium_saturation_index",
   "pump_flow_gpm",
+  "pump_dynamic_head_psi",
   "return_flow_gpm",
   "bubbler_flow_gpm",
   "booster_flow_gpm",
@@ -710,7 +712,10 @@ function renderMobilePumpCard(sensors, actuators, flows) {
 
   setMobileCardStatus("mobilePumpCard", cardStatus);
   setNodeText("mobilePumpState", `State: ${stateText}`);
-  setNodeText("mobilePumpPsi", `Output: ${sensorDisplay(sensors, "pump_output_psi")}`);
+  setNodeText(
+    "mobilePumpPsi",
+    `Output: ${sensorDisplay(sensors, "pump_output_psi")} | Head: ${flowDisplay(flows, "pump_dynamic_head_psi")}`,
+  );
   setNodeText("mobilePumpFlow", `Flow: ${flowDisplay(flows, "pump_flow_gpm")}`);
 }
 

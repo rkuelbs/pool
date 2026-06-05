@@ -94,8 +94,9 @@ flow_estimation:
   pump_pressure:
     pressure_scale_psi: 0.4335
     c_dynamic: 0.00525
-    c_no_flow_low: 22.25
-    c_no_flow_high: 93.5
+    c_suction: 0.00035
+    c_no_flow_low: 23.75
+    c_no_flow_high: 95
   branch_pressure:
     return_flow:
       a: 0.0

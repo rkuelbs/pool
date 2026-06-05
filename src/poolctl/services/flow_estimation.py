@@ -18,6 +18,7 @@ class PumpPressureFlowModelConfig:
 
     pressure_scale_psi: float = 0.4335
     c_dynamic: float = 0.00525
+    c_suction: float = 0.00035
     c_no_flow_low: float = 22.25
     c_no_flow_high: float = 93.5
 
@@ -26,6 +27,8 @@ class PumpPressureFlowModelConfig:
             raise ValueError("pressure_scale_psi must be greater than zero")
         if self.c_dynamic <= 0:
             raise ValueError("c_dynamic must be greater than zero")
+        if self.c_suction < 0:
+            raise ValueError("c_suction must be greater than or equal to zero")
 
 
 @dataclass(frozen=True)
@@ -80,6 +83,11 @@ class FlowEstimationConfig:
                     "c_dynamic",
                     PumpPressureFlowModelConfig.c_dynamic,
                 ),
+                c_suction=_float_value(
+                    pump_section,
+                    "c_suction",
+                    PumpPressureFlowModelConfig.c_suction,
+                ),
                 c_no_flow_low=_float_value(
                     pump_section,
                     "c_no_flow_low",
@@ -118,6 +126,7 @@ class FlowEstimates:
     """
 
     pump_flow_gpm: float | None = None
+    pump_dynamic_head_psi: float | None = None
     pump_flow_low_gpm: float | None = None
     pump_flow_high_gpm: float | None = None
     booster_flow_gpm: float | None = None
@@ -130,6 +139,7 @@ class FlowEstimates:
     def as_payload(self) -> dict[str, dict[str, float | str | None]]:
         return {
             "pump_flow_gpm": _flow_payload(self.pump_flow_gpm),
+            "pump_dynamic_head_psi": _pressure_payload(self.pump_dynamic_head_psi),
             "pump_flow_low_gpm": _flow_payload(self.pump_flow_low_gpm),
             "pump_flow_high_gpm": _flow_payload(self.pump_flow_high_gpm),
             "booster_flow_gpm": _flow_payload(self.booster_flow_gpm),
@@ -148,6 +158,7 @@ def estimate_flows(
     config: FlowEstimationConfig = FlowEstimationConfig(),
 ) -> FlowEstimates:
     pump_flow_gpm: float | None = None
+    pump_dynamic_head_psi: float | None = None
     return_flow_gpm: float | None = None
     bubbler_flow_gpm: float | None = None
     booster_flow_gpm: float | None = None
@@ -170,6 +181,12 @@ def estimate_flows(
                 c_dynamic=model.c_dynamic,
                 pressure_scale_psi=model.pressure_scale_psi,
             )
+            pump_dynamic_head_psi = _pump_dynamic_head_from_pressure_and_flow(
+                pump_output_pressure_psi=float(pump_pressure),
+                flow_gpm=pump_flow_gpm,
+                pressure_scale_psi=model.pressure_scale_psi,
+                c_suction=model.c_suction,
+            )
             return_flow_gpm = _quadratic_flow_from_pressure(
                 pressure_psi=_measurement_value(measurements, SensorId.RETURN_PSI),
                 model=config.return_flow_model,
@@ -187,6 +204,7 @@ def estimate_flows(
                 config=config,
                 estimates=FlowEstimates(
                     pump_flow_gpm=pump_flow_gpm,
+                    pump_dynamic_head_psi=pump_dynamic_head_psi,
                     pump_flow_low_gpm=pump_flow_gpm,
                     return_flow_gpm=return_flow_gpm,
                     bubbler_flow_gpm=bubbler_flow_gpm,
@@ -200,6 +218,12 @@ def estimate_flows(
                 c_dynamic=model.c_dynamic,
                 pressure_scale_psi=model.pressure_scale_psi,
             )
+            pump_dynamic_head_psi = _pump_dynamic_head_from_pressure_and_flow(
+                pump_output_pressure_psi=float(pump_pressure),
+                flow_gpm=pump_flow_gpm,
+                pressure_scale_psi=model.pressure_scale_psi,
+                c_suction=model.c_suction,
+            )
             return_flow_gpm = _quadratic_flow_from_pressure(
                 pressure_psi=_measurement_value(measurements, SensorId.RETURN_PSI),
                 model=config.return_flow_model,
@@ -217,6 +241,7 @@ def estimate_flows(
                 config=config,
                 estimates=FlowEstimates(
                     pump_flow_gpm=pump_flow_gpm,
+                    pump_dynamic_head_psi=pump_dynamic_head_psi,
                     pump_flow_high_gpm=pump_flow_gpm,
                     return_flow_gpm=return_flow_gpm,
                     bubbler_flow_gpm=bubbler_flow_gpm,
@@ -243,6 +268,12 @@ def estimate_flows(
         config=config,
         estimates=FlowEstimates(
             pump_flow_gpm=pump_flow_gpm,
+            pump_dynamic_head_psi=_pump_dynamic_head_from_pressure_and_flow(
+                pump_output_pressure_psi=pump_pressure,
+                flow_gpm=pump_flow_gpm,
+                pressure_scale_psi=config.pump_pressure_model.pressure_scale_psi,
+                c_suction=config.pump_pressure_model.c_suction,
+            ),
             return_flow_gpm=return_flow_gpm,
             bubbler_flow_gpm=bubbler_flow_gpm,
             booster_flow_gpm=booster_flow_gpm,
@@ -276,6 +307,20 @@ def _quadratic_flow_from_pressure(
     return math.sqrt(term)
 
 
+def _pump_dynamic_head_from_pressure_and_flow(
+    *,
+    pump_output_pressure_psi: float | None,
+    flow_gpm: float | None,
+    pressure_scale_psi: float,
+    c_suction: float,
+) -> float | None:
+    if pump_output_pressure_psi is None or flow_gpm is None:
+        return None
+    if flow_gpm <= 0:
+        return 0.0
+    return pump_output_pressure_psi + (pressure_scale_psi * c_suction * (flow_gpm ** 2))
+
+
 def _with_filter_restriction(
     *,
     measurements: Mapping[SensorId, Measurement],
@@ -299,6 +344,7 @@ def _with_filter_restriction(
     )
     return FlowEstimates(
         pump_flow_gpm=estimates.pump_flow_gpm,
+        pump_dynamic_head_psi=estimates.pump_dynamic_head_psi,
         pump_flow_low_gpm=estimates.pump_flow_low_gpm,
         pump_flow_high_gpm=estimates.pump_flow_high_gpm,
         booster_flow_gpm=estimates.booster_flow_gpm,
@@ -348,6 +394,21 @@ def _flow_payload(value: float | None) -> dict[str, float | str | None]:
         "value": value,
         "unit": "gpm",
         "display": f"{value:.1f} gpm",
+    }
+
+
+def _pressure_payload(value: float | None) -> dict[str, float | str | None]:
+    if value is None:
+        return {
+            "value": None,
+            "unit": "psi",
+            "display": "-- psi",
+        }
+
+    return {
+        "value": value,
+        "unit": "psi",
+        "display": f"{value:.1f} psi",
     }
 
 

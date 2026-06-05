@@ -15,6 +15,7 @@ SENSOR_LABELS = {
     SensorId.BUBBLER_PSI: "Bubbler",
     SensorId.BOOSTER_PSI: "Booster",
     SensorId.PUMP_FLOW_GPM: "Pump flow",
+    SensorId.PUMP_DYNAMIC_HEAD_PSI: "Pump dynamic head",
     SensorId.RETURN_FLOW_GPM: "Return flow",
     SensorId.BUBBLER_FLOW_GPM: "Bubbler flow",
     SensorId.BOOSTER_FLOW_GPM: "Booster flow",

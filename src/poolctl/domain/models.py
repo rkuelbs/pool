@@ -38,6 +38,7 @@ class SensorId(str, Enum):
     BUBBLER_PSI = "bubbler_psi"
     BOOSTER_PSI = "booster_psi"
     PUMP_FLOW_GPM = "pump_flow_gpm"
+    PUMP_DYNAMIC_HEAD_PSI = "pump_dynamic_head_psi"
     RETURN_FLOW_GPM = "return_flow_gpm"
     BUBBLER_FLOW_GPM = "bubbler_flow_gpm"
     BOOSTER_FLOW_GPM = "booster_flow_gpm"

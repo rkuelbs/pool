@@ -827,6 +827,18 @@ def _flow_derived_measurements(
                 metadata={"driver": "flow_estimation", "source": "pump_output_psi"},
             )
         )
+    if flow_estimates.pump_dynamic_head_psi is not None:
+        measurements.append(
+            Measurement(
+                sensor_id=SensorId.PUMP_DYNAMIC_HEAD_PSI,
+                observed_at=observed_at,
+                kind=MeasurementKind.ESTIMATED,
+                value=round(flow_estimates.pump_dynamic_head_psi, 3),
+                unit="psi",
+                quality=Quality.GOOD,
+                metadata={"driver": "flow_estimation", "source": "pump_output_psi+pump_flow_gpm"},
+            )
+        )
     if flow_estimates.return_flow_gpm is not None:
         measurements.append(
             Measurement(
