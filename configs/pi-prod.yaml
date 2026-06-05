@@ -17,25 +17,25 @@ pump_timer:
   timezone: America/Chicago
   schedules:
   - name: morning_vacuum
-    start: 06:00
-    end: 08:00
+    start: "06:00"
+    end: "08:00"
     pump_speed: low
     booster: 'on'
   - name: morning_filter
-    start: 08:00
-    end: 09:00
+    start: "08:00"
+    end: "09:00"
     pump_speed: low
     booster: 'off'
   - name: afternoon_filter
-    start: 12:30
-    end: 15:30
+    start: "12:30"
+    end: "15:30"
     pump_speed: low
     booster: 'off'
   - name: evening_filter
-    start: 20:00
-    end: 23:30
+    start: "20:00"
+    end: "23:30"
     pump_speed: low
-    booster: 'on'
+    booster: 'off'
 modbus_relay:
   port: /dev/ttyUSB0
   slave_id: 3
@@ -59,7 +59,7 @@ modbus_analog_input:
   slave_id: 2
   baudrate: 4800
   timeout_s: 1
-  raw_to_volts_scale: 0.001
+  raw_to_volts_scale: 0.0005
   raw_to_volts_offset: 0
   startup_channel_mode: 0
   sensors:
