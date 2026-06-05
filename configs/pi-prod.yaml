@@ -19,7 +19,7 @@ pump_timer:
   - name: morning_filter
     start: 01:00
     end: '23:55'
-    pump_speed: high
+    pump_speed: low
     booster: 'off'
 modbus_relay:
   port: /dev/ttyUSB0
@@ -44,22 +44,22 @@ modbus_analog_input:
   slave_id: 2
   baudrate: 4800
   timeout_s: 1
-  raw_to_volts_scale: 0.0005
+  raw_to_volts_scale: 0.001
   raw_to_volts_offset: 0
   startup_channel_mode: 0
   sensors:
     pump_output_psi:
       channel: 5
       calibration:
-        voltage_1: 0
+        voltage_1: 0.345
         value_1: 0
-        voltage_2: 5
+        voltage_2: 4.345
         value_2: 30
     filter_output_psi:
       channel: 6
       calibration:
         voltage_1: 0
-        value_1: 0
+        value_1: 2
         voltage_2: 5
         value_2: 30
     return_psi:
@@ -88,7 +88,7 @@ modbus_analog_input:
       calibration:
         voltage_1: 0
         value_1: 0
-        voltage_2: 5
+        voltage_2: 4
         value_2: 14
 flow_estimation:
   pump_pressure:
