@@ -16,11 +16,26 @@ runtime:
 pump_timer:
   timezone: America/Chicago
   schedules:
+  - name: morning_vacuum
+    start: 06:00
+    end: 08:00
+    pump_speed: low
+    booster: 'on'
   - name: morning_filter
-    start: 01:00
-    end: '23:55'
+    start: 08:00
+    end: 09:00
     pump_speed: low
     booster: 'off'
+  - name: afternoon_filter
+    start: 12:30
+    end: 15:30
+    pump_speed: low
+    booster: 'off'
+  - name: evening_filter
+    start: 20:00
+    end: 23:30
+    pump_speed: low
+    booster: 'on'
 modbus_relay:
   port: /dev/ttyUSB0
   slave_id: 3
