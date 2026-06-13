@@ -9,7 +9,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from poolctl.domain.models import LabTest, Measurement, MeasurementKind, Quality, SensorId
+from poolctl.domain.models import (
+    ChemicalAddition,
+    ChemicalType,
+    LabTest,
+    Measurement,
+    MeasurementKind,
+    Quality,
+    SensorId,
+)
 from poolctl.services.weather import WEATHER_FIELDS, WeatherObservation
 
 ROLLUP_BUCKET_SECONDS = (60, 3600, 86400)
@@ -313,6 +321,39 @@ class MeasurementLogger:
             )
         return test.id
 
+    def log_chemical_addition(self, addition: ChemicalAddition) -> str:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO chemical_additions (
+                    id,
+                    added_at,
+                    entered_at,
+                    chemical,
+                    amount,
+                    unit,
+                    amount_fl_oz,
+                    strength_percent,
+                    notes,
+                    metadata_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    addition.id,
+                    addition.added_at.isoformat(),
+                    addition.entered_at.isoformat(),
+                    addition.chemical.value,
+                    addition.amount,
+                    addition.unit,
+                    addition.amount_fl_oz,
+                    addition.strength_percent,
+                    addition.notes,
+                    json.dumps(addition.metadata, sort_keys=True),
+                ),
+            )
+        return addition.id
+
     def latest_lab_values(
         self,
         *,
@@ -468,6 +509,96 @@ class MeasurementLogger:
         )
         return tuple(reversed(descending))
 
+    def chemical_addition_history(
+        self,
+        *,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int = 100,
+    ) -> tuple[ChemicalAddition, ...]:
+        if limit < 1:
+            raise ValueError("limit must be at least 1")
+
+        clauses = ["1=1"]
+        parameters: list[str | int] = []
+        if since is not None:
+            clauses.append("added_at >= ?")
+            parameters.append(since.isoformat())
+        if until is not None:
+            clauses.append("added_at <= ?")
+            parameters.append(until.isoformat())
+        parameters.append(limit)
+        where_clause = " AND ".join(clauses)
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT
+                    id,
+                    added_at,
+                    entered_at,
+                    chemical,
+                    amount,
+                    unit,
+                    amount_fl_oz,
+                    strength_percent,
+                    notes,
+                    metadata_json
+                FROM chemical_additions
+                WHERE {where_clause}
+                ORDER BY added_at DESC
+                LIMIT ?
+                """,
+                parameters,
+            ).fetchall()
+        additions = tuple(_chemical_addition_from_row(row) for row in rows)
+        return tuple(reversed(additions))
+
+    def chemical_addition_value_history(
+        self,
+        *,
+        chemical: ChemicalType | str,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int = 1000,
+    ) -> tuple[tuple[datetime, float], ...]:
+        if limit < 1:
+            raise ValueError("limit must be at least 1")
+
+        chemical_id = ChemicalType(chemical).value
+        clauses = ["chemical = ?"]
+        parameters: list[str | int] = [chemical_id]
+        if since is not None:
+            clauses.append("added_at >= ?")
+            parameters.append(since.isoformat())
+        if until is not None:
+            clauses.append("added_at <= ?")
+            parameters.append(until.isoformat())
+        parameters.append(limit)
+        where_clause = " AND ".join(clauses)
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT added_at, amount_fl_oz AS value
+                FROM chemical_additions
+                WHERE {where_clause}
+                ORDER BY added_at DESC
+                LIMIT ?
+                """,
+                parameters,
+            ).fetchall()
+
+        descending = tuple(
+            (
+                _parse_datetime(str(row["added_at"])),
+                float(row["value"]),
+            )
+            for row in rows
+            if row["value"] is not None
+        )
+        return tuple(reversed(descending))
+
     def log_weather_observation(self, observation: WeatherObservation) -> int:
         columns = (
             "timestamp",
@@ -595,6 +726,34 @@ class MeasurementLogger:
                 """
             )
             self._ensure_column(connection, "lab_tests", "tds", "REAL")
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chemical_additions (
+                    id TEXT PRIMARY KEY,
+                    added_at TEXT NOT NULL,
+                    entered_at TEXT NOT NULL,
+                    chemical TEXT NOT NULL,
+                    amount REAL NOT NULL,
+                    unit TEXT NOT NULL,
+                    amount_fl_oz REAL NOT NULL,
+                    strength_percent REAL NOT NULL,
+                    notes TEXT,
+                    metadata_json TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_chemical_additions_added
+                ON chemical_additions (added_at)
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_chemical_additions_chemical_time
+                ON chemical_additions (chemical, added_at)
+                """
+            )
             weather_columns = "\n".join(
                 f"                    {field} REAL,"
                 for field in WEATHER_FIELDS
@@ -746,6 +905,21 @@ def _lab_test_from_row(row: sqlite3.Row) -> LabTest:
         salt=_optional_float(row["salt"]),
         borates=_optional_float(row["borates"]),
         water_temp=_optional_float(row["water_temp"]),
+        notes=str(row["notes"]) if row["notes"] is not None else None,
+        metadata=_metadata_from_json(str(row["metadata_json"])),
+    )
+
+
+def _chemical_addition_from_row(row: sqlite3.Row) -> ChemicalAddition:
+    return ChemicalAddition(
+        id=str(row["id"]),
+        added_at=_parse_datetime(str(row["added_at"])),
+        entered_at=_parse_datetime(str(row["entered_at"])),
+        chemical=ChemicalType(str(row["chemical"])),
+        amount=float(row["amount"]),
+        unit=str(row["unit"]),
+        amount_fl_oz=float(row["amount_fl_oz"]),
+        strength_percent=float(row["strength_percent"]),
         notes=str(row["notes"]) if row["notes"] is not None else None,
         metadata=_metadata_from_json(str(row["metadata_json"])),
     )

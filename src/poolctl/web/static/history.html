@@ -383,6 +383,40 @@
         <div id="labTestList" class="timeline-list">--</div>
       </section>
 
+      <section class="history-panel" aria-label="Chemical addition entry" data-view-section="history">
+        <div class="history-header">
+          <h2>Chemical Additions</h2>
+          <div class="history-controls">
+            <button id="chemicalAdditionReload" type="button">Reload</button>
+          </div>
+        </div>
+        <div class="config-grid">
+          <label>Added At (ISO) <input id="chemicalAddedAt" type="text" placeholder="2026-05-23T14:30:00-05:00"></label>
+          <label>Chemical
+            <select id="chemicalType">
+              <option value="sodium_hypochlorite" selected>Sodium Hypochlorite</option>
+              <option value="muriatic_acid">Muriatic Acid</option>
+            </select>
+          </label>
+          <label>Amount <input id="chemicalAmount" type="number" step="0.1" min="0"></label>
+          <label>Unit
+            <select id="chemicalUnit">
+              <option value="fl_oz" selected>fl oz</option>
+              <option value="gal">gal</option>
+              <option value="ml">mL</option>
+              <option value="l">L</option>
+            </select>
+          </label>
+          <label>Strength % <input id="chemicalStrength" type="number" step="0.01" min="0"></label>
+          <label>Notes <input id="chemicalNotes" type="text"></label>
+        </div>
+        <div class="timer-actions">
+          <button id="chemicalAdditionSave" type="button">Add Chemical</button>
+        </div>
+        <div id="chemicalAdditionStatus" class="history-status">--</div>
+        <div id="chemicalAdditionList" class="timeline-list">--</div>
+      </section>
+
       <section class="history-panel" aria-label="Analog input config" data-view-section="config">
         <div class="history-header">
           <h2>Analog Input Config</h2>

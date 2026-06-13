@@ -23,6 +23,8 @@ from poolctl.domain.models import (
     ActuatorCommand,
     ActuatorId,
     ActuatorState,
+    ChemicalAddition,
+    ChemicalType,
     CommandSource,
     LabTest,
     Measurement,
@@ -47,6 +49,27 @@ import yaml  # type: ignore[import-untyped]
 STATIC_DIR = Path(__file__).with_name("static")
 MAX_EVENT_COUNT = 500
 EnumT = TypeVar("EnumT", bound=Enum)
+CHEMICAL_DEFAULT_STRENGTH_PERCENT = {
+    ChemicalType.SODIUM_HYPOCHLORITE: 12.0,
+    ChemicalType.MURIATIC_ACID: 31.45,
+}
+CHEMICAL_LABELS = {
+    ChemicalType.SODIUM_HYPOCHLORITE: "Sodium Hypochlorite",
+    ChemicalType.MURIATIC_ACID: "Muriatic Acid",
+}
+CHEMICAL_AMOUNT_TO_FL_OZ = {
+    "fl_oz": 1.0,
+    "fluid_ounce": 1.0,
+    "fluid_ounces": 1.0,
+    "oz": 1.0,
+    "gal": 128.0,
+    "gallon": 128.0,
+    "gallons": 128.0,
+    "ml": 0.0338140227,
+    "l": 33.8140227,
+    "liter": 33.8140227,
+    "liters": 33.8140227,
+}
 
 
 class AsyncRuntime:
@@ -190,6 +213,10 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             self._serve_lab_tests()
             return
 
+        if path == "/api/chemical_additions":
+            self._serve_chemical_additions()
+            return
+
         if path == "/api/config/runtime":
             self._serve_runtime_config()
             return
@@ -257,6 +284,10 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
 
         if path == "/api/lab_tests":
             self._serve_add_lab_test()
+            return
+
+        if path == "/api/chemical_additions":
+            self._serve_add_chemical_addition()
             return
 
         if path == "/api/system/restart":
@@ -391,6 +422,20 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             hours = _float_query_value(query, "hours", 24.0 * 30.0)
             limit = _int_query_value(query, "limit", 200)
             payload = list_lab_tests(self.app, hours=hours, limit=limit)
+        except ValueError as error:
+            self._serve_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        except Exception as error:
+            self._serve_json({"error": str(error)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+        self._serve_json(payload)
+
+    def _serve_chemical_additions(self) -> None:
+        try:
+            query = parse_qs(urlparse(self.path).query)
+            hours = _float_query_value(query, "hours", 24.0 * 30.0)
+            limit = _int_query_value(query, "limit", 200)
+            payload = list_chemical_additions(self.app, hours=hours, limit=limit)
         except ValueError as error:
             self._serve_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
             return
@@ -552,6 +597,22 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
         try:
             payload = self._read_json_body()
             result = add_lab_test(
+                app=self.app,
+                payload=payload,
+                source="local_gui",
+            )
+        except ValueError as error:
+            self._serve_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        except Exception as error:
+            self._serve_json({"error": str(error)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+        self._serve_json(result)
+
+    def _serve_add_chemical_addition(self) -> None:
+        try:
+            payload = self._read_json_body()
+            result = add_chemical_addition(
                 app=self.app,
                 payload=payload,
                 source="local_gui",
@@ -1068,6 +1129,136 @@ def _lab_test_payload(test: LabTest) -> dict[str, Any]:
         "notes": test.notes,
         "metadata": test.metadata,
     }
+
+
+def add_chemical_addition(
+    *,
+    app: PoolControllerApp,
+    payload: dict[str, Any],
+    source: str,
+) -> dict[str, Any]:
+    if app.measurement_logger is None:
+        raise ValueError("measurement logging is not enabled")
+
+    raw = dict(payload)
+    added_at = raw.get("added_at")
+    if added_at is None:
+        added_at = app.clock.now().isoformat()
+    if not isinstance(added_at, str):
+        raise ValueError("added_at must be an ISO timestamp string")
+
+    chemical = _chemical_type_from_payload(raw.get("chemical"))
+    amount = _positive_float(raw.get("amount"), "amount")
+    unit = str(raw.get("unit") or "fl_oz").strip().lower()
+    amount_fl_oz = _amount_to_fl_oz(amount, unit)
+    strength_percent = raw.get("strength_percent")
+    if strength_percent is None or str(strength_percent).strip() == "":
+        strength_percent = CHEMICAL_DEFAULT_STRENGTH_PERCENT[chemical]
+    strength = _positive_float(strength_percent, "strength_percent")
+
+    metadata = raw.get("metadata", {})
+    if not isinstance(metadata, dict):
+        raise ValueError("metadata must be an object")
+
+    raw["added_at"] = added_at
+    raw["entered_at"] = app.clock.now().isoformat()
+    raw["chemical"] = chemical.value
+    raw["amount"] = amount
+    raw["unit"] = unit
+    raw["amount_fl_oz"] = amount_fl_oz
+    raw["strength_percent"] = strength
+    raw["notes"] = _optional_string(raw.get("notes"))
+    raw["metadata"] = {
+        **metadata,
+        "source": source,
+    }
+    raw = {key: value for key, value in raw.items() if value is not None}
+
+    try:
+        addition = ChemicalAddition.model_validate(raw)
+    except Exception as error:
+        raise ValueError(f"invalid chemical addition payload: {error}") from error
+
+    app.measurement_logger.log_chemical_addition(addition)
+    return {
+        "saved": True,
+        "chemical_addition": _chemical_addition_payload(addition),
+    }
+
+
+def list_chemical_additions(
+    app: PoolControllerApp,
+    *,
+    hours: float,
+    limit: int,
+) -> dict[str, Any]:
+    if hours <= 0:
+        raise ValueError("hours must be greater than 0")
+    if limit < 1:
+        raise ValueError("limit must be at least 1")
+
+    if app.measurement_logger is None:
+        return {"chemical_additions": []}
+
+    additions = app.measurement_logger.chemical_addition_history(
+        since=app.clock.now() - timedelta(hours=hours),
+        limit=limit,
+    )
+    return {
+        "chemical_additions": [
+            _chemical_addition_payload(addition)
+            for addition in additions
+        ],
+    }
+
+
+def _chemical_addition_payload(addition: ChemicalAddition) -> dict[str, Any]:
+    return {
+        "id": addition.id,
+        "added_at": addition.added_at.isoformat(),
+        "entered_at": addition.entered_at.isoformat(),
+        "chemical": addition.chemical.value,
+        "chemical_label": CHEMICAL_LABELS.get(addition.chemical, addition.chemical.value),
+        "amount": addition.amount,
+        "unit": addition.unit,
+        "amount_fl_oz": addition.amount_fl_oz,
+        "strength_percent": addition.strength_percent,
+        "notes": addition.notes,
+        "metadata": addition.metadata,
+    }
+
+
+def _chemical_type_from_payload(value: Any) -> ChemicalType:
+    if not isinstance(value, str):
+        raise ValueError("chemical must be a string")
+    try:
+        return ChemicalType(value)
+    except ValueError as error:
+        raise ValueError(f"unsupported chemical: {value}") from error
+
+
+def _amount_to_fl_oz(amount: float, unit: str) -> float:
+    factor = CHEMICAL_AMOUNT_TO_FL_OZ.get(unit)
+    if factor is None:
+        raise ValueError(f"unsupported chemical amount unit: {unit}")
+    return amount * factor
+
+
+def _positive_float(value: Any, key: str) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{key} must be a positive number") from error
+    if parsed <= 0:
+        raise ValueError(f"{key} must be a positive number")
+    return parsed
+
+
+def _optional_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def build_health_payload(app: PoolControllerApp) -> dict[str, Any]:

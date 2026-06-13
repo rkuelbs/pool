@@ -37,6 +37,8 @@ const SENSOR_LABELS = {
   lab_tds: "TDS (tested)",
   lab_salt: "Salt (tested)",
   lab_borates: "Borates (tested)",
+  chemical_sodium_hypochlorite: "Sodium Hypochlorite Added",
+  chemical_muriatic_acid: "Muriatic Acid Added",
   weather_temperature_2m: "Weather Temp",
   weather_relative_humidity_2m: "Weather RH",
   weather_dew_point_2m: "Weather Dew Point",
@@ -85,6 +87,8 @@ const HISTORY_SENSOR_ORDER = [
   "lab_tds",
   "lab_salt",
   "lab_borates",
+  "chemical_sodium_hypochlorite",
+  "chemical_muriatic_acid",
   "weather_temperature_2m",
   "weather_relative_humidity_2m",
   "weather_dew_point_2m",
@@ -194,6 +198,7 @@ let lastHealthLoadedAt = 0;
 let topStatusLoading = false;
 let lastTopStatusLoadedAt = 0;
 let labTestLoading = false;
+let chemicalAdditionLoading = false;
 let liveMode = "schematic";
 let latestLivePayload = null;
 let configAutoRefreshPaused = false;
@@ -1118,6 +1123,8 @@ function drawHistoryChartSeries(series) {
         sensor_id: entry.sensor_id,
         label: entry.label || entry.sensor_id,
         color,
+        style: entry.style || "line",
+        marker: entry.marker || "circle",
         points,
       };
     })
@@ -1212,25 +1219,10 @@ function drawHistoryChartSeries(series) {
             ? margin.left + plotWidth
             : margin.left + ((point._time - minTime) / (maxTime - minTime)) * plotWidth;
         const y = margin.top + plotHeight - ((point._value - minValue) / (maxValue - minValue)) * plotHeight;
-        return `${x.toFixed(1)},${y.toFixed(1)}`;
+        return { x, y, point };
       });
 
-      const polyline = document.createElementNS(SVG_NS, "polyline");
-      polyline.setAttribute("class", "history-line");
-      polyline.setAttribute("style", `stroke:${entry.color}`);
-      polyline.setAttribute("points", coordinates.join(" "));
-      chart.appendChild(polyline);
-
-      const latest = entry.points[entry.points.length - 1];
-      const [latestX, latestY] = coordinates[coordinates.length - 1].split(",");
-      const point = document.createElementNS(SVG_NS, "circle");
-      point.setAttribute("class", "history-point");
-      point.setAttribute("cx", latestX);
-      point.setAttribute("cy", latestY);
-      point.setAttribute("r", "3.5");
-      point.setAttribute("fill", entry.color);
-      point.setAttribute("title", `${entry.label}: ${latest.display}`);
-      chart.appendChild(point);
+      appendHistorySeriesTrace(chart, entry, coordinates);
     });
   } else {
     for (let index = 0; index <= 4; index += 1) {
@@ -1281,25 +1273,10 @@ function drawHistoryChartSeries(series) {
           margin.top +
           plotHeight -
           ((point._value - entry.axis.minValue) / (entry.axis.maxValue - entry.axis.minValue)) * plotHeight;
-        return `${x.toFixed(1)},${y.toFixed(1)}`;
+        return { x, y, point };
       });
 
-      const polyline = document.createElementNS(SVG_NS, "polyline");
-      polyline.setAttribute("class", "history-line");
-      polyline.setAttribute("style", `stroke:${entry.color}`);
-      polyline.setAttribute("points", coordinates.join(" "));
-      chart.appendChild(polyline);
-
-      const latest = entry.points[entry.points.length - 1];
-      const [latestX, latestY] = coordinates[coordinates.length - 1].split(",");
-      const point = document.createElementNS(SVG_NS, "circle");
-      point.setAttribute("class", "history-point");
-      point.setAttribute("cx", latestX);
-      point.setAttribute("cy", latestY);
-      point.setAttribute("r", "3.5");
-      point.setAttribute("fill", entry.color);
-      point.setAttribute("title", `${entry.label}: ${latest.display}`);
-      chart.appendChild(point);
+      appendHistorySeriesTrace(chart, entry, coordinates);
     });
   }
 
@@ -1327,6 +1304,92 @@ function drawHistoryChartSeries(series) {
   });
 
   status.textContent = `${allPoints.length} points across ${withAxes.length} sensors`;
+}
+
+function appendHistorySeriesTrace(chart, entry, coordinates) {
+  if (!coordinates.length) {
+    return;
+  }
+
+  if (entry.style !== "event" && coordinates.length > 1) {
+    const polyline = document.createElementNS(SVG_NS, "polyline");
+    polyline.setAttribute("class", "history-line");
+    polyline.setAttribute("style", `stroke:${entry.color}`);
+    polyline.setAttribute(
+      "points",
+      coordinates.map((coordinate) => `${coordinate.x.toFixed(1)},${coordinate.y.toFixed(1)}`).join(" "),
+    );
+    chart.appendChild(polyline);
+  }
+
+  if (entry.style === "event") {
+    coordinates.forEach((coordinate) => {
+      appendHistoryMarker(
+        chart,
+        coordinate.x,
+        coordinate.y,
+        entry.color,
+        historyPointTitle(entry, coordinate.point),
+        entry.marker,
+        5.5,
+      );
+    });
+    return;
+  }
+
+  const latest = coordinates[coordinates.length - 1];
+  appendHistoryMarker(
+    chart,
+    latest.x,
+    latest.y,
+    entry.color,
+    historyPointTitle(entry, latest.point),
+    "circle",
+    3.5,
+  );
+}
+
+function appendHistoryMarker(chart, x, y, color, titleText, marker, size) {
+  let node;
+  if (marker === "square") {
+    node = document.createElementNS(SVG_NS, "rect");
+    node.setAttribute("x", String(x - size));
+    node.setAttribute("y", String(y - size));
+    node.setAttribute("width", String(size * 2));
+    node.setAttribute("height", String(size * 2));
+    node.setAttribute("rx", "1");
+  } else if (marker === "star") {
+    node = document.createElementNS(SVG_NS, "polygon");
+    node.setAttribute("points", starPoints(x, y, size, size * 0.45));
+  } else {
+    node = document.createElementNS(SVG_NS, "circle");
+    node.setAttribute("cx", String(x));
+    node.setAttribute("cy", String(y));
+    node.setAttribute("r", String(size));
+  }
+
+  node.setAttribute("class", "history-point");
+  node.setAttribute("fill", color);
+  node.setAttribute("title", titleText);
+  const title = document.createElementNS(SVG_NS, "title");
+  title.textContent = titleText;
+  node.appendChild(title);
+  chart.appendChild(node);
+}
+
+function starPoints(cx, cy, outerRadius, innerRadius) {
+  const points = [];
+  for (let index = 0; index < 10; index += 1) {
+    const radius = index % 2 === 0 ? outerRadius : innerRadius;
+    const angle = -Math.PI / 2 + (index * Math.PI) / 5;
+    points.push(`${(cx + Math.cos(angle) * radius).toFixed(1)},${(cy + Math.sin(angle) * radius).toFixed(1)}`);
+  }
+  return points.join(" ");
+}
+
+function historyPointTitle(entry, point) {
+  const timestamp = point.observed_at ? new Date(point.observed_at).toLocaleString() : "";
+  return timestamp ? `${entry.label}: ${point.display} @ ${timestamp}` : `${entry.label}: ${point.display}`;
 }
 
 function formatAxisTick(value, range) {
@@ -2670,6 +2733,136 @@ function initializeLabTestControls() {
   loadLabTests();
 }
 
+function chemicalDefaultStrengthPercent(chemical) {
+  if (chemical === "muriatic_acid") {
+    return 31.45;
+  }
+  return 12.0;
+}
+
+async function loadChemicalAdditions() {
+  if (chemicalAdditionLoading) {
+    return;
+  }
+  chemicalAdditionLoading = true;
+  try {
+    const response = await fetch("/api/chemical_additions?hours=720&limit=100", { cache: "no-store" });
+    const payload = await parseApiResponse(response, "chemical additions load failed");
+    renderChemicalAdditions(payload.chemical_additions || []);
+    setChemicalAdditionStatus("Chemical additions loaded");
+  } catch (error) {
+    setChemicalAdditionStatus(error.message);
+  } finally {
+    chemicalAdditionLoading = false;
+  }
+}
+
+async function saveChemicalAddition() {
+  setChemicalAdditionStatus("Saving chemical addition...");
+  try {
+    const response = await fetch("/api/chemical_additions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(collectChemicalAdditionPayload()),
+    });
+    await parseApiResponse(response, "chemical addition save failed");
+    setChemicalAdditionStatus("Chemical addition saved");
+    clearChemicalAdditionInputs();
+    await loadChemicalAdditions();
+    await refreshHistory(true);
+  } catch (error) {
+    setChemicalAdditionStatus(error.message);
+  }
+}
+
+function collectChemicalAdditionPayload() {
+  const payload = {
+    added_at: stringOrNull(document.getElementById("chemicalAddedAt").value),
+    chemical: document.getElementById("chemicalType").value,
+    amount: numberOrNull(document.getElementById("chemicalAmount").value),
+    unit: document.getElementById("chemicalUnit").value,
+    strength_percent: numberOrNull(document.getElementById("chemicalStrength").value),
+    notes: stringOrNull(document.getElementById("chemicalNotes").value),
+  };
+  if (!payload.added_at) {
+    delete payload.added_at;
+  }
+  if (payload.strength_percent === null) {
+    delete payload.strength_percent;
+  }
+  return payload;
+}
+
+function renderChemicalAdditions(additions) {
+  const list = document.getElementById("chemicalAdditionList");
+  if (!additions.length) {
+    list.textContent = "No chemical additions recorded";
+    return;
+  }
+  const lines = additions
+    .slice()
+    .reverse()
+    .map((addition) => {
+      const label = addition.chemical_label || SENSOR_LABELS[`chemical_${addition.chemical}`] || addition.chemical;
+      const amount = formatChemicalAmount(addition);
+      const strength = `${Number(addition.strength_percent).toFixed(2)}%`;
+      const normalized =
+        addition.unit === "fl_oz" ? "" : ` (${Number(addition.amount_fl_oz).toFixed(1)} fl oz)`;
+      const notes = addition.notes ? ` | ${addition.notes}` : "";
+      return `[${new Date(addition.added_at).toLocaleString()}] ${label} | ${amount}${normalized} | ${strength}${notes}`;
+    });
+  list.textContent = lines.join("\n");
+}
+
+function formatChemicalAmount(addition) {
+  const amount = Number(addition.amount);
+  const unit = addition.unit || "fl_oz";
+  if (!Number.isFinite(amount)) {
+    return "--";
+  }
+  if (unit === "fl_oz") {
+    return `${amount.toFixed(1)} fl oz`;
+  }
+  if (unit === "gal") {
+    return `${amount.toFixed(3)} gal`;
+  }
+  if (unit === "ml") {
+    return `${amount.toFixed(0)} mL`;
+  }
+  if (unit === "l") {
+    return `${amount.toFixed(2)} L`;
+  }
+  return `${amount.toFixed(2)} ${unit}`;
+}
+
+function clearChemicalAdditionInputs() {
+  document.getElementById("chemicalAddedAt").value = "";
+  document.getElementById("chemicalAmount").value = "";
+  document.getElementById("chemicalNotes").value = "";
+  updateChemicalStrengthDefault();
+}
+
+function setChemicalAdditionStatus(message) {
+  document.getElementById("chemicalAdditionStatus").textContent = message;
+}
+
+function updateChemicalStrengthDefault() {
+  const chemical = document.getElementById("chemicalType").value;
+  document.getElementById("chemicalStrength").value = String(chemicalDefaultStrengthPercent(chemical));
+}
+
+function initializeChemicalAdditionControls() {
+  const chemicalType = document.getElementById("chemicalType");
+  if (!chemicalType) {
+    return;
+  }
+  chemicalType.addEventListener("change", updateChemicalStrengthDefault);
+  document.getElementById("chemicalAdditionReload").addEventListener("click", loadChemicalAdditions);
+  document.getElementById("chemicalAdditionSave").addEventListener("click", saveChemicalAddition);
+  updateChemicalStrengthDefault();
+  loadChemicalAdditions();
+}
+
 function numberOrNull(raw) {
   if (raw === null || raw === undefined || String(raw).trim() === "") {
     return null;
@@ -2828,6 +3021,7 @@ async function poll() {
       await refreshHistory(false);
       await refreshFaultTimeline(false);
       await loadLabTests();
+      await loadChemicalAdditions();
       await refreshHealth(false);
     } else if (PAGE_MODE === "schedule") {
       await refreshTopStatus(false);
@@ -2884,6 +3078,7 @@ function initializeForPage() {
     initializeHistoryControls();
     initializeFaultTimelineControls();
     initializeLabTestControls();
+    initializeChemicalAdditionControls();
     return;
   }
   if (PAGE_MODE === "schedule") {

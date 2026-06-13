@@ -299,6 +299,38 @@ class LabTest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class ChemicalType(str, Enum):
+    """
+    Chemicals that can be manually added and logged.
+    """
+
+    MURIATIC_ACID = "muriatic_acid"
+    SODIUM_HYPOCHLORITE = "sodium_hypochlorite"
+
+
+class ChemicalAddition(BaseModel):
+    """
+    Represents a manually logged chemical addition event.
+
+    The original amount and unit are preserved for display, while
+    amount_fl_oz gives estimators and charts a normalized quantity.
+    """
+
+    id: str = Field(default_factory=lambda: str(uuid4()))
+
+    added_at: datetime
+    entered_at: datetime = Field(default_factory=utc_now)
+
+    chemical: ChemicalType
+    amount: float = Field(gt=0)
+    unit: str = "fl_oz"
+    amount_fl_oz: float = Field(gt=0)
+    strength_percent: float = Field(gt=0)
+
+    notes: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class EstimatedState(BaseModel):
     """
     Represents a future estimated pool state.

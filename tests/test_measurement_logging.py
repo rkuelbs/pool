@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from poolctl.domain.models import LabTest, Measurement, Quality, SensorId
+from poolctl.domain.models import ChemicalAddition, ChemicalType, LabTest, Measurement, Quality, SensorId
 from poolctl.services.measurement_logging import (
     MeasurementLogger,
     MeasurementLoggingConfig,
@@ -117,6 +117,39 @@ def test_measurement_logger_persists_lab_tests(tmp_path: Path) -> None:
     assert records[0].free_chlorine == 3.2
     assert records[0].tds == 1200.0
     assert records[0].notes == "weekly strip + drop test"
+
+
+def test_measurement_logger_persists_and_queries_chemical_additions(tmp_path: Path) -> None:
+    logger = MeasurementLogger(
+        MeasurementLoggingConfig(database_path=tmp_path / "measurements.sqlite3")
+    )
+    now = datetime(2026, 5, 22, 12, 0, tzinfo=timezone.utc)
+    addition = ChemicalAddition(
+        added_at=now,
+        chemical=ChemicalType.SODIUM_HYPOCHLORITE,
+        amount=64.0,
+        unit="fl_oz",
+        amount_fl_oz=64.0,
+        strength_percent=12.0,
+        notes="manual dose",
+    )
+
+    logger.log_chemical_addition(addition)
+    records = logger.chemical_addition_history(limit=10)
+    points = logger.chemical_addition_value_history(
+        chemical=ChemicalType.SODIUM_HYPOCHLORITE,
+        since=now - timedelta(hours=1),
+        until=now + timedelta(hours=1),
+        limit=10,
+    )
+
+    assert len(records) == 1
+    assert records[0].id == addition.id
+    assert records[0].chemical == ChemicalType.SODIUM_HYPOCHLORITE
+    assert records[0].amount_fl_oz == 64.0
+    assert records[0].strength_percent == 12.0
+    assert len(points) == 1
+    assert points[0][1] == 64.0
 
 
 def test_measurement_logger_latest_lab_values_uses_latest_non_null_per_field(

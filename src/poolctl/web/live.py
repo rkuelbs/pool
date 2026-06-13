@@ -5,7 +5,7 @@ from typing import Any
 
 from poolctl.app import PoolControllerApp, TimerOverrideState
 from poolctl.config import LiveViewConfig
-from poolctl.domain.models import ActuatorId, Measurement, Quality, SensorId
+from poolctl.domain.models import ActuatorId, ChemicalType, Measurement, Quality, SensorId
 
 
 SENSOR_LABELS = {
@@ -86,6 +86,24 @@ LAB_HISTORY_SERIES: dict[str, dict[str, Any]] = {
 }
 LAB_HISTORY_IDS = frozenset(LAB_HISTORY_SERIES.keys())
 
+CHEMICAL_ADDITION_HISTORY_SERIES: dict[str, dict[str, Any]] = {
+    "chemical_sodium_hypochlorite": {
+        "chemical": ChemicalType.SODIUM_HYPOCHLORITE,
+        "label": "Sodium Hypochlorite Added",
+        "unit": "fl oz",
+        "decimals": 1,
+        "marker": "star",
+    },
+    "chemical_muriatic_acid": {
+        "chemical": ChemicalType.MURIATIC_ACID,
+        "label": "Muriatic Acid Added",
+        "unit": "fl oz",
+        "decimals": 1,
+        "marker": "square",
+    },
+}
+CHEMICAL_ADDITION_HISTORY_IDS = frozenset(CHEMICAL_ADDITION_HISTORY_SERIES.keys())
+
 WEATHER_HISTORY_SERIES: dict[str, dict[str, Any]] = {
     "weather_temperature_2m": {"field": "temperature_2m", "label": "Weather Temp", "unit": "degF", "decimals": 1},
     "weather_relative_humidity_2m": {"field": "relative_humidity_2m", "label": "Weather RH", "unit": "%", "decimals": 1},
@@ -108,7 +126,7 @@ WEATHER_HISTORY_SERIES: dict[str, dict[str, Any]] = {
     "weather_soil_temperature_0cm": {"field": "soil_temperature_0cm", "label": "Weather Soil Temp", "unit": "degF", "decimals": 1},
 }
 WEATHER_HISTORY_IDS = frozenset(WEATHER_HISTORY_SERIES.keys())
-EXTRA_HISTORY_IDS = LAB_HISTORY_IDS | WEATHER_HISTORY_IDS
+EXTRA_HISTORY_IDS = LAB_HISTORY_IDS | CHEMICAL_ADDITION_HISTORY_IDS | WEATHER_HISTORY_IDS
 
 ACTUATOR_LABELS = {
     ActuatorId.PUMP_MOTOR: "Pump",
@@ -359,6 +377,37 @@ def build_history_series_payload(
             )
             continue
 
+        chemical_spec = CHEMICAL_ADDITION_HISTORY_SERIES.get(token_id)
+        if chemical_spec is not None:
+            addition_points = app.measurement_logger.chemical_addition_value_history(
+                chemical=chemical_spec["chemical"],
+                since=since,
+                until=now,
+                limit=limit,
+            )
+            points = [
+                _chemical_addition_history_point_payload(
+                    sensor_id=token_id,
+                    label=str(chemical_spec["label"]),
+                    observed_at=observed_at,
+                    value=value,
+                    unit=str(chemical_spec["unit"]),
+                    decimals=int(chemical_spec["decimals"]),
+                )
+                for observed_at, value in addition_points
+            ]
+            series.append(
+                {
+                    "sensor_id": token_id,
+                    "label": str(chemical_spec["label"]),
+                    "bucket_seconds": None,
+                    "style": "event",
+                    "marker": str(chemical_spec["marker"]),
+                    "points": points,
+                }
+            )
+            continue
+
         weather_spec = WEATHER_HISTORY_SERIES.get(token_id)
         if weather_spec is None:
             raise ValueError(f"invalid sensor_id: {token_id}")
@@ -600,6 +649,32 @@ def _weather_history_point_payload(
         "kind": "raw",
         "observed_at": observed_at.isoformat(),
         "metadata": {"source": "weather"},
+    }
+
+
+def _chemical_addition_history_point_payload(
+    *,
+    sensor_id: str,
+    label: str,
+    observed_at: datetime,
+    value: float,
+    unit: str,
+    decimals: int,
+) -> dict[str, Any]:
+    display = f"{value:.{decimals}f} {unit}"
+    return {
+        "sensor_id": sensor_id,
+        "label": label,
+        "value": value,
+        "unit": unit,
+        "display": display,
+        "quality": Quality.GOOD.value,
+        "status": "unknown",
+        "status_label": SENSOR_STATUS_LABELS["unknown"],
+        "limits": None,
+        "kind": "event",
+        "observed_at": observed_at.isoformat(),
+        "metadata": {"source": "chemical_addition"},
     }
 
 

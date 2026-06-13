@@ -8,7 +8,16 @@ import pytest
 
 from poolctl.app import build_app_from_mapping
 from poolctl.config import LiveViewConfig
-from poolctl.domain.models import ActuatorId, ActuatorState, LabTest, Measurement, Quality, SensorId
+from poolctl.domain.models import (
+    ActuatorId,
+    ActuatorState,
+    ChemicalAddition,
+    ChemicalType,
+    LabTest,
+    Measurement,
+    Quality,
+    SensorId,
+)
 from poolctl.services.clock import SimulatedClock
 from poolctl.services.weather import WeatherObservation
 from poolctl.web.live import (
@@ -475,6 +484,41 @@ def test_history_series_payload_can_include_lab_test_signals(tmp_path: Path) -> 
     assert by_id["lab_tds"]["points"][0]["value"] == 1000.0
     assert by_id["lab_salt"]["points"][0]["value"] == 3100.0
     assert by_id["lab_borates"]["points"][0]["value"] == 35.0
+
+
+def test_history_series_payload_can_include_chemical_addition_events(tmp_path: Path) -> None:
+    app = build_app_from_mapping(
+        logging_live_config(str(tmp_path / "history.sqlite3")),
+        clock=make_clock(),
+    )
+    assert app.measurement_logger is not None
+    added_at = app.clock.now()
+    app.measurement_logger.log_chemical_addition(
+        ChemicalAddition(
+            added_at=added_at,
+            chemical=ChemicalType.MURIATIC_ACID,
+            amount=1.0,
+            unit="gal",
+            amount_fl_oz=128.0,
+            strength_percent=31.45,
+        )
+    )
+
+    payload = build_history_series_payload(
+        app,
+        sensor_ids=("chemical_muriatic_acid",),
+        hours=24.0,
+        limit=100,
+        validated_only=True,
+    )
+
+    series = payload["series"][0]
+    assert series["sensor_id"] == "chemical_muriatic_acid"
+    assert series["style"] == "event"
+    assert series["marker"] == "square"
+    assert series["points"][0]["value"] == 128.0
+    assert series["points"][0]["kind"] == "event"
+    assert series["points"][0]["metadata"]["source"] == "chemical_addition"
 
 
 def test_history_series_payload_accepts_multiple_standard_sensor_id_strings(tmp_path: Path) -> None:

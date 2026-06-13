@@ -8,6 +8,7 @@ import yaml  # type: ignore[import-untyped]
 from poolctl.app import build_app_from_mapping
 from poolctl.services.clock import SimulatedClock
 from poolctl.web.server import (
+    add_chemical_addition,
     add_lab_test,
     apply_analog_input_config_update,
     apply_acquisition_config_update,
@@ -17,6 +18,7 @@ from poolctl.web.server import (
     apply_safety_config_update,
     apply_timer_override_update,
     build_health_payload,
+    list_chemical_additions,
     list_lab_tests,
     serialize_acquisition_config,
     serialize_logging_config,
@@ -358,3 +360,43 @@ def test_lab_test_api_accepts_sparse_payload_and_defaults_sampled_at(tmp_path: P
     assert result["saved"] is True
     assert result["lab_test"]["tds"] == 1000.0
     assert listed["lab_tests"][0]["tds"] == 1000.0
+
+
+def test_chemical_addition_api_helpers_store_defaults_and_list(tmp_path: Path) -> None:
+    config = config_mapping()
+    runtime = dict(config["runtime"])  # type: ignore[index]
+    runtime["enabled_layers"] = ["pump_timer", "logging"]
+    config["runtime"] = runtime
+    config["logging"] = {"database_path": str(tmp_path / "chemical.sqlite3")}
+    app = build_app_from_mapping(config, clock=make_clock())
+
+    hypo = add_chemical_addition(
+        app=app,
+        payload={
+            "added_at": "2026-05-22T12:00:00+00:00",
+            "chemical": "sodium_hypochlorite",
+            "amount": 64.0,
+            "unit": "fl_oz",
+        },
+        source="local_gui",
+    )
+    acid = add_chemical_addition(
+        app=app,
+        payload={
+            "added_at": "2026-05-22T12:30:00+00:00",
+            "chemical": "muriatic_acid",
+            "amount": 1.0,
+            "unit": "gal",
+            "notes": "lower pH",
+        },
+        source="local_gui",
+    )
+    listed = list_chemical_additions(app, hours=24.0 * 30.0, limit=20)
+
+    assert hypo["saved"] is True
+    assert hypo["chemical_addition"]["strength_percent"] == 12.0
+    assert hypo["chemical_addition"]["amount_fl_oz"] == 64.0
+    assert acid["chemical_addition"]["strength_percent"] == 31.45
+    assert acid["chemical_addition"]["amount_fl_oz"] == 128.0
+    assert len(listed["chemical_additions"]) == 2
+    assert listed["chemical_additions"][1]["chemical"] == "muriatic_acid"
