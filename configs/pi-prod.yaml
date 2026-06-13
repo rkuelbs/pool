@@ -17,23 +17,23 @@ pump_timer:
   timezone: America/Chicago
   schedules:
   - name: morning_vacuum
-    start: "06:00"
-    end: "08:00"
+    start: 06:00
+    end: 08:00
     pump_speed: low
     booster: 'on'
   - name: morning_filter
-    start: "08:00"
-    end: "09:00"
+    start: 08:00
+    end: 09:00
     pump_speed: low
     booster: 'off'
   - name: afternoon_filter
-    start: "12:30"
-    end: "15:30"
+    start: '12:30'
+    end: '15:30'
     pump_speed: low
     booster: 'off'
   - name: evening_filter
-    start: "20:00"
-    end: "23:30"
+    start: '20:00'
+    end: '23:30'
     pump_speed: low
     booster: 'off'
 modbus_relay:
@@ -142,8 +142,8 @@ safety:
     min_run_seconds: 600
     threshold_unit: degF
   thresholds:
-    chlorine_min_return_psi: 2
-    chlorine_min_pump_output_psi: 6
+    chlorine_min_return_psi: 1
+    chlorine_min_pump_output_psi: 2
     booster_max_psi: 60
     booster_min_psi: 30
     pump_low_prime_min_output_psi: 1
@@ -210,7 +210,7 @@ acquisition:
         reducer: median
   chemistry_sampling_refresh:
     enabled: true
-    max_pump_off_s: 21600
+    max_pump_off_s: 36000
     run_duration_s: 1200
     pump_speed: high
 live_view:
