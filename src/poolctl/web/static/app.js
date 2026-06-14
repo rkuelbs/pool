@@ -249,6 +249,7 @@ async function setTimerOverride(payload) {
     return;
   }
   timerOverrideBusy = true;
+  setControlsDisabled(true);
   setCommandStatus("Updating timer override...");
   try {
     const response = await fetch("/api/timer/override", {
@@ -256,14 +257,111 @@ async function setTimerOverride(payload) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    await parseApiResponse(response, "timer override update failed");
-    setCommandStatus("Timer override updated");
+    const result = await parseApiResponse(response, "timer override update failed");
+    setCommandStatus(timerOverrideMessage(result.override));
     await loadLive();
   } catch (error) {
     setCommandStatus(error.message);
   } finally {
+    setControlsDisabled(false);
     timerOverrideBusy = false;
   }
+}
+
+async function sendLatchedLiveControl(actuatorId, state) {
+  const payload = latchedLiveControlPayload(actuatorId, state);
+  if (!payload) {
+    await sendCommand(actuatorId, state);
+    return;
+  }
+  await setTimerOverride(payload);
+}
+
+function latchedLiveControlPayload(actuatorId, state) {
+  const actuators = latestLivePayload && latestLivePayload.actuators ? latestLivePayload.actuators : {};
+  const pumpState = actuatorState(actuators, "pump_motor", "off");
+  const speedState = pumpSpeedState(actuators);
+  const boosterState = actuatorState(actuators, "booster_pump", "off");
+  const base = {
+    until_next_schedule: true,
+    reason: `manual live control: ${actuatorId} ${state}`,
+  };
+
+  if (actuatorId === "pump_motor" && state === "off") {
+    return {
+      ...base,
+      mode: "force_off",
+      pump_speed: speedState,
+      booster: "off",
+    };
+  }
+
+  if (actuatorId === "pump_motor" && state === "on") {
+    return {
+      ...base,
+      mode: "force_on",
+      pump_speed: speedState,
+      booster: boosterState,
+    };
+  }
+
+  if (actuatorId === "pump_motor_speed" && (state === "low" || state === "high")) {
+    return {
+      ...base,
+      mode: "force_on",
+      pump_speed: state,
+      booster: pumpState === "on" ? boosterState : "off",
+    };
+  }
+
+  if (actuatorId === "booster_pump" && state === "on") {
+    return {
+      ...base,
+      mode: "force_on",
+      pump_speed: pumpState === "on" ? speedState : "high",
+      booster: "on",
+    };
+  }
+
+  if (actuatorId === "booster_pump" && state === "off") {
+    if (pumpState === "on") {
+      return {
+        ...base,
+        mode: "force_on",
+        pump_speed: speedState,
+        booster: "off",
+      };
+    }
+    return {
+      ...base,
+      mode: "force_off",
+      pump_speed: speedState,
+      booster: "off",
+    };
+  }
+
+  return null;
+}
+
+function actuatorState(actuators, actuatorId, fallback) {
+  const actuator = actuators ? actuators[actuatorId] : null;
+  const state = actuator ? String(actuator.state || "") : "";
+  return state || fallback;
+}
+
+function pumpSpeedState(actuators) {
+  const state = actuatorState(actuators, "pump_motor_speed", "low");
+  return state === "high" ? "high" : "low";
+}
+
+function timerOverrideMessage(override) {
+  if (!override || !override.active) {
+    return "Schedule mode";
+  }
+  if (override.until) {
+    return `Override active until ${new Date(override.until).toLocaleString()}`;
+  }
+  return "Override active until resumed";
 }
 
 function setControlsDisabled(disabled) {
@@ -653,7 +751,7 @@ function renderComponentStates(actuators, sensors, flows) {
     component.classList.add("status-on");
   });
   renderFilterComponent(flows);
-  renderMobileControlStates(actuators);
+  renderControlButtonStates(actuators);
 }
 
 function renderFilterComponent(flows) {
@@ -879,11 +977,11 @@ function setMobileCardStatus(cardId, statusClass) {
   card.classList.add(statusClass);
 }
 
-function renderMobileControlStates(actuators) {
-  const nodes = document.querySelectorAll("[data-mobile-command]");
+function renderControlButtonStates(actuators) {
+  const nodes = document.querySelectorAll("[data-command]");
   nodes.forEach((node) => {
     node.classList.remove("is-active");
-    const token = node.dataset.mobileCommand;
+    const token = node.dataset.command;
     if (!token || token.indexOf(":") < 0) {
       return;
     }
@@ -3054,7 +3152,7 @@ async function poll() {
 document.querySelectorAll("[data-command]").forEach((button) => {
   button.addEventListener("click", () => {
     const [actuatorId, state] = button.dataset.command.split(":");
-    sendCommand(actuatorId, state);
+    sendLatchedLiveControl(actuatorId, state);
   });
 });
 

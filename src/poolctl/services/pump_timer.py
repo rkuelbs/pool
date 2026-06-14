@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -147,6 +147,26 @@ class PumpTimer:
             ),
         )
 
+    def next_transition_after(self, now: datetime) -> datetime | None:
+        """
+        Return the next time the schedule's desired output state changes.
+
+        The returned datetime uses the same timezone awareness as ``now``.
+        """
+        schedule_now = now.astimezone(self._timezone)
+        current_desired = self._desired_states_for_time(schedule_now)
+
+        for candidate in self._future_schedule_boundaries(schedule_now):
+            candidate_desired = self._desired_states_for_time(candidate)
+            if candidate_desired == current_desired:
+                continue
+
+            if now.tzinfo is None:
+                return candidate.replace(tzinfo=None)
+            return candidate.astimezone(now.tzinfo)
+
+        return None
+
     def _desired_states_for_override(
         self,
         override: PumpTimerOverride,
@@ -194,6 +214,38 @@ class PumpTimer:
             ActuatorId.PUMP_MOTOR_SPEED: pump_speed,
             ActuatorId.BOOSTER_PUMP: booster_state,
         }
+
+    def _desired_states_for_time(self, schedule_now: datetime) -> dict[ActuatorId, ActuatorState]:
+        active_schedules = [
+            schedule
+            for schedule in self._config.schedules
+            if schedule.is_active(schedule_now)
+        ]
+        return self._desired_states(active_schedules)
+
+    def _future_schedule_boundaries(self, schedule_now: datetime) -> tuple[datetime, ...]:
+        candidates: list[datetime] = []
+        today = schedule_now.date()
+
+        for day_offset in range(3):
+            day = today + timedelta(days=day_offset)
+            for schedule in self._config.schedules:
+                if schedule.window.start == schedule.window.end:
+                    continue
+                candidates.append(_datetime_for_time_of_day(schedule_now, day, schedule.window.start))
+                candidates.append(_datetime_for_time_of_day(schedule_now, day, schedule.window.end))
+
+        future_candidates = sorted(candidate for candidate in candidates if candidate > schedule_now)
+        unique_candidates: list[datetime] = []
+        seen: set[str] = set()
+        for candidate in future_candidates:
+            key = candidate.isoformat()
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_candidates.append(candidate)
+
+        return tuple(unique_candidates)
 
     def _commands_for_desired_states(
         self,
@@ -359,3 +411,19 @@ def _validate_timezone(value: str) -> None:
         ZoneInfo(value)
     except ZoneInfoNotFoundError as error:
         raise ValueError(f"invalid timezone: {value}") from error
+
+
+def _datetime_for_time_of_day(
+    template: datetime,
+    day: date,
+    time_of_day: TimeOfDay,
+) -> datetime:
+    return template.replace(
+        year=day.year,
+        month=day.month,
+        day=day.day,
+        hour=time_of_day.hour,
+        minute=time_of_day.minute,
+        second=time_of_day.second,
+        microsecond=0,
+    )

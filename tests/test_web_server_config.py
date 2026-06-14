@@ -269,6 +269,27 @@ def test_force_on_override_defaults_to_one_hour() -> None:
     assert result["override"]["until"] is not None
 
 
+def test_override_can_expire_at_next_schedule_event() -> None:
+    clock = SimulatedClock(
+        start_at=datetime(2026, 5, 22, 14, 0, tzinfo=timezone.utc),
+        speedup=1.0,
+    )
+    app = build_app_from_mapping(config_mapping(), clock=clock)
+    result = apply_timer_override_update(
+        app=app,
+        payload={
+            "mode": "force_on",
+            "pump_speed": "high",
+            "booster": "off",
+            "reason": "manual high until schedule transition",
+            "until_next_schedule": True,
+        },
+    )
+
+    assert result["override"]["active"] is True
+    assert result["override"]["until"] == "2026-05-22T17:00:00+00:00"
+
+
 def test_analog_input_update_writes_yaml(tmp_path: Path) -> None:
     path = tmp_path / "pool.yaml"
     path.write_text(yaml.safe_dump(config_mapping(), sort_keys=False), encoding="utf-8")

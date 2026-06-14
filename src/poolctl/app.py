@@ -298,6 +298,12 @@ class PoolControllerApp:
         self._append_override_audit("expire_sampling", state)
         return None
 
+    def next_pump_timer_transition(self) -> datetime | None:
+        if self.pump_timer is None:
+            return None
+
+        return self.pump_timer.next_transition_after(self.clock.now())
+
     async def _poll_acquisition(self, *, force: bool) -> AcquisitionResult:
         if self.acquisition_service is None:
             return empty_acquisition_result()

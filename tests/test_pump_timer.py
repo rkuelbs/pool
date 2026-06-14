@@ -150,6 +150,58 @@ def test_timer_does_not_emit_commands_for_states_already_matching() -> None:
     assert evaluation.commands == ()
 
 
+def test_next_transition_after_returns_next_desired_state_change() -> None:
+    timer = PumpTimer(
+        PumpTimerConfig(
+            schedules=(
+                schedule(
+                    name="filter",
+                    start="08:00",
+                    end="10:00",
+                    pump_speed=ActuatorState.LOW,
+                ),
+            )
+        )
+    )
+
+    assert timer.next_transition_after(at(7)) == at(8)
+    assert timer.next_transition_after(at(9)) == at(10)
+
+
+def test_next_transition_after_handles_overnight_windows() -> None:
+    timer = PumpTimer(
+        PumpTimerConfig(
+            schedules=(
+                schedule(
+                    name="freeze",
+                    start="22:00",
+                    end="02:00",
+                    pump_speed=ActuatorState.LOW,
+                ),
+            )
+        )
+    )
+
+    assert timer.next_transition_after(at(23)) == datetime(2026, 5, 22, 2, 0, tzinfo=timezone.utc)
+
+
+def test_next_transition_after_returns_none_for_all_day_schedule() -> None:
+    timer = PumpTimer(
+        PumpTimerConfig(
+            schedules=(
+                schedule(
+                    name="all_day",
+                    start="00:00",
+                    end="00:00",
+                    pump_speed=ActuatorState.LOW,
+                ),
+            )
+        )
+    )
+
+    assert timer.next_transition_after(at(12)) is None
+
+
 def test_load_pump_timer_config_from_yaml(tmp_path: Path) -> None:
     config_path = tmp_path / "pool.yaml"
     config_path.write_text(

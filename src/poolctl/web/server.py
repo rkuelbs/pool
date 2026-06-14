@@ -873,6 +873,23 @@ def _enum_payload_optional(
         raise ValueError(f"invalid {key}: {value}") from error
 
 
+def _bool_payload_value(
+    payload: dict[str, Any],
+    key: str,
+    default: bool,
+) -> bool:
+    value = payload.get(key, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    raise ValueError(f"{key} must be a boolean")
+
+
 def _sensor_ids_query_value(query: dict[str, list[str]]) -> list[str]:
     values = query.get("sensor_id", [])
     if not values:
@@ -1021,6 +1038,17 @@ def apply_timer_override_update(
         duration_s = float(raw_duration)
         if duration_s <= 0:
             raise ValueError("duration_s must be greater than zero")
+
+    until_next_schedule = _bool_payload_value(payload, "until_next_schedule", False)
+    if until_next_schedule:
+        next_transition = app.next_pump_timer_transition()
+        if next_transition is not None:
+            duration_s = max(
+                1.0,
+                (next_transition - app.clock.now()).total_seconds(),
+            )
+        elif duration_s is None:
+            duration_s = 3600.0
 
     if mode == "force_on" and duration_s is None:
         duration_s = 3600.0
