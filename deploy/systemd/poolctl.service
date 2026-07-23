@@ -5,11 +5,11 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=pi
-Group=pi
+User=pool
+Group=pool
 WorkingDirectory=/home/pool/projects/pool
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/home/pool/projects/pool/venv/bin/python -m poolctl.web.server --config /home/pool/projects/pool/configs/pi-prod.yaml --host 127.0.0.1 --port 8000
+ExecStart=/home/pool/projects/pool/venv/bin/python -m poolctl.web.server --config /home/pool/projects/pool/configs/pi-prod.yaml --host 0.0.0.0 --port 8000 --tick-interval-s 1.0
 Restart=always
 RestartSec=3
 KillSignal=SIGINT

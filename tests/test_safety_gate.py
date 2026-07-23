@@ -29,6 +29,7 @@ safety:
   thresholds:
     chlorine_min_return_psi: 3.5
     chlorine_min_pump_output_psi: 7.5
+    chlorine_requires_high_speed: false
     booster_max_psi: 62
     booster_min_psi: 28
     pump_low_prime_min_output_psi: 0.8
@@ -59,6 +60,7 @@ safety:
     assert config.freeze_protection.threshold_unit.value == "degF"
     assert config.chlorine_min_return_psi == 3.5
     assert config.chlorine_min_pump_output_psi == 7.5
+    assert config.chlorine_requires_high_speed is False
     assert config.booster_max_psi == 62.0
     assert config.booster_min_psi == 28.0
     assert config.booster_low_pressure_grace_s == 12.0
@@ -88,6 +90,7 @@ def test_safety_config_accepts_top_level_safety_mapping() -> None:
     assert config.pressure_sensors.booster == SensorId.BOOSTER_PSI
     assert config.freeze_protection.enabled is False
     assert config.chlorine_min_return_psi == 2.5
+    assert config.chlorine_requires_high_speed is True
 
 
 def test_freeze_config_accepts_legacy_on_threshold_keys() -> None:

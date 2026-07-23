@@ -5,6 +5,7 @@ runtime:
   - pump_timer
   - logging
   - acquisition
+  - chlorination
   enabled_actuators:
   - pump_motor
   - pump_motor_speed
@@ -17,13 +18,13 @@ pump_timer:
   timezone: America/Chicago
   schedules:
   - name: morning_vacuum
-    start: 06:00
-    end: 08:00
+    start: '06:00'
+    end: '08:00'
     pump_speed: low
     booster: 'on'
   - name: morning_filter
-    start: 08:00
-    end: 09:00
+    start: '08:00'
+    end: '09:00'
     pump_speed: low
     booster: 'off'
   - name: afternoon_filter
@@ -45,7 +46,7 @@ modbus_relay:
     pump_motor: 1
     pump_motor_speed: 2
     booster_pump: 3
-    chlorine_dosing_pump: 4
+    chlorine_dosing_pump: 6
   pump_speed_relay:
     low_state: true
     high_state: false
@@ -125,6 +126,13 @@ flow_estimation:
   filter_restriction:
     clean_value: 2.0
     dirty_value: 8.0
+chlorination:
+  enabled: true
+  daily_dose_oz: 0.0
+  pump_output_oz_per_min: 1.0
+  no_dose_last_minutes: 10.0
+  max_duty_cycle: 0.5
+  cycle_on_seconds: 60.0
 safety:
   pressure_sensor_ids:
     pump_output: pump_output_psi
@@ -144,6 +152,7 @@ safety:
   thresholds:
     chlorine_min_return_psi: 1
     chlorine_min_pump_output_psi: 2
+    chlorine_requires_high_speed: false
     booster_max_psi: 60
     booster_min_psi: 30
     pump_low_prime_min_output_psi: 1

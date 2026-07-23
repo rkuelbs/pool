@@ -182,6 +182,56 @@ async def test_open_loop_timer_stage_can_run_without_acquisition() -> None:
     )
 
 
+@pytest.mark.asyncio
+async def test_tick_runs_open_loop_chlorination_after_pump_timer() -> None:
+    clock = make_clock()
+    config = {
+        "runtime": {
+            "stage": "open_loop_timer",
+            "driver_profile": "simulated",
+            "enabled_layers": ["pump_timer", "chlorination"],
+            "enabled_actuators": [
+                "pump_motor",
+                "pump_motor_speed",
+                "booster_pump",
+                "chlorine_dosing_pump",
+            ],
+            "enabled_sensor_groups": [],
+        },
+        "pump_timer": {
+            "timezone": "UTC",
+            "schedules": [
+                {
+                    "name": "midday_filter",
+                    "start": "12:00",
+                    "end": "14:00",
+                    "pump_speed": "low",
+                    "booster": "off",
+                }
+            ],
+        },
+        "chlorination": {
+            "enabled": True,
+            "daily_dose_oz": 4.0,
+            "pump_output_oz_per_min": 1.0,
+            "no_dose_last_minutes": 10.0,
+            "max_duty_cycle": 0.5,
+            "cycle_on_seconds": 60.0,
+        },
+    }
+
+    app = build_app_from_mapping(config, clock=clock)
+    result = await app.tick()
+
+    assert app.router.actuator_states[ActuatorId.PUMP_MOTOR] == ActuatorState.ON
+    assert app.router.actuator_states[ActuatorId.PUMP_MOTOR_SPEED] == ActuatorState.LOW
+    assert app.router.actuator_states[ActuatorId.CHLORINE_DOSING_PUMP] == ActuatorState.ON
+    assert result.chlorination_status is not None
+    assert result.chlorination_status.active is True
+    assert len(result.chlorination_results) == 1
+    assert result.chlorination_results[0].applied is True
+
+
 def modbus_relay_config() -> dict[str, object]:
     return {
         "modbus_relay": {

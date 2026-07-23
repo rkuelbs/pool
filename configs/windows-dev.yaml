@@ -6,6 +6,7 @@ runtime:
   - logging
   - pump_timer
   - safety_enforcement
+  - chlorination
   enabled_actuators:
   - pump_motor
   - pump_motor_speed
@@ -33,6 +34,13 @@ pump_timer:
     end: '23:00'
     pump_speed: high
     booster: 'on'
+chlorination:
+  enabled: true
+  daily_dose_oz: 96.0
+  pump_output_oz_per_min: 1.0
+  no_dose_last_minutes: 10.0
+  max_duty_cycle: 0.5
+  cycle_on_seconds: 60.0
 safety:
   pressure_sensor_ids:
     pump_output: pump_output_psi
@@ -52,6 +60,7 @@ safety:
   thresholds:
     chlorine_min_return_psi: 2
     chlorine_min_pump_output_psi: 6
+    chlorine_requires_high_speed: false
     booster_max_psi: 60
     booster_min_psi: 30
     pump_low_prime_min_output_psi: 1

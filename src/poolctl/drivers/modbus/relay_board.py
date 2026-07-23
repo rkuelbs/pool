@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 from poolctl.drivers.base import ActuatorError
 from poolctl.drivers.modbus.rtu_bus import SharedModbusRtuBus

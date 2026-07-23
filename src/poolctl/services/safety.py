@@ -106,6 +106,7 @@ class SafetyConfig:
 
     chlorine_min_return_psi: float = 2.0
     chlorine_min_pump_output_psi: float = 6.0
+    chlorine_requires_high_speed: bool = True
 
     booster_max_psi: float = 60.0
     booster_min_psi: float = 30.0
@@ -209,6 +210,11 @@ class SafetyConfig:
                 threshold_data,
                 "chlorine_min_pump_output_psi",
                 cls.chlorine_min_pump_output_psi,
+            ),
+            chlorine_requires_high_speed=_bool_value(
+                threshold_data,
+                "chlorine_requires_high_speed",
+                cls.chlorine_requires_high_speed,
             ),
             booster_max_psi=_float_value(
                 threshold_data,
@@ -471,7 +477,7 @@ class SafetyGate:
         if not self._pump_is_on(snapshot):
             return False, "chlorine output cannot turn on unless pump motor is on"
 
-        if not self._pump_speed_is_high(snapshot):
+        if self.config.chlorine_requires_high_speed and not self._pump_speed_is_high(snapshot):
             return False, "chlorine output cannot turn on unless pump speed is high"
 
         return_psi = snapshot.pressure_psi(self.config.pressure_sensors.return_line)

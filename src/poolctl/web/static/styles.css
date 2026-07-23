@@ -641,9 +641,13 @@ h2 {
 #acqSave,
 #loggingReload,
 #loggingSave,
+#chlorinationReload,
+#chlorinationSave,
 #analogAddSensor,
 #analogReload,
 #analogSave,
+#chlorinationDoseSave,
+#mobileChlorinationDoseSave,
 #historySelectAll,
 #historyClearAll,
 #historyExportCsv,
@@ -670,9 +674,13 @@ h2 {
 #acqSave,
 #loggingReload,
 #loggingSave,
+#chlorinationReload,
+#chlorinationSave,
 #analogAddSensor,
 #analogReload,
 #analogSave,
+#chlorinationDoseSave,
+#mobileChlorinationDoseSave,
 #historySelectAll,
 #historyClearAll,
 #historyExportCsv,
@@ -690,6 +698,7 @@ h2 {
 #safetySave,
 #acqSave,
 #loggingSave,
+#chlorinationSave,
 #analogSave,
 #historyExportCsv {
   background: #edf5ff;
@@ -818,6 +827,41 @@ h2 {
   display: flex;
   gap: 8px;
   margin-top: 10px;
+}
+
+.dose-control {
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 8px;
+}
+
+.dose-control strong {
+  display: block;
+  font-size: 13px;
+}
+
+.dose-control small {
+  color: var(--muted);
+  display: block;
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+.dose-entry {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: 1fr auto;
+}
+
+.dose-entry input {
+  border: 1px solid #b8c4cf;
+  border-radius: 6px;
+  font-size: 12px;
+  min-height: 30px;
+  min-width: 0;
+  padding: 4px 6px;
 }
 
 .timer-layer-disabled {

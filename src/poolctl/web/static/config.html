@@ -279,6 +279,7 @@
         <div class="config-grid">
           <label>Chlorine min return psi <input id="safetyChlorineMinReturn" type="number" step="0.1"></label>
           <label>Chlorine min pump psi <input id="safetyChlorineMinPump" type="number" step="0.1"></label>
+          <label><span>Chlorine requires high speed</span><input id="safetyChlorineRequiresHighSpeed" type="checkbox"></label>
           <label>Booster max psi <input id="safetyBoosterMax" type="number" step="0.1"></label>
           <label>Booster min psi <input id="safetyBoosterMin" type="number" step="0.1"></label>
           <label>Pump low prime min psi <input id="safetyLowPrimeMin" type="number" step="0.1"></label>
@@ -293,6 +294,25 @@
           <button id="safetyClearLockout" type="button">Clear Lockout</button>
         </div>
         <div id="safetyStatus" class="history-status">--</div>
+      </section>
+
+      <section class="history-panel" aria-label="Chlorination config" data-view-section="config">
+        <div class="history-header">
+          <h2>Chlorination Config</h2>
+          <button id="chlorinationReload" type="button">Reload</button>
+        </div>
+        <div class="config-grid">
+          <label><span>Enabled</span><input id="chlorinationEnabled" type="checkbox"></label>
+          <label>Daily dose oz <input id="chlorinationDailyDoseOz" type="number" step="0.1" min="0"></label>
+          <label>Pump oz/min <input id="chlorinationPumpOutputOzPerMin" type="number" step="0.01" min="0.01"></label>
+          <label>No-dose final min <input id="chlorinationNoDoseLastMinutes" type="number" step="0.1" min="0"></label>
+          <label>Max duty cycle <input id="chlorinationMaxDutyCycle" type="number" step="0.01" min="0.01" max="1"></label>
+          <label>Cycle ON seconds <input id="chlorinationCycleOnSeconds" type="number" step="1" min="1"></label>
+        </div>
+        <div class="timer-actions">
+          <button id="chlorinationSave" type="button">Save Chlorination</button>
+        </div>
+        <div id="chlorinationConfigStatus" class="history-status">--</div>
       </section>
 
       <section class="history-panel" aria-label="Acquisition and logging config" data-view-section="config">

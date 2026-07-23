@@ -12,6 +12,7 @@ from poolctl.web.server import (
     add_lab_test,
     apply_analog_input_config_update,
     apply_acquisition_config_update,
+    apply_chlorination_config_update,
     apply_logging_config_update,
     apply_pump_timer_config_update,
     apply_runtime_config_update,
@@ -23,6 +24,7 @@ from poolctl.web.server import (
     serialize_acquisition_config,
     serialize_logging_config,
     serialize_analog_input_config,
+    serialize_chlorination_config,
     serialize_pump_timer_config,
     serialize_runtime_config,
     serialize_safety_config,
@@ -115,6 +117,38 @@ def test_apply_pump_timer_update_updates_running_app_and_yaml(tmp_path: Path) ->
     saved = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert saved["pump_timer"]["schedules"][0]["name"] == "evening_filter"
     assert saved["pump_timer"]["timezone"] == "UTC"
+
+
+def test_chlorination_update_applies_live_and_persists(tmp_path: Path) -> None:
+    config = config_mapping()
+    runtime = dict(config["runtime"])  # type: ignore[index]
+    runtime["enabled_layers"] = ["pump_timer", "chlorination"]
+    config["runtime"] = runtime
+    path = tmp_path / "pool.yaml"
+    path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    app = build_app_from_mapping(config, clock=make_clock())
+
+    result = apply_chlorination_config_update(
+        app=app,
+        config_path=path,
+        payload={
+            "enabled": True,
+            "daily_dose_oz": 12.5,
+            "pump_output_oz_per_min": 2.0,
+            "no_dose_last_minutes": 10.0,
+            "max_duty_cycle": 0.5,
+            "cycle_on_seconds": 60.0,
+        },
+    )
+
+    assert result["updated"] is True
+    assert result["applied_live"] is True
+    assert result["daily_dose_oz"] == 12.5
+    assert app.chlorination_config.daily_dose_oz == 12.5
+    assert serialize_chlorination_config(app)["layer_enabled"] is True
+    saved = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert saved["chlorination"]["daily_dose_oz"] == 12.5
+    assert saved["chlorination"]["pump_output_oz_per_min"] == 2.0
 
 
 def test_runtime_update_writes_yaml_and_reports_restart(tmp_path: Path) -> None:

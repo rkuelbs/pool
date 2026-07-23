@@ -192,6 +192,8 @@ let safetyConfigLoading = false;
 let acquisitionConfigLoading = false;
 let loggingConfigLoading = false;
 let analogConfigLoading = false;
+let chlorinationConfigLoading = false;
+let chlorinationQuickSaving = false;
 let timerOverrideBusy = false;
 let healthLoading = false;
 let lastHealthLoadedAt = 0;
@@ -266,6 +268,59 @@ async function setTimerOverride(payload) {
     setControlsDisabled(false);
     timerOverrideBusy = false;
   }
+}
+
+async function saveQuickChlorinationDose(inputId) {
+  if (chlorinationQuickSaving) {
+    return;
+  }
+  const input = document.getElementById(inputId);
+  if (!input) {
+    return;
+  }
+  const dailyDoseOz = Number(input.value);
+  if (!Number.isFinite(dailyDoseOz) || dailyDoseOz < 0) {
+    setChlorinationQuickStatus("Dose must be 0 or greater");
+    return;
+  }
+
+  chlorinationQuickSaving = true;
+  setChlorinationQuickStatus("Saving dose...");
+  try {
+    const currentResponse = await fetch("/api/config/chlorination", { cache: "no-store" });
+    const current = await parseApiResponse(currentResponse, "chlorination config load failed");
+    const response = await fetch("/api/config/chlorination", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        enabled: current.enabled !== false,
+        daily_dose_oz: dailyDoseOz,
+        pump_output_oz_per_min: Number(current.pump_output_oz_per_min || 1.0),
+        no_dose_last_minutes: Number(current.no_dose_last_minutes || 10.0),
+        max_duty_cycle: Number(current.max_duty_cycle || 0.5),
+        cycle_on_seconds: Number(current.cycle_on_seconds || 60.0),
+      }),
+    });
+    const payload = await parseApiResponse(response, "chlorination dose save failed");
+    setChlorinationQuickStatus(payload.applied_live ? "Dose saved" : "Dose saved; restart required");
+    await loadLive();
+  } catch (error) {
+    setChlorinationQuickStatus(error.message);
+  } finally {
+    chlorinationQuickSaving = false;
+  }
+}
+
+function setChlorinationQuickStatus(message) {
+  [
+    "chlorinationStatus",
+    "mobileChlorinationStatus",
+  ].forEach((id) => {
+    const node = document.getElementById(id);
+    if (node) {
+      node.textContent = message;
+    }
+  });
 }
 
 async function sendLatchedLiveControl(actuatorId, state) {
@@ -376,6 +431,7 @@ function render(payload) {
   renderConfigDebugInfo(payload);
   renderFreezeStatus(payload.safety);
   renderCsiStatus(payload.sensors || {});
+  renderChlorinationStatus(payload.chlorination);
   renderTimerOverride(payload.timer_override);
   renderEvents(payload.tick);
   if (PAGE_MODE !== "live") {
@@ -423,6 +479,7 @@ async function refreshTopStatus(force) {
     renderConfigDebugInfo(payload);
     renderFreezeStatus(payload.safety);
     renderCsiStatus(payload.sensors || {});
+    renderChlorinationStatus(payload.chlorination);
     renderTimerOverride(payload.timer_override);
     lastTopStatusLoadedAt = now;
   } catch (error) {
@@ -575,6 +632,46 @@ function renderCsiStatus(sensors) {
   if (node) {
     node.textContent = text;
   }
+}
+
+function renderChlorinationStatus(chlorination) {
+  const payload = chlorination || {};
+  const dose = Number(payload.daily_dose_oz);
+  const doseText = Number.isFinite(dose) ? `Dose: ${dose.toFixed(1)} oz/day` : "Dose: -- oz/day";
+  const duty = Number(payload.duty_cycle_percent);
+  const available = Number(payload.available_runtime_min_per_day);
+  const requested = Number(payload.requested_runtime_min_per_day);
+  const dutyText =
+    Number.isFinite(duty) && Number.isFinite(available) && Number.isFinite(requested)
+      ? `Duty: ${duty.toFixed(1)}% | ${requested.toFixed(1)} / ${available.toFixed(0)} min`
+      : "Duty: --";
+  const stateText = payload.active ? "ON" : "OFF";
+  const layerText = payload.layer_enabled === false ? "layer off" : String(payload.reason || "idle");
+  const warning = payload.warning ? ` | ${payload.warning}` : "";
+  const statusText = `Chlorination: ${stateText} | ${layerText}${warning}`;
+
+  [
+    "chlorinationDoseDisplay",
+    "mobileChlorinationDoseDisplay",
+  ].forEach((id) => setNodeText(id, doseText));
+  [
+    "chlorinationDutyStatus",
+    "mobileChlorinationDutyStatus",
+  ].forEach((id) => setNodeText(id, dutyText));
+  [
+    "chlorinationStatus",
+    "mobileChlorinationStatus",
+  ].forEach((id) => setNodeText(id, statusText));
+  [
+    "chlorinationDoseInput",
+    "mobileChlorinationDoseInput",
+  ].forEach((id) => {
+    const input = document.getElementById(id);
+    if (!input || document.activeElement === input || !Number.isFinite(dose)) {
+      return;
+    }
+    input.value = dose.toFixed(1);
+  });
 }
 
 function renderAnalogLiveVoltages(sensors) {
@@ -1065,6 +1162,16 @@ function renderEvents(tick) {
   tick.safety_results.forEach((result) => {
     if (result.applied && result.metadata.safety_action) {
       lines.push(`Safety action: ${result.metadata.safety_action}`);
+    }
+  });
+
+  (tick.chlorination_results || []).forEach((result) => {
+    if (result.applied) {
+      lines.push("Chlorination command applied");
+      return;
+    }
+    if (result.rejection_reason) {
+      lines.push(`Chlorination command rejected: ${result.rejection_reason}`);
     }
   });
 
@@ -2036,6 +2143,7 @@ async function loadAllConfigSections() {
     loadAcquisitionConfig(),
     loadLoggingConfig(),
     loadAnalogConfig(),
+    loadChlorinationConfig(),
   ]);
 }
 
@@ -2242,6 +2350,8 @@ async function loadSafetyConfig() {
     document.getElementById("safetyFreezeUnit").value = freeze.threshold_unit || "degF";
     document.getElementById("safetyChlorineMinReturn").value = payload.thresholds.chlorine_min_return_psi;
     document.getElementById("safetyChlorineMinPump").value = payload.thresholds.chlorine_min_pump_output_psi;
+    document.getElementById("safetyChlorineRequiresHighSpeed").checked =
+      payload.thresholds.chlorine_requires_high_speed !== false;
     document.getElementById("safetyBoosterMax").value = payload.thresholds.booster_max_psi;
     document.getElementById("safetyBoosterMin").value = payload.thresholds.booster_min_psi;
     document.getElementById("safetyLowPrimeMin").value = payload.thresholds.pump_low_prime_min_output_psi;
@@ -2289,6 +2399,7 @@ async function saveSafetyConfig() {
         thresholds: {
           chlorine_min_return_psi: Number(document.getElementById("safetyChlorineMinReturn").value),
           chlorine_min_pump_output_psi: Number(document.getElementById("safetyChlorineMinPump").value),
+          chlorine_requires_high_speed: document.getElementById("safetyChlorineRequiresHighSpeed").checked,
           booster_max_psi: Number(document.getElementById("safetyBoosterMax").value),
           booster_min_psi: Number(document.getElementById("safetyBoosterMin").value),
           pump_low_prime_min_output_psi: Number(document.getElementById("safetyLowPrimeMin").value),
@@ -2594,6 +2705,83 @@ function initializeLoggingControls() {
   document.getElementById("loggingReload").addEventListener("click", loadLoggingConfig);
   document.getElementById("loggingSave").addEventListener("click", saveLoggingConfig);
   loadLoggingConfig();
+}
+
+async function loadChlorinationConfig() {
+  if (chlorinationConfigLoading) {
+    return;
+  }
+  chlorinationConfigLoading = true;
+  try {
+    const response = await fetch("/api/config/chlorination", { cache: "no-store" });
+    const payload = await parseApiResponse(response, "chlorination config load failed");
+    renderChlorinationConfig(payload);
+    setChlorinationConfigStatus(
+      payload.layer_enabled
+        ? "Chlorination config loaded"
+        : "Chlorination config loaded; layer disabled",
+    );
+  } catch (error) {
+    setChlorinationConfigStatus(error.message);
+  } finally {
+    chlorinationConfigLoading = false;
+  }
+}
+
+async function saveChlorinationConfig() {
+  setChlorinationConfigStatus("Saving chlorination config...");
+  try {
+    const response = await fetch("/api/config/chlorination", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(collectChlorinationConfig()),
+    });
+    const payload = await parseApiResponse(response, "chlorination config save failed");
+    renderChlorinationConfig(payload);
+    setChlorinationConfigStatus(
+      payload.applied_live ? "Chlorination config saved and applied live" : "Chlorination config saved",
+    );
+    clearConfigDraftState(true);
+  } catch (error) {
+    setChlorinationConfigStatus(error.message);
+  }
+}
+
+function renderChlorinationConfig(payload) {
+  document.getElementById("chlorinationEnabled").checked = payload.enabled !== false;
+  document.getElementById("chlorinationDailyDoseOz").value = String(payload.daily_dose_oz ?? 0.0);
+  document.getElementById("chlorinationPumpOutputOzPerMin").value = String(
+    payload.pump_output_oz_per_min ?? 1.0,
+  );
+  document.getElementById("chlorinationNoDoseLastMinutes").value = String(
+    payload.no_dose_last_minutes ?? 10.0,
+  );
+  document.getElementById("chlorinationMaxDutyCycle").value = String(payload.max_duty_cycle ?? 0.5);
+  document.getElementById("chlorinationCycleOnSeconds").value = String(payload.cycle_on_seconds ?? 60.0);
+}
+
+function collectChlorinationConfig() {
+  return {
+    enabled: document.getElementById("chlorinationEnabled").checked,
+    daily_dose_oz: Number(document.getElementById("chlorinationDailyDoseOz").value),
+    pump_output_oz_per_min: Number(document.getElementById("chlorinationPumpOutputOzPerMin").value),
+    no_dose_last_minutes: Number(document.getElementById("chlorinationNoDoseLastMinutes").value),
+    max_duty_cycle: Number(document.getElementById("chlorinationMaxDutyCycle").value),
+    cycle_on_seconds: Number(document.getElementById("chlorinationCycleOnSeconds").value),
+  };
+}
+
+function setChlorinationConfigStatus(message) {
+  const status = document.getElementById("chlorinationConfigStatus");
+  if (status) {
+    status.textContent = message;
+  }
+}
+
+function initializeChlorinationControls() {
+  document.getElementById("chlorinationReload").addEventListener("click", loadChlorinationConfig);
+  document.getElementById("chlorinationSave").addEventListener("click", saveChlorinationConfig);
+  loadChlorinationConfig();
 }
 
 async function loadAnalogConfig() {
@@ -3077,6 +3265,25 @@ function initializeTimerOverrideControls() {
   });
 }
 
+function initializeChlorinationQuickControls() {
+  [
+    ["chlorinationDoseSave", "chlorinationDoseInput"],
+    ["mobileChlorinationDoseSave", "mobileChlorinationDoseInput"],
+  ].forEach(([buttonId, inputId]) => {
+    const button = document.getElementById(buttonId);
+    const input = document.getElementById(inputId);
+    if (!button || !input) {
+      return;
+    }
+    button.addEventListener("click", () => saveQuickChlorinationDose(inputId));
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        saveQuickChlorinationDose(inputId);
+      }
+    });
+  });
+}
+
 function initializeLiveModeControls() {
   const panel = document.getElementById("mobileLivePanel");
   const listButton = document.getElementById("liveModeList");
@@ -3170,6 +3377,7 @@ function initializeForPage() {
   if (PAGE_MODE === "live") {
     initializeLiveModeControls();
     initializeTimerOverrideControls();
+    initializeChlorinationQuickControls();
     return;
   }
   if (PAGE_MODE === "history") {
@@ -3190,6 +3398,7 @@ function initializeForPage() {
     initializeAcquisitionControls();
     initializeLoggingControls();
     initializeAnalogControls();
+    initializeChlorinationControls();
     return;
   }
 }

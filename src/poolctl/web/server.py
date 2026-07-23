@@ -32,6 +32,7 @@ from poolctl.domain.models import (
 )
 from poolctl.drivers.raspberrypi.analog_inputs import WaveshareAnalogInputConfig
 from poolctl.services.acquisition import AcquisitionConfig
+from poolctl.services.chlorination import ChlorinationConfig
 from poolctl.services.clock import AcceleratedClock, Clock
 from poolctl.services.measurement_logging import MeasurementLoggingConfig
 from poolctl.services.pump_timer import PumpTimerConfig, PumpTimerOverride
@@ -229,6 +230,10 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             self._serve_safety_config()
             return
 
+        if path == "/api/config/chlorination":
+            self._serve_chlorination_config()
+            return
+
         if path == "/api/config/acquisition":
             self._serve_acquisition_config()
             return
@@ -260,6 +265,10 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
 
         if path == "/api/config/safety":
             self._serve_update_safety_config()
+            return
+
+        if path == "/api/config/chlorination":
+            self._serve_update_chlorination_config()
             return
 
         if path == "/api/config/acquisition":
@@ -532,6 +541,23 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             }
         )
         self._serve_json({"cleared": True})
+
+    def _serve_chlorination_config(self) -> None:
+        self._serve_json(serialize_chlorination_config(self.app))
+
+    def _serve_update_chlorination_config(self) -> None:
+        try:
+            payload = self._read_json_body()
+            result = apply_chlorination_config_update(
+                app=self.app,
+                config_path=self.config_path,
+                payload=payload,
+            )
+        except ValueError as error:
+            self._serve_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        self._serve_json(result)
 
     def _serve_acquisition_config(self) -> None:
         self._serve_json(serialize_acquisition_config(self.app))
@@ -1334,6 +1360,7 @@ def build_health_payload(app: PoolControllerApp) -> dict[str, Any]:
             if app.weather_service is not None
             else {"enabled": False}
         ),
+        "chlorination": serialize_chlorination_config(app),
     }
 
 
@@ -1457,6 +1484,7 @@ def serialize_safety_config(app: PoolControllerApp) -> dict[str, Any]:
         "thresholds": {
             "chlorine_min_return_psi": config.chlorine_min_return_psi,
             "chlorine_min_pump_output_psi": config.chlorine_min_pump_output_psi,
+            "chlorine_requires_high_speed": config.chlorine_requires_high_speed,
             "booster_max_psi": config.booster_max_psi,
             "booster_min_psi": config.booster_min_psi,
             "pump_low_prime_min_output_psi": config.pump_low_prime_min_output_psi,
@@ -1501,6 +1529,47 @@ def apply_safety_config_update(
         "updated": True,
         "applied_live": True,
         **serialize_safety_config(app),
+    }
+
+
+def serialize_chlorination_config(app: PoolControllerApp) -> dict[str, Any]:
+    config = app.chlorination_config
+    return {
+        "layer_enabled": app.runtime_config.layer_enabled(FeatureLayer.CHLORINATION),
+        "enabled": config.enabled,
+        "daily_dose_oz": config.daily_dose_oz,
+        "pump_output_oz_per_min": config.pump_output_oz_per_min,
+        "no_dose_last_minutes": config.no_dose_last_minutes,
+        "max_duty_cycle": config.max_duty_cycle,
+        "cycle_on_seconds": config.cycle_on_seconds,
+        "applied_live": True,
+    }
+
+
+def apply_chlorination_config_update(
+    *,
+    app: PoolControllerApp,
+    config_path: Path,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    proposed = ChlorinationConfig.from_mapping({"chlorination": payload})
+
+    config_data = _load_config_mapping(config_path)
+    config_data["chlorination"] = {
+        "enabled": proposed.enabled,
+        "daily_dose_oz": proposed.daily_dose_oz,
+        "pump_output_oz_per_min": proposed.pump_output_oz_per_min,
+        "no_dose_last_minutes": proposed.no_dose_last_minutes,
+        "max_duty_cycle": proposed.max_duty_cycle,
+        "cycle_on_seconds": proposed.cycle_on_seconds,
+    }
+    _save_config_mapping(config_path, config_data)
+
+    app.apply_chlorination_config(proposed)
+    return {
+        "updated": True,
+        "applied_live": True,
+        **serialize_chlorination_config(app),
     }
 
 

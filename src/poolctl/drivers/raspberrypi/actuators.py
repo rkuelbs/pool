@@ -56,7 +56,7 @@ class RelayActuatorConfig:
                 ActuatorId.CHLORINE_DOSING_PUMP: _relay_number_value(
                     relay_data,
                     "chlorine_dosing_pump",
-                    4,
+                    6,
                 ),
             },
             pump_speed_low_relay_on=_pump_speed_low_relay_on(speed_data),

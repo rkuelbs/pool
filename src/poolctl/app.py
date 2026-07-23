@@ -38,6 +38,11 @@ from poolctl.services.acquisition import (
 )
 from poolctl.services.clock import Clock, RealClock, SimulatedClock
 from poolctl.services.command_router import CommandRouter
+from poolctl.services.chlorination import (
+    ChlorinationConfig,
+    ChlorinationController,
+    ChlorinationStatus,
+)
 from poolctl.services.measurement_logging import (
     MeasurementLogger,
     MeasurementLoggingConfig,
@@ -67,6 +72,8 @@ class AppTickResult:
     observed_at: datetime
     acquisition: AcquisitionResult
     timer_results: tuple[ActuatorCommandResult, ...]
+    chlorination_results: tuple[ActuatorCommandResult, ...]
+    chlorination_status: ChlorinationStatus | None
     safety_results: tuple[ActuatorCommandResult, ...]
     mqtt_results: tuple[ActuatorCommandResult, ...] = ()
     logged_measurement_count: int = 0
@@ -133,12 +140,14 @@ class PoolControllerApp:
     safety_config: SafetyConfig
     acquisition_config: AcquisitionConfig
     pump_timer_config: PumpTimerConfig
+    chlorination_config: ChlorinationConfig
     live_view_config: LiveViewConfig
     measurement_logging_config: MeasurementLoggingConfig
     clock: Clock
     router: CommandRouter
     acquisition_service: AcquisitionService | None = None
     pump_timer: PumpTimer | None = None
+    chlorination_controller: ChlorinationController | None = None
     measurement_logger: MeasurementLogger | None = None
     simulated_plant: SimulatedPlant | None = None
     timer_override: TimerOverrideState | None = None
@@ -199,6 +208,14 @@ class PoolControllerApp:
         logged_measurement_count = self._log_measurements(loggable_measurements)
         self._update_sampling_override()
         timer_results = await self._run_pump_timer()
+        chlorination_measurements = (
+            acquisition.measurements
+            if acquisition.measurements
+            else tuple(latest_measurements.values())
+        )
+        chlorination_results, chlorination_status = await self._run_chlorination(
+            measurements=chlorination_measurements,
+        )
         safety_results: tuple[ActuatorCommandResult, ...] = ()
 
         if self.runtime_config.layer_enabled(FeatureLayer.SAFETY_ENFORCEMENT):
@@ -228,6 +245,8 @@ class PoolControllerApp:
             flow_estimates=flow_estimates,
             csi_measurement=csi_measurement,
             weather_result=weather_result,
+            chlorination_results=chlorination_results,
+            chlorination_status=chlorination_status,
         )
 
     def apply_pump_timer_config(self, config: PumpTimerConfig) -> None:
@@ -241,6 +260,13 @@ class PoolControllerApp:
             return
 
         object.__setattr__(self, "pump_timer", None)
+
+    def apply_chlorination_config(self, config: ChlorinationConfig) -> None:
+        """
+        Apply updated open-loop chlorination settings to the running app.
+        """
+        object.__setattr__(self, "chlorination_config", config)
+        object.__setattr__(self, "chlorination_controller", ChlorinationController(config))
 
     def apply_safety_config(self, config: SafetyConfig) -> None:
         """
@@ -337,6 +363,28 @@ class PoolControllerApp:
             results.append(await self.router.route(command))
 
         return tuple(results)
+
+    async def _run_chlorination(
+        self,
+        *,
+        measurements: tuple[Measurement, ...],
+    ) -> tuple[tuple[ActuatorCommandResult, ...], ChlorinationStatus | None]:
+        if self.chlorination_controller is None:
+            return (), None
+
+        now = self.clock.now()
+        evaluation = self.chlorination_controller.evaluate(
+            now=now,
+            pump_timer_config=self.pump_timer_config,
+            actuator_states=self.router.actuator_states,
+            layer_enabled=self.runtime_config.layer_enabled(FeatureLayer.CHLORINATION),
+        )
+
+        results: list[ActuatorCommandResult] = []
+        for command in evaluation.commands:
+            results.append(await self.router.route(command, measurements=measurements))
+
+        return tuple(results), evaluation.status
 
     def _log_measurements(self, measurements: tuple[Measurement, ...]) -> int:
         if self.measurement_logger is None:
@@ -561,6 +609,7 @@ def build_app_from_mapping(
         runtime_config.enabled_sensor_groups,
     )
     pump_timer_config = PumpTimerConfig.from_mapping(data)
+    chlorination_config = ChlorinationConfig.from_mapping(data)
     live_view_config = LiveViewConfig.from_mapping(data)
     measurement_logging_config = MeasurementLoggingConfig.from_mapping(data)
     flow_estimation_config = FlowEstimationConfig.from_mapping(data)
@@ -641,6 +690,8 @@ def build_app_from_mapping(
     if runtime_config.layer_enabled(FeatureLayer.PUMP_TIMER):
         pump_timer = PumpTimer(pump_timer_config)
 
+    chlorination_controller = ChlorinationController(chlorination_config)
+
     measurement_logger: MeasurementLogger | None = None
     if runtime_config.layer_enabled(FeatureLayer.LOGGING):
         measurement_logger = MeasurementLogger(measurement_logging_config)
@@ -658,12 +709,14 @@ def build_app_from_mapping(
         safety_config=safety_config,
         acquisition_config=acquisition_config,
         pump_timer_config=pump_timer_config,
+        chlorination_config=chlorination_config,
         live_view_config=live_view_config,
         measurement_logging_config=measurement_logging_config,
         clock=built_clock,
         router=router,
         acquisition_service=acquisition_service,
         pump_timer=pump_timer,
+        chlorination_controller=chlorination_controller,
         measurement_logger=measurement_logger,
         simulated_plant=simulated_plant,
         timer_override=None,

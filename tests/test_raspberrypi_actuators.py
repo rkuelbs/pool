@@ -101,6 +101,12 @@ def test_raspberrypi_modbus_actuators_match_protocol() -> None:
     assert all(isinstance(driver, ActuatorDriver) for driver in drivers)
 
 
+def test_default_relay_mapping_uses_relay_6_for_dosing_pump() -> None:
+    config = RelayActuatorConfig.from_mapping({})
+
+    assert config.relays[ActuatorId.CHLORINE_DOSING_PUMP] == 6
+
+
 @pytest.mark.asyncio
 async def test_pump_motor_on_writes_relay_1_on() -> None:
     transport, drivers, clock = make_drivers()

@@ -168,6 +168,11 @@ async def build_live_snapshot(app: PoolControllerApp) -> dict[str, Any]:
             for actuator_id, state in app.router.actuator_states.items()
         },
         "flows": tick.flow_estimates.as_payload(),
+        "chlorination": (
+            tick.chlorination_status.as_payload()
+            if tick.chlorination_status is not None
+            else None
+        ),
         "safety": safety_payload(app),
         "timer_override": timer_override_payload(
             app.active_timer_override() or app.active_sample_timer_override()
@@ -182,6 +187,16 @@ async def build_live_snapshot(app: PoolControllerApp) -> dict[str, Any]:
             "logged_weather_count": tick.weather_result.logged_count,
             "weather_poll_error": tick.weather_result.error,
             "mqtt_result_count": len(tick.mqtt_results),
+            "chlorination_results": [
+                {
+                    "command_id": result.command_id,
+                    "accepted": result.accepted,
+                    "applied": result.applied,
+                    "rejection_reason": result.rejection_reason,
+                    "metadata": result.metadata,
+                }
+                for result in tick.chlorination_results
+            ],
             "acquisition_failures": [
                 {
                     "driver": failure.driver_name,
