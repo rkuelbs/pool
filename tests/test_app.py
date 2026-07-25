@@ -284,6 +284,97 @@ async def test_tick_logs_chlorine_delivery_while_dosing_pump_is_on(tmp_path: Pat
     summary = app.measurement_logger.chlorine_delivery_summary()
     assert round(summary.runtime_seconds, 3) == 30.0
     assert round(summary.delivered_oz, 3) == 0.5
+    duty_records = app.measurement_logger.history(
+        sensor_id=SensorId.CHLORINATION_DUTY_CYCLE_PERCENT,
+        limit=10,
+    )
+    cumulative_records = app.measurement_logger.history(
+        sensor_id=SensorId.CHLORINE_DAILY_DELIVERED_OZ,
+        limit=10,
+    )
+
+    assert len(duty_records) == 2
+    assert round(duty_records[-1].value, 3) == 3.636
+    assert duty_records[-1].unit == "percent"
+    assert len(cumulative_records) == 2
+    assert cumulative_records[0].value == 0.0
+    assert round(cumulative_records[-1].value, 3) == 0.5
+    assert cumulative_records[-1].unit == "fl oz"
+
+
+@pytest.mark.asyncio
+async def test_tick_logs_fc_demand_estimate_when_ready(tmp_path: Path) -> None:
+    clock = make_clock()
+    config = {
+        "runtime": {
+            "stage": "sensor_logging",
+            "driver_profile": "simulated",
+            "enabled_layers": ["logging"],
+            "enabled_actuators": [],
+            "enabled_sensor_groups": [],
+        },
+        "logging": {
+            "database_path": str(tmp_path / "fc_demand.sqlite3"),
+        },
+        "fc_demand": {
+            "enabled": True,
+            "mode": "observe_only",
+            "pool_volume_gal": 10000.0,
+            "target_fc_ppm": 4.0,
+            "chlorine_strength_percent": 12.0,
+            "minimum_test_interval_hours": 12.0,
+            "max_daily_dose_oz": 256.0,
+        },
+    }
+
+    app = build_app_from_mapping(config, clock=clock)
+    assert app.measurement_logger is not None
+    app.measurement_logger.log_lab_test(
+        LabTest(
+            sampled_at=datetime(2026, 5, 20, 12, 0, tzinfo=timezone.utc),
+            free_chlorine=4.0,
+        )
+    )
+    app.measurement_logger.log_lab_test(
+        LabTest(
+            sampled_at=datetime(2026, 5, 21, 12, 0, tzinfo=timezone.utc),
+            free_chlorine=3.0,
+        )
+    )
+
+    first = await app.tick()
+    second = await app.tick()
+    records = app.measurement_logger.history(
+        sensor_id=SensorId.FC_DEMAND_PPM_PER_DAY,
+        limit=10,
+    )
+    base_records = app.measurement_logger.history(
+        sensor_id=SensorId.BASE_FC_DEMAND_PPM_PER_DAY,
+        limit=10,
+    )
+    predicted_records = app.measurement_logger.history(
+        sensor_id=SensorId.PREDICTED_FC_DEMAND_PPM_PER_DAY,
+        limit=10,
+    )
+    residual_records = app.measurement_logger.history(
+        sensor_id=SensorId.FC_DEMAND_RESIDUAL_PPM_PER_DAY,
+        limit=10,
+    )
+
+    assert first.fc_demand_status is not None
+    assert first.fc_demand_status.ready is True
+    assert second.fc_demand_status is not None
+    assert second.fc_demand_status.ready is True
+    assert len(records) == 1
+    assert records[0].observed_at == datetime(2026, 5, 21, 12, 0, tzinfo=timezone.utc)
+    assert records[0].value == 1.0
+    assert records[0].unit == "ppm/day"
+    assert len(base_records) == 1
+    assert base_records[0].value == 1.0
+    assert len(predicted_records) == 1
+    assert predicted_records[0].value == 1.0
+    assert len(residual_records) == 1
+    assert residual_records[0].value == 0.0
 
 
 @pytest.mark.asyncio
@@ -430,6 +521,119 @@ async def test_tick_fetches_weather_and_logs_hourly_observation(
         limit=10,
     )
     assert len(points) == 1
+
+
+@pytest.mark.asyncio
+async def test_tick_logs_daily_environment_summaries_from_orp_temp_and_weather(
+    tmp_path: Path,
+) -> None:
+    clock = make_clock()
+    config = {
+        "runtime": {
+            "stage": "sensor_logging",
+            "driver_profile": "simulated",
+            "enabled_layers": ["logging"],
+            "enabled_sensor_groups": [],
+        },
+        "logging": {
+            "database_path": str(tmp_path / "daily_environment.sqlite3"),
+        },
+        "pump_timer": {
+            "timezone": "UTC",
+            "schedules": [],
+        },
+    }
+    start = datetime(2026, 5, 20, 0, 0, tzinfo=timezone.utc)
+    app = build_app_from_mapping(config, clock=clock)
+    assert app.measurement_logger is not None
+    app.measurement_logger.log_measurements(
+        (
+            Measurement(
+                sensor_id=SensorId.ORP_TEMP,
+                observed_at=start + timedelta(hours=1),
+                value=70.0,
+                unit="degF",
+                quality=Quality.GOOD,
+            ),
+            Measurement(
+                sensor_id=SensorId.ORP_TEMP,
+                observed_at=start + timedelta(hours=12),
+                value=82.0,
+                unit="degF",
+                quality=Quality.GOOD,
+            ),
+            Measurement(
+                sensor_id=SensorId.ORP_TEMP,
+                observed_at=start + timedelta(hours=23),
+                value=74.0,
+                unit="degF",
+                quality=Quality.GOOD,
+            ),
+            Measurement(
+                sensor_id=SensorId.ORP_TEMP,
+                observed_at=start + timedelta(hours=6),
+                value=65.0,
+                unit="degF",
+                quality=Quality.SUSPECT,
+            ),
+        )
+    )
+    app.measurement_logger.log_weather_observation(
+        weather_service_module.WeatherObservation(
+            observed_at=start + timedelta(hours=10),
+            source="open-meteo",
+            latitude=29.75,
+            longitude=-95.35,
+            values={"uv_index": 1.0, "shortwave_radiation": 100.0},
+            units_by_field={"uv_index": "index", "shortwave_radiation": "W/m2"},
+        )
+    )
+    app.measurement_logger.log_weather_observation(
+        weather_service_module.WeatherObservation(
+            observed_at=start + timedelta(hours=11),
+            source="open-meteo",
+            latitude=29.75,
+            longitude=-95.35,
+            values={"uv_index": 3.0, "shortwave_radiation": 300.0},
+            units_by_field={"uv_index": "index", "shortwave_radiation": "W/m2"},
+        )
+    )
+
+    first = await app.tick()
+    second = await app.tick()
+
+    assert first.logged_measurement_count == 5
+    assert second.logged_measurement_count == 0
+    min_records = app.measurement_logger.history(
+        sensor_id=SensorId.DAILY_WATER_TEMP_MIN,
+        limit=10,
+    )
+    avg_records = app.measurement_logger.history(
+        sensor_id=SensorId.DAILY_WATER_TEMP_AVG,
+        limit=10,
+    )
+    max_records = app.measurement_logger.history(
+        sensor_id=SensorId.DAILY_WATER_TEMP_MAX,
+        limit=10,
+    )
+    uv_records = app.measurement_logger.history(
+        sensor_id=SensorId.DAILY_UV_INDEX_DOSE,
+        limit=10,
+    )
+    shortwave_records = app.measurement_logger.history(
+        sensor_id=SensorId.DAILY_SHORTWAVE_RADIATION_DOSE,
+        limit=10,
+    )
+
+    assert len(min_records) == 1
+    assert min_records[0].observed_at == datetime(2026, 5, 20, 12, 0, tzinfo=timezone.utc)
+    assert min_records[0].value == 70.0
+    assert avg_records[0].value == 75.3333
+    assert max_records[0].value == 82.0
+    assert uv_records[0].value == 4.0
+    assert uv_records[0].unit == "index-hour"
+    assert shortwave_records[0].value == 400.0
+    assert shortwave_records[0].unit == "Wh/m2"
 
 
 def test_raspberry_pi_profile_builds_modbus_relay_actuators_from_config() -> None:

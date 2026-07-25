@@ -5,6 +5,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import yaml  # type: ignore[import-untyped]
 
@@ -55,6 +56,7 @@ from poolctl.services.fc_demand import (
 from poolctl.services.measurement_logging import (
     MeasurementLogger,
     MeasurementLoggingConfig,
+    ValueSummary,
 )
 from poolctl.services.flow_estimation import (
     FlowEstimates,
@@ -76,6 +78,9 @@ from poolctl.services.saturation_index import (
 )
 from poolctl.services.safety import SafetyConfig, SafetyGate
 from poolctl.services.weather import WeatherConfig, WeatherPollResult, WeatherService
+
+
+FC_DEMAND_BASE_EMA_ALPHA = 0.35
 
 
 @dataclass(frozen=True)
@@ -229,6 +234,10 @@ class PoolControllerApp:
         mqtt_results, logged_lab_test_count = await self._process_mqtt_inputs(acquisition.measurements)
         weather_result = self._poll_weather()
         logged_measurement_count = self._log_measurements(loggable_measurements)
+        daily_summary_measurements = self._daily_environment_measurements(
+            observed_at=self.clock.now()
+        )
+        logged_measurement_count += self._log_measurements(daily_summary_measurements)
         self._update_sampling_override()
         timer_results = await self._run_pump_timer()
         chlorination_measurements = (
@@ -247,6 +256,14 @@ class PoolControllerApp:
                 fc_demand_plan.adjustment if fc_demand_plan is not None else None
             ),
         )
+        control_measurements = self._chlorination_control_measurements(
+            chlorination_status=chlorination_status,
+            fc_demand_status=(
+                fc_demand_plan.status if fc_demand_plan is not None else None
+            ),
+            observed_at=self.clock.now(),
+        )
+        logged_measurement_count += self._log_measurements(control_measurements)
         safety_results: tuple[ActuatorCommandResult, ...] = ()
 
         if self.runtime_config.layer_enabled(FeatureLayer.SAFETY_ENFORCEMENT):
@@ -263,6 +280,7 @@ class PoolControllerApp:
         publish_measurements = acquisition.measurements
         if csi_measurement is not None:
             publish_measurements = publish_measurements + (csi_measurement,)
+        publish_measurements = publish_measurements + control_measurements
         self._publish_mqtt(publish_measurements)
 
         return AppTickResult(
@@ -628,6 +646,260 @@ class PoolControllerApp:
             return 0
 
         return self.measurement_logger.log_measurements(measurements)
+
+    def _daily_environment_measurements(
+        self,
+        *,
+        observed_at: datetime,
+    ) -> tuple[Measurement, ...]:
+        if self.measurement_logger is None:
+            return ()
+
+        local_day, start_utc, end_utc, summary_observed_at = _completed_local_day_window(
+            observed_at,
+            timezone_name=self.pump_timer_config.timezone,
+        )
+        measurements: list[Measurement] = []
+
+        water_summary = self.measurement_logger.measurement_value_summary(
+            sensor_id=SensorId.ORP_TEMP,
+            since=start_utc,
+            until=end_utc,
+            qualities=(Quality.GOOD,),
+        )
+        if water_summary is not None:
+            water_unit = water_summary.unit or "degF"
+            measurements.extend(
+                (
+                    _daily_summary_measurement(
+                        sensor_id=SensorId.DAILY_WATER_TEMP_MIN,
+                        observed_at=summary_observed_at,
+                        local_day=local_day,
+                        timezone_name=self.pump_timer_config.timezone,
+                        start_utc=start_utc,
+                        end_utc=end_utc,
+                        summary=water_summary,
+                        aggregation="min",
+                        value=water_summary.min_value,
+                        unit=water_unit,
+                        source="orp_temp",
+                    ),
+                    _daily_summary_measurement(
+                        sensor_id=SensorId.DAILY_WATER_TEMP_AVG,
+                        observed_at=summary_observed_at,
+                        local_day=local_day,
+                        timezone_name=self.pump_timer_config.timezone,
+                        start_utc=start_utc,
+                        end_utc=end_utc,
+                        summary=water_summary,
+                        aggregation="avg",
+                        value=water_summary.avg_value,
+                        unit=water_unit,
+                        source="orp_temp",
+                    ),
+                    _daily_summary_measurement(
+                        sensor_id=SensorId.DAILY_WATER_TEMP_MAX,
+                        observed_at=summary_observed_at,
+                        local_day=local_day,
+                        timezone_name=self.pump_timer_config.timezone,
+                        start_utc=start_utc,
+                        end_utc=end_utc,
+                        summary=water_summary,
+                        aggregation="max",
+                        value=water_summary.max_value,
+                        unit=water_unit,
+                        source="orp_temp",
+                    ),
+                )
+            )
+
+        uv_summary = self.measurement_logger.weather_value_summary(
+            field="uv_index",
+            since=start_utc,
+            until=end_utc,
+        )
+        if uv_summary is not None:
+            measurements.append(
+                _daily_summary_measurement(
+                    sensor_id=SensorId.DAILY_UV_INDEX_DOSE,
+                    observed_at=summary_observed_at,
+                    local_day=local_day,
+                    timezone_name=self.pump_timer_config.timezone,
+                    start_utc=start_utc,
+                    end_utc=end_utc,
+                    summary=uv_summary,
+                    aggregation="sum",
+                    value=uv_summary.sum_value,
+                    unit="index-hour",
+                    source="weather.uv_index",
+                )
+            )
+
+        shortwave_summary = self.measurement_logger.weather_value_summary(
+            field="shortwave_radiation",
+            since=start_utc,
+            until=end_utc,
+        )
+        if shortwave_summary is not None:
+            measurements.append(
+                _daily_summary_measurement(
+                    sensor_id=SensorId.DAILY_SHORTWAVE_RADIATION_DOSE,
+                    observed_at=summary_observed_at,
+                    local_day=local_day,
+                    timezone_name=self.pump_timer_config.timezone,
+                    start_utc=start_utc,
+                    end_utc=end_utc,
+                    summary=shortwave_summary,
+                    aggregation="sum",
+                    value=shortwave_summary.sum_value,
+                    unit="Wh/m2",
+                    source="weather.shortwave_radiation",
+                )
+            )
+
+        return tuple(measurements)
+
+    def _chlorination_control_measurements(
+        self,
+        *,
+        chlorination_status: ChlorinationStatus | None,
+        fc_demand_status: FcDemandStatus | None,
+        observed_at: datetime,
+    ) -> tuple[Measurement, ...]:
+        measurements: list[Measurement] = []
+
+        if (
+            chlorination_status is not None
+            and chlorination_status.duty_cycle_window_active
+        ):
+            measurements.append(
+                Measurement(
+                    sensor_id=SensorId.CHLORINATION_DUTY_CYCLE_PERCENT,
+                    observed_at=observed_at,
+                    kind=MeasurementKind.ESTIMATED,
+                    value=round(chlorination_status.duty_cycle * 100.0, 3),
+                    unit="percent",
+                    quality=Quality.GOOD,
+                    metadata={
+                        "driver": "chlorination_controller",
+                        "source": "chlorination_status",
+                        "daily_dose_oz": chlorination_status.daily_dose_oz,
+                        "base_daily_dose_oz": chlorination_status.base_daily_dose_oz,
+                        "available_runtime_min_per_day": (
+                            chlorination_status.available_runtime_min_per_day
+                        ),
+                        "requested_runtime_min_per_day": (
+                            chlorination_status.requested_runtime_min_per_day
+                        ),
+                        "duty_cycle_limited": chlorination_status.duty_cycle_limited,
+                        "dose_adjustment_source": (
+                            chlorination_status.dose_adjustment_source
+                        ),
+                    },
+                )
+            )
+
+        if (
+            chlorination_status is not None
+            and (
+                (
+                    chlorination_status.enabled
+                    and chlorination_status.layer_enabled
+                    and chlorination_status.eligible_window_active
+                    and chlorination_status.duty_cycle > 0
+                )
+                or self.router.actuator_states.get(ActuatorId.CHLORINE_DOSING_PUMP)
+                == ActuatorState.ON
+            )
+            and self.measurement_logger is not None
+        ):
+            local_day_start = _local_day_start(
+                observed_at,
+                timezone_name=self.pump_timer_config.timezone,
+            )
+            daily_delivery = self.measurement_logger.chlorine_delivery_summary(
+                since=local_day_start,
+                until=observed_at,
+            )
+            measurements.append(
+                Measurement(
+                    sensor_id=SensorId.CHLORINE_DAILY_DELIVERED_OZ,
+                    observed_at=observed_at,
+                    kind=MeasurementKind.ESTIMATED,
+                    value=round(daily_delivery.delivered_oz, 3),
+                    unit="fl oz",
+                    quality=Quality.GOOD,
+                    metadata={
+                        "driver": "chlorination_controller",
+                        "source": "chlorine_delivery",
+                        "local_day_start": local_day_start.isoformat(),
+                        "runtime_seconds_today": daily_delivery.runtime_seconds,
+                    },
+                )
+            )
+
+        if (
+            fc_demand_status is not None
+            and fc_demand_status.ready
+            and fc_demand_status.daily_demand_ppm is not None
+        ):
+            measurements.append(
+                Measurement(
+                    id=_fc_demand_measurement_id(fc_demand_status),
+                    sensor_id=SensorId.FC_DEMAND_PPM_PER_DAY,
+                    observed_at=(
+                        fc_demand_status.current_sampled_at
+                        if fc_demand_status.current_sampled_at is not None
+                        else observed_at
+                    ),
+                    kind=MeasurementKind.ESTIMATED,
+                    value=round(fc_demand_status.daily_demand_ppm, 4),
+                    unit="ppm/day",
+                    quality=Quality.GOOD,
+                    metadata={
+                        "driver": "fc_demand_estimator",
+                        "source": "lab_tests,chlorine_delivery,chemical_additions",
+                        "target_fc_ppm": fc_demand_status.target_fc_ppm,
+                        "previous_sampled_at": (
+                            fc_demand_status.previous_sampled_at.isoformat()
+                            if fc_demand_status.previous_sampled_at is not None
+                            else None
+                        ),
+                        "current_sampled_at": (
+                            fc_demand_status.current_sampled_at.isoformat()
+                            if fc_demand_status.current_sampled_at is not None
+                            else None
+                        ),
+                        "previous_fc_ppm": fc_demand_status.previous_fc_ppm,
+                        "current_fc_ppm": fc_demand_status.current_fc_ppm,
+                        "elapsed_days": fc_demand_status.elapsed_days,
+                        "added_fc_ppm": fc_demand_status.added_fc_ppm,
+                        "consumed_fc_ppm": fc_demand_status.consumed_fc_ppm,
+                        "maintenance_dose_oz_per_day": (
+                            fc_demand_status.maintenance_dose_oz_per_day
+                        ),
+                        "recommended_daily_dose_oz": (
+                            fc_demand_status.recommended_daily_dose_oz
+                        ),
+                        "effective_daily_dose_oz": (
+                            fc_demand_status.effective_daily_dose_oz
+                        ),
+                    },
+                )
+            )
+            measurements.extend(
+                _fc_demand_trend_measurements(
+                    logger=self.measurement_logger,
+                    status=fc_demand_status,
+                    observed_at=(
+                        fc_demand_status.current_sampled_at
+                        if fc_demand_status.current_sampled_at is not None
+                        else observed_at
+                    ),
+                )
+            )
+
+        return tuple(measurements)
 
     def _poll_weather(self) -> WeatherPollResult:
         if self.weather_service is None:
@@ -1111,6 +1383,195 @@ def _mqtt_lab_test_payload(payload: dict[str, Any], *, now: datetime) -> LabTest
         return LabTest.model_validate(raw)
     except Exception:
         return None
+
+
+def _local_day_start(value: datetime, *, timezone_name: str) -> datetime:
+    timezone = ZoneInfo(timezone_name)
+    local = value.astimezone(timezone)
+    return datetime(local.year, local.month, local.day, tzinfo=timezone)
+
+
+def _completed_local_day_window(
+    value: datetime,
+    *,
+    timezone_name: str,
+) -> tuple[str, datetime, datetime, datetime]:
+    local_timezone = ZoneInfo(timezone_name)
+    local_now = value.astimezone(local_timezone)
+    local_today_start = datetime(
+        local_now.year,
+        local_now.month,
+        local_now.day,
+        tzinfo=local_timezone,
+    )
+    local_start = local_today_start - timedelta(days=1)
+    local_end = local_today_start
+    observed_at = local_start + timedelta(hours=12)
+    return (
+        local_start.date().isoformat(),
+        local_start.astimezone(timezone.utc),
+        local_end.astimezone(timezone.utc),
+        observed_at.astimezone(timezone.utc),
+    )
+
+
+def _daily_summary_measurement(
+    *,
+    sensor_id: SensorId,
+    observed_at: datetime,
+    local_day: str,
+    timezone_name: str,
+    start_utc: datetime,
+    end_utc: datetime,
+    summary: ValueSummary,
+    aggregation: str,
+    value: float,
+    unit: str,
+    source: str,
+) -> Measurement:
+    return Measurement(
+        id=f"{sensor_id.value}:{local_day}",
+        sensor_id=sensor_id,
+        observed_at=observed_at,
+        kind=MeasurementKind.ESTIMATED,
+        value=round(value, 4),
+        unit=unit,
+        quality=Quality.GOOD,
+        metadata={
+            "driver": "daily_environment_summary",
+            "source": source,
+            "aggregation": aggregation,
+            "local_day": local_day,
+            "timezone": timezone_name,
+            "interval_start_utc": start_utc.isoformat(),
+            "interval_end_utc": end_utc.isoformat(),
+            "sample_count": summary.count,
+            "source_min_value": summary.min_value,
+            "source_avg_value": summary.avg_value,
+            "source_max_value": summary.max_value,
+            "source_sum_value": summary.sum_value,
+        },
+    )
+
+
+def _fc_demand_measurement_id(status: FcDemandStatus) -> str:
+    previous = (
+        status.previous_sampled_at.isoformat()
+        if status.previous_sampled_at is not None
+        else "none"
+    )
+    current = (
+        status.current_sampled_at.isoformat()
+        if status.current_sampled_at is not None
+        else "none"
+    )
+    demand = (
+        f"{status.daily_demand_ppm:.4f}"
+        if status.daily_demand_ppm is not None
+        else "none"
+    )
+    return f"fc_demand_ppm_per_day:{previous}:{current}:{demand}"
+
+
+def _fc_demand_trend_measurements(
+    *,
+    logger: MeasurementLogger | None,
+    status: FcDemandStatus,
+    observed_at: datetime,
+) -> tuple[Measurement, ...]:
+    if status.daily_demand_ppm is None:
+        return ()
+
+    actual_demand = max(0.0, float(status.daily_demand_ppm))
+    previous_base = _previous_base_fc_demand(logger=logger, before=observed_at)
+    predicted_demand = previous_base if previous_base is not None else actual_demand
+    base_demand = (
+        actual_demand
+        if previous_base is None
+        else (
+            FC_DEMAND_BASE_EMA_ALPHA * actual_demand
+            + (1.0 - FC_DEMAND_BASE_EMA_ALPHA) * previous_base
+        )
+    )
+    residual = actual_demand - predicted_demand
+    source_measurement_id = _fc_demand_measurement_id(status)
+    source_suffix = source_measurement_id.removeprefix("fc_demand_ppm_per_day:")
+    metadata = {
+        "driver": "fc_demand_trend",
+        "source": "fc_demand_ppm_per_day",
+        "source_measurement_id": source_measurement_id,
+        "actual_fc_demand_ppm_per_day": actual_demand,
+        "previous_base_fc_demand_ppm_per_day": previous_base,
+        "base_ema_alpha": FC_DEMAND_BASE_EMA_ALPHA,
+        "modifier_model": "not_configured",
+        "water_temp_source": SensorId.ORP_TEMP.value,
+        "uv_modifier_ppm_per_day": 0.0,
+        "temperature_modifier_ppm_per_day": 0.0,
+    }
+
+    return (
+        Measurement(
+            id=f"{SensorId.BASE_FC_DEMAND_PPM_PER_DAY.value}:{source_suffix}",
+            sensor_id=SensorId.BASE_FC_DEMAND_PPM_PER_DAY,
+            observed_at=observed_at,
+            kind=MeasurementKind.ESTIMATED,
+            value=round(base_demand, 4),
+            unit="ppm/day",
+            quality=Quality.GOOD,
+            source_measurement_ids=[source_measurement_id],
+            metadata={
+                **metadata,
+                "meaning": "exponential moving average of FC demand",
+            },
+        ),
+        Measurement(
+            id=f"{SensorId.PREDICTED_FC_DEMAND_PPM_PER_DAY.value}:{source_suffix}",
+            sensor_id=SensorId.PREDICTED_FC_DEMAND_PPM_PER_DAY,
+            observed_at=observed_at,
+            kind=MeasurementKind.ESTIMATED,
+            value=round(predicted_demand, 4),
+            unit="ppm/day",
+            quality=Quality.GOOD,
+            source_measurement_ids=[source_measurement_id],
+            metadata={
+                **metadata,
+                "meaning": "current baseline prediction with no seasonal modifier",
+            },
+        ),
+        Measurement(
+            id=f"{SensorId.FC_DEMAND_RESIDUAL_PPM_PER_DAY.value}:{source_suffix}",
+            sensor_id=SensorId.FC_DEMAND_RESIDUAL_PPM_PER_DAY,
+            observed_at=observed_at,
+            kind=MeasurementKind.ESTIMATED,
+            value=round(residual, 4),
+            unit="ppm/day",
+            quality=Quality.GOOD,
+            source_measurement_ids=[source_measurement_id],
+            metadata={
+                **metadata,
+                "meaning": "actual FC demand minus predicted FC demand",
+            },
+        ),
+    )
+
+
+def _previous_base_fc_demand(
+    *,
+    logger: MeasurementLogger | None,
+    before: datetime,
+) -> float | None:
+    if logger is None:
+        return None
+
+    records = logger.history(
+        sensor_id=SensorId.BASE_FC_DEMAND_PPM_PER_DAY,
+        until=before - timedelta(microseconds=1),
+        limit=1,
+        qualities=(Quality.GOOD,),
+    )
+    if not records:
+        return None
+    return records[-1].value
 
 
 def _flow_derived_measurements(

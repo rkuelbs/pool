@@ -29,6 +29,17 @@ const SENSOR_LABELS = {
   filter_restriction_metric: "Filter restriction",
   filter_restriction_percent: "Filter restriction %",
   calcium_saturation_index: "CSI",
+  chlorine_daily_delivered_oz: "Daily chlorine delivered",
+  chlorination_duty_cycle_percent: "Dosing duty cycle",
+  fc_demand_ppm_per_day: "FC demand",
+  base_fc_demand_ppm_per_day: "Base FC demand",
+  predicted_fc_demand_ppm_per_day: "Predicted FC demand",
+  fc_demand_residual_ppm_per_day: "FC demand residual",
+  daily_water_temp_min: "Daily water temp min",
+  daily_water_temp_avg: "Daily water temp avg",
+  daily_water_temp_max: "Daily water temp max",
+  daily_uv_index_dose: "Daily UV dose",
+  daily_shortwave_radiation_dose: "Daily shortwave dose",
   lab_ph: "pH (tested)",
   lab_free_chlorine: "Free Chlorine (tested)",
   lab_alkalinity: "Alkalinity (tested)",
@@ -79,6 +90,17 @@ const HISTORY_SENSOR_ORDER = [
   "booster_flow_gpm",
   "filter_restriction_metric",
   "filter_restriction_percent",
+  "chlorine_daily_delivered_oz",
+  "chlorination_duty_cycle_percent",
+  "fc_demand_ppm_per_day",
+  "base_fc_demand_ppm_per_day",
+  "predicted_fc_demand_ppm_per_day",
+  "fc_demand_residual_ppm_per_day",
+  "daily_water_temp_min",
+  "daily_water_temp_avg",
+  "daily_water_temp_max",
+  "daily_uv_index_dose",
+  "daily_shortwave_radiation_dose",
   "lab_ph",
   "lab_free_chlorine",
   "lab_alkalinity",
@@ -111,6 +133,7 @@ const HISTORY_SENSOR_ORDER = [
 ];
 
 const LIVE_SENSOR_ORDER = [...SENSOR_ORDER, "calcium_saturation_index"];
+const DEFAULT_HISTORY_SENSOR_IDS = new Set(["pump_output_psi", "raw_orp"]);
 
 const ACQ_REDUCERS = ["last", "mean", "median", "trimmed_mean"];
 const ANALOG_SENSOR_OPTIONS = [
@@ -1975,13 +1998,13 @@ function intValue(root, field) {
 
 function initializeHistoryControls() {
   const checklist = document.getElementById("historySensorChecklist");
-  HISTORY_SENSOR_ORDER.forEach((sensorId, index) => {
+  HISTORY_SENSOR_ORDER.forEach((sensorId) => {
     const label = document.createElement("label");
     label.dataset.sensorId = sensorId;
     const input = document.createElement("input");
     input.type = "checkbox";
     input.value = sensorId;
-    input.checked = index < 2;
+    input.checked = DEFAULT_HISTORY_SENSOR_IDS.has(sensorId);
     input.addEventListener("change", () => refreshHistory(true));
     const swatch = document.createElement("span");
     swatch.className = "history-swatch";

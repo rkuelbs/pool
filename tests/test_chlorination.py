@@ -96,6 +96,7 @@ def test_controller_turns_dosing_on_for_first_minute_of_duty_cycle() -> None:
     assert round(evaluation.status.duty_cycle, 4) == 0.0364
     assert round(evaluation.status.cycle_period_seconds or 0.0, 1) == 1650.0
     assert evaluation.status.active is True
+    assert evaluation.status.duty_cycle_window_active is True
     assert len(evaluation.commands) == 1
     assert evaluation.commands[0].actuator_id == ActuatorId.CHLORINE_DOSING_PUMP
     assert evaluation.commands[0].state == ActuatorState.ON
@@ -122,6 +123,7 @@ def test_controller_turns_dosing_off_after_one_minute_on_interval() -> None:
     )
 
     assert evaluation.status.active is False
+    assert evaluation.status.duty_cycle_window_active is True
     assert evaluation.status.reason == "open-loop chlorination duty cycle off interval"
     assert len(evaluation.commands) == 1
     assert evaluation.commands[0].state == ActuatorState.OFF
@@ -216,6 +218,7 @@ def test_controller_delays_dosing_by_eligible_minutes_without_changing_duty() ->
     assert delayed.status.available_runtime_min_per_day == 420.0
     assert round(delayed.status.delay_eligible_minutes, 3) == 210.0
     assert delayed.status.active is False
+    assert delayed.status.duty_cycle_window_active is False
     assert delayed.status.reason == "dosing delayed by 210.0 eligible min"
     assert delayed.commands[0].state == ActuatorState.OFF
 
@@ -236,4 +239,5 @@ def test_controller_delays_dosing_by_eligible_minutes_without_changing_duty() ->
 
     assert round(resumed.status.duty_cycle, 4) == 0.0095
     assert resumed.status.active is True
+    assert resumed.status.duty_cycle_window_active is True
     assert resumed.commands[0].state == ActuatorState.ON

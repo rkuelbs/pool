@@ -338,6 +338,22 @@ def test_format_measurement_uses_domain_units() -> None:
         format_measurement(Measurement(sensor_id=SensorId.TANK_LEVEL, value=87.4, unit="percent"))
         == "87%"
     )
+    assert (
+        format_measurement(
+            Measurement(sensor_id=SensorId.DAILY_UV_INDEX_DOSE, value=31.25, unit="index-hour")
+        )
+        == "31.2 index-hour"
+    )
+    assert (
+        format_measurement(
+            Measurement(
+                sensor_id=SensorId.DAILY_SHORTWAVE_RADIATION_DOSE,
+                value=6132.4,
+                unit="Wh/m2",
+            )
+        )
+        == "6132 Wh/m2"
+    )
 
 
 def test_measurement_status_uses_configured_display_bands() -> None:

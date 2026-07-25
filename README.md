@@ -223,6 +223,27 @@ forward. The controller does not try to make up for earlier parts of the day.
 The Live page also has a `Prime 30s` button that runs the dosing pump through
 the normal command router for a timed prime/test.
 
+The History page can graph chlorination control signals:
+
+- `Daily chlorine delivered`: cumulative fluid ounces delivered since local
+  midnight using the configured pump timer timezone.
+- `Dosing duty cycle`: the current duty cycle during valid dosing time. This is
+  logged across the full eligible window, including duty-cycle OFF portions, but
+  not during high-FC holdoff time.
+- `FC demand`: estimated free-chlorine consumption in ppm/day from the latest
+  two manual FC tests, logged once per distinct estimate.
+- `Base FC demand`: exponential moving average of FC demand. This is an
+  observe-only baseline for seasonal trend work; it does not change dosing by
+  itself.
+- `Predicted FC demand` and `FC demand residual`: placeholder prediction and
+  actual-minus-predicted error. For now the prediction is just the baseline with
+  no pH, ORP, UV, or temperature modifier.
+- `Daily water temp min/avg/max`: daily summaries from the `orp_temp` sensor.
+  The minimum is logged because it may better represent pool water than daytime
+  plumbing warmed by sun.
+- `Daily UV dose` and `Daily shortwave dose`: previous-day sums from the
+  Open-Meteo hourly weather history, for later correlation with FC demand.
+
 Example:
 
 ```yaml
@@ -268,6 +289,11 @@ safety:
 
 `fc_demand` estimates daily free-chlorine demand from manual FC tests plus
 logged chlorine additions/delivery. It deliberately does not use ORP or pH.
+The history page also logs observe-only trend signals for base demand,
+predicted demand, residual demand, daily ORP-temperature min/avg/max, UV dose,
+and shortwave dose. These provide the data needed to evaluate seasonal
+temperature and sunlight modifiers later without changing the current dosing
+controller.
 
 The estimator needs at least two manual free-chlorine test results separated by
 `minimum_test_interval_hours`. Between those tests, it sums:

@@ -22,6 +22,17 @@ SENSOR_LABELS = {
     SensorId.FILTER_RESTRICTION_METRIC: "Filter restriction",
     SensorId.FILTER_RESTRICTION_PERCENT: "Filter restriction %",
     SensorId.CALCIUM_SATURATION_INDEX: "CSI",
+    SensorId.CHLORINE_DAILY_DELIVERED_OZ: "Daily chlorine delivered",
+    SensorId.CHLORINATION_DUTY_CYCLE_PERCENT: "Dosing duty cycle",
+    SensorId.FC_DEMAND_PPM_PER_DAY: "FC demand",
+    SensorId.BASE_FC_DEMAND_PPM_PER_DAY: "Base FC demand",
+    SensorId.PREDICTED_FC_DEMAND_PPM_PER_DAY: "Predicted FC demand",
+    SensorId.FC_DEMAND_RESIDUAL_PPM_PER_DAY: "FC demand residual",
+    SensorId.DAILY_WATER_TEMP_MIN: "Daily water temp min",
+    SensorId.DAILY_WATER_TEMP_AVG: "Daily water temp avg",
+    SensorId.DAILY_WATER_TEMP_MAX: "Daily water temp max",
+    SensorId.DAILY_UV_INDEX_DOSE: "Daily UV dose",
+    SensorId.DAILY_SHORTWAVE_RADIATION_DOSE: "Daily shortwave dose",
     SensorId.RAW_ORP: "ORP",
     SensorId.ORP_TEMP: "ORP temp",
     SensorId.RAW_PH: "pH",
@@ -577,6 +588,9 @@ def format_measurement(measurement: Measurement) -> str:
     if measurement.unit == "percent":
         return f"{value:.0f}%"
 
+    if measurement.unit == "fl oz":
+        return f"{value:.1f} fl oz"
+
     if measurement.unit == "pH":
         return f"{value:.2f}"
 
@@ -591,6 +605,15 @@ def format_measurement(measurement: Measurement) -> str:
 
     if measurement.unit == "csi":
         return f"{value:.2f}"
+
+    if measurement.unit == "ppm/day":
+        return f"{value:.2f} ppm/day"
+
+    if measurement.unit == "index-hour":
+        return f"{value:.1f} index-hour"
+
+    if measurement.unit == "Wh/m2":
+        return f"{value:.0f} Wh/m2"
 
     if measurement.unit in {"degF", "degC"}:
         return f"{value:.1f} {measurement.unit}"

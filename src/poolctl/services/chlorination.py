@@ -114,6 +114,7 @@ class ChlorinationStatus:
     cycle_period_seconds: float | None
     no_dose_last_minutes: float
     eligible_window_active: bool
+    duty_cycle_window_active: bool
     warning: str | None = None
     dose_adjustment_source: str | None = None
     dose_adjustment_reason: str | None = None
@@ -141,6 +142,7 @@ class ChlorinationStatus:
             "cycle_period_seconds": self.cycle_period_seconds,
             "no_dose_last_minutes": self.no_dose_last_minutes,
             "eligible_window_active": self.eligible_window_active,
+            "duty_cycle_window_active": self.duty_cycle_window_active,
             "warning": self.warning,
             "dose_adjustment_source": self.dose_adjustment_source,
             "dose_adjustment_reason": self.dose_adjustment_reason,
@@ -248,6 +250,7 @@ class ChlorinationController:
             if duty_cycle_limited
             else None
         )
+        duty_cycle_window_active = False
 
         if not layer_enabled:
             reason = "chlorination layer disabled"
@@ -275,6 +278,7 @@ class ChlorinationController:
                     elapsed_eligible_seconds - delay_eligible_seconds,
                 )
                 cycle_position = adjusted_elapsed_seconds % cycle_period_seconds
+                duty_cycle_window_active = True
                 if cycle_position < self.config.cycle_on_seconds:
                     desired_state = ActuatorState.ON
                     reason = "open-loop chlorination duty cycle on interval"
@@ -299,6 +303,7 @@ class ChlorinationController:
             cycle_period_seconds=cycle_period_seconds,
             no_dose_last_minutes=self.config.no_dose_last_minutes,
             eligible_window_active=current_window is not None,
+            duty_cycle_window_active=duty_cycle_window_active,
             warning=warning,
             dose_adjustment_source=dose_adjustment_source,
             dose_adjustment_reason=dose_adjustment_reason,

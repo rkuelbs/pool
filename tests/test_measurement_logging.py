@@ -95,6 +95,58 @@ def test_measurement_logger_history_can_filter_by_quality(tmp_path: Path) -> Non
     assert good_only[0].quality == Quality.GOOD
 
 
+def test_measurement_logger_summarizes_measurement_values(tmp_path: Path) -> None:
+    logger = MeasurementLogger(
+        MeasurementLoggingConfig(database_path=tmp_path / "measurements.sqlite3")
+    )
+    start = datetime(2026, 5, 22, 0, 0, tzinfo=timezone.utc)
+    samples = (
+        Measurement(
+            sensor_id=SensorId.ORP_TEMP,
+            observed_at=start + timedelta(hours=1),
+            value=70.0,
+            unit="degF",
+            quality=Quality.GOOD,
+        ),
+        Measurement(
+            sensor_id=SensorId.ORP_TEMP,
+            observed_at=start + timedelta(hours=12),
+            value=82.0,
+            unit="degF",
+            quality=Quality.GOOD,
+        ),
+        Measurement(
+            sensor_id=SensorId.ORP_TEMP,
+            observed_at=start + timedelta(hours=23),
+            value=74.0,
+            unit="degF",
+            quality=Quality.GOOD,
+        ),
+        Measurement(
+            sensor_id=SensorId.ORP_TEMP,
+            observed_at=start + timedelta(hours=6),
+            value=65.0,
+            unit="degF",
+            quality=Quality.SUSPECT,
+        ),
+    )
+    logger.log_measurements(samples)
+
+    summary = logger.measurement_value_summary(
+        sensor_id=SensorId.ORP_TEMP,
+        since=start,
+        until=start + timedelta(days=1),
+    )
+
+    assert summary is not None
+    assert summary.count == 3
+    assert summary.min_value == 70.0
+    assert summary.max_value == 82.0
+    assert round(summary.avg_value, 3) == 75.333
+    assert summary.sum_value == 226.0
+    assert summary.unit == "degF"
+
+
 def test_measurement_logger_persists_lab_tests(tmp_path: Path) -> None:
     logger = MeasurementLogger(
         MeasurementLoggingConfig(database_path=tmp_path / "measurements.sqlite3")
@@ -365,3 +417,16 @@ def test_measurement_logger_persists_and_queries_weather_history(tmp_path: Path)
     assert temp_points[1][1] == 84.0
     assert len(uv_points) == 2
     assert uv_points[1][1] == 7.0
+
+    uv_summary = logger.weather_value_summary(
+        field="uv_index",
+        since=now - timedelta(hours=2),
+        until=now + timedelta(minutes=1),
+    )
+
+    assert uv_summary is not None
+    assert uv_summary.count == 2
+    assert uv_summary.min_value == 6.0
+    assert uv_summary.max_value == 7.0
+    assert uv_summary.avg_value == 6.5
+    assert uv_summary.sum_value == 13.0

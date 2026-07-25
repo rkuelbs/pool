@@ -108,6 +108,16 @@ class ChlorineDeliverySummary:
     delivered_oz: float = 0.0
 
 
+@dataclass(frozen=True)
+class ValueSummary:
+    count: int
+    min_value: float
+    max_value: float
+    avg_value: float
+    sum_value: float
+    unit: str | None = None
+
+
 class MeasurementLogger:
     """
     SQLite-backed store for loggable measurement history.
@@ -424,6 +434,61 @@ class MeasurementLogger:
         return ChlorineDeliverySummary(
             runtime_seconds=float(row["runtime_seconds"]),
             delivered_oz=float(row["delivered_oz"]),
+        )
+
+    def measurement_value_summary(
+        self,
+        *,
+        sensor_id: SensorId,
+        since: datetime,
+        until: datetime,
+        qualities: tuple[Quality, ...] = (Quality.GOOD,),
+    ) -> ValueSummary | None:
+        if until <= since:
+            raise ValueError("until must be after since")
+
+        clauses = [
+            "sensor_id = ?",
+            "observed_at >= ?",
+            "observed_at < ?",
+        ]
+        parameters: list[str] = [
+            sensor_id.value,
+            since.isoformat(),
+            until.isoformat(),
+        ]
+
+        if qualities:
+            placeholders = ", ".join("?" for _ in qualities)
+            clauses.append(f"quality IN ({placeholders})")
+            parameters.extend(quality.value for quality in qualities)
+
+        where_clause = " AND ".join(clauses)
+        with self._connect() as connection:
+            row = connection.execute(
+                f"""
+                SELECT
+                    COUNT(*) AS sample_count,
+                    MIN(value) AS min_value,
+                    MAX(value) AS max_value,
+                    AVG(value) AS avg_value,
+                    SUM(value) AS sum_value,
+                    MIN(unit) AS unit
+                FROM measurements
+                WHERE {where_clause}
+                """,
+                parameters,
+            ).fetchone()
+
+        if row is None or int(row["sample_count"]) <= 0:
+            return None
+        return ValueSummary(
+            count=int(row["sample_count"]),
+            min_value=float(row["min_value"]),
+            max_value=float(row["max_value"]),
+            avg_value=float(row["avg_value"]),
+            sum_value=float(row["sum_value"]),
+            unit=str(row["unit"]) if row["unit"] is not None else None,
         )
 
     def latest_lab_values(
@@ -745,6 +810,45 @@ class MeasurementLogger:
             if row["value"] is not None
         )
         return tuple(reversed(descending))
+
+    def weather_value_summary(
+        self,
+        *,
+        field: str,
+        since: datetime,
+        until: datetime,
+    ) -> ValueSummary | None:
+        if until <= since:
+            raise ValueError("until must be after since")
+        if field not in WEATHER_FIELDS:
+            raise ValueError(f"unsupported weather field: {field}")
+
+        with self._connect() as connection:
+            row = connection.execute(
+                f"""
+                SELECT
+                    COUNT({field}) AS sample_count,
+                    MIN({field}) AS min_value,
+                    MAX({field}) AS max_value,
+                    AVG({field}) AS avg_value,
+                    SUM({field}) AS sum_value
+                FROM weather_observations
+                WHERE {field} IS NOT NULL
+                    AND timestamp >= ?
+                    AND timestamp < ?
+                """,
+                (since.isoformat(), until.isoformat()),
+            ).fetchone()
+
+        if row is None or int(row["sample_count"]) <= 0:
+            return None
+        return ValueSummary(
+            count=int(row["sample_count"]),
+            min_value=float(row["min_value"]),
+            max_value=float(row["max_value"]),
+            avg_value=float(row["avg_value"]),
+            sum_value=float(row["sum_value"]),
+        )
 
     def _init_schema(self) -> None:
         with self._connect() as connection:
