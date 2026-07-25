@@ -191,13 +191,14 @@ wired, calibrated, and verified.
 ## Dashboard Pages
 
 - Live: schematic or mobile list view, current sensor/actuator state, quick
-  pump controls, chlorination dose target, dosing prime, FC-demand status,
-  safety status, CPU status on Pi.
+  pump controls, chlorination dose target, FC-demand status, safety status, CPU
+  status on Pi.
 - History: measurement/weather/test-result/chemical-addition charts with
   selectable series and auto-scaled axes.
 - Schedule: pump timer schedule editor.
 - Config: forms for runtime layers, safety, chlorination, FC demand,
-  acquisition, logging, and analog input calibration.
+  acquisition, logging, analog input calibration, and diagnostic dosing-pump
+  prime.
 
 Some config changes apply live. Others write YAML and require restart because
 drivers or long-lived services must be rebuilt.
@@ -220,8 +221,11 @@ The controller:
 
 Changing `daily_dose_oz` from the dashboard applies the new duty cycle going
 forward. The controller does not try to make up for earlier parts of the day.
-The Live page also has a `Prime 30s` button that runs the dosing pump through
-the normal command router for a timed prime/test.
+The Config page has a diagnostic `Prime Dosing Pump 30s` button. It runs the
+dosing pump through the normal command router, but that diagnostic runtime is
+excluded from logged chlorine delivery, daily chlorine totals, and FC-demand
+estimator addition math. It is intended for priming the line with the hose
+disconnected from the pool, not for normal chlorination.
 
 The History page can graph chlorination control signals:
 

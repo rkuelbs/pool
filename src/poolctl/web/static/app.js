@@ -343,7 +343,7 @@ async function primeChlorinationPump() {
   }
   chlorinationPrimeBusy = true;
   setControlsDisabled(true);
-  setChlorinationQuickStatus("Starting dosing pump prime...");
+  setChlorinationPrimeStatus("Starting diagnostic dosing pump prime...");
   try {
     const response = await fetch("/api/chlorination/prime", {
       method: "POST",
@@ -354,14 +354,19 @@ async function primeChlorinationPump() {
     const remaining = payload.prime && Number.isFinite(Number(payload.prime.remaining_s))
       ? Math.ceil(Number(payload.prime.remaining_s))
       : 30;
-    setChlorinationQuickStatus(`Dosing pump prime active (${remaining}s)`);
+    setChlorinationPrimeStatus(`Diagnostic dosing pump prime active (${remaining}s)`);
     await loadLive();
   } catch (error) {
-    setChlorinationQuickStatus(error.message);
+    setChlorinationPrimeStatus(error.message);
   } finally {
     setControlsDisabled(false);
     chlorinationPrimeBusy = false;
   }
+}
+
+function setChlorinationPrimeStatus(message) {
+  setChlorinationQuickStatus(message);
+  setChlorinationConfigStatus(message);
 }
 
 function setChlorinationQuickStatus(message) {
@@ -2997,6 +3002,10 @@ function setChlorinationConfigStatus(message) {
 function initializeChlorinationControls() {
   document.getElementById("chlorinationReload").addEventListener("click", loadChlorinationConfig);
   document.getElementById("chlorinationSave").addEventListener("click", saveChlorinationConfig);
+  const primeButton = document.getElementById("chlorinationPrimeConfigButton");
+  if (primeButton) {
+    primeButton.addEventListener("click", primeChlorinationPump);
+  }
   loadChlorinationConfig();
 }
 
@@ -3632,16 +3641,6 @@ function initializeChlorinationQuickControls() {
         saveQuickChlorinationDose(inputId);
       }
     });
-  });
-  [
-    "chlorinationPrimeButton",
-    "mobileChlorinationPrimeButton",
-  ].forEach((buttonId) => {
-    const button = document.getElementById(buttonId);
-    if (!button) {
-      return;
-    }
-    button.addEventListener("click", primeChlorinationPump);
   });
 }
 

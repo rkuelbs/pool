@@ -188,6 +188,8 @@ class PoolControllerApp:
     chlorine_delivery_checkpoint_at: datetime | None = None
     dosing_prime_until: datetime | None = None
     dosing_prime_started_at: datetime | None = None
+    dosing_prime_delivery_exclude_started_at: datetime | None = None
+    dosing_prime_delivery_exclude_until: datetime | None = None
 
     async def tick(self, *, force_acquisition: bool = False) -> AppTickResult:
         await self.router.refresh_states()
@@ -381,6 +383,8 @@ class PoolControllerApp:
         until = now + timedelta(seconds=duration_s)
         object.__setattr__(self, "dosing_prime_started_at", now)
         object.__setattr__(self, "dosing_prime_until", until)
+        object.__setattr__(self, "dosing_prime_delivery_exclude_started_at", now)
+        object.__setattr__(self, "dosing_prime_delivery_exclude_until", until)
         return self.dosing_prime_status()
 
     def dosing_prime_status(self) -> dict[str, Any]:
@@ -563,6 +567,8 @@ class PoolControllerApp:
             return 0
         if self.router.actuator_states.get(ActuatorId.CHLORINE_DOSING_PUMP) != ActuatorState.ON:
             return 0
+        if self._dosing_prime_delivery_exclusion_overlaps(previous, now):
+            return 0
 
         runtime_seconds = max(0.0, (now - previous).total_seconds())
         delivered_oz = runtime_seconds / 60.0 * self.chlorination_config.pump_output_oz_per_min
@@ -575,6 +581,23 @@ class PoolControllerApp:
                 "pump_output_oz_per_min": self.chlorination_config.pump_output_oz_per_min,
             },
         )
+
+    def _dosing_prime_delivery_exclusion_overlaps(
+        self,
+        previous: datetime,
+        now: datetime,
+    ) -> bool:
+        started_at = self.dosing_prime_delivery_exclude_started_at
+        until = self.dosing_prime_delivery_exclude_until
+        if started_at is None or until is None:
+            return False
+
+        if previous >= until:
+            object.__setattr__(self, "dosing_prime_delivery_exclude_started_at", None)
+            object.__setattr__(self, "dosing_prime_delivery_exclude_until", None)
+            return False
+
+        return previous < until and now > started_at
 
     def fc_demand_plan(self, *, now: datetime | None = None) -> FcDemandPlan | None:
         now = self.clock.now() if now is None else now

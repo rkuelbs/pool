@@ -411,6 +411,75 @@ async def test_dosing_prime_runs_for_30_seconds_and_then_releases() -> None:
     assert second.chlorination_status.reason == "daily dose is zero"
 
 
+@pytest.mark.asyncio
+async def test_dosing_prime_is_excluded_from_delivery_and_fc_demand(
+    tmp_path: Path,
+) -> None:
+    clock = make_clock()
+    config = {
+        "runtime": {
+            "stage": "open_loop_timer",
+            "driver_profile": "simulated",
+            "enabled_layers": ["chlorination", "logging"],
+            "enabled_actuators": ["chlorine_dosing_pump"],
+            "enabled_sensor_groups": [],
+        },
+        "logging": {
+            "database_path": str(tmp_path / "prime_delivery.sqlite3"),
+        },
+        "chlorination": {
+            "enabled": True,
+            "daily_dose_oz": 0.0,
+            "pump_output_oz_per_min": 1.0,
+            "no_dose_last_minutes": 10.0,
+            "max_duty_cycle": 0.5,
+            "cycle_on_seconds": 60.0,
+        },
+        "fc_demand": {
+            "enabled": True,
+            "mode": "observe_only",
+            "pool_volume_gal": 10000.0,
+            "target_fc_ppm": 4.0,
+            "chlorine_strength_percent": 12.0,
+            "minimum_test_interval_hours": 12.0,
+            "max_daily_dose_oz": 256.0,
+        },
+    }
+
+    app = build_app_from_mapping(config, clock=clock)
+    assert app.measurement_logger is not None
+    app.start_dosing_pump_prime(duration_s=30.0)
+    first = await app.tick()
+    await clock.advance(31.0)
+    second = await app.tick()
+
+    delivery_summary = app.measurement_logger.chlorine_delivery_summary()
+    assert first.logged_chlorine_delivery_count == 0
+    assert second.logged_chlorine_delivery_count == 0
+    assert delivery_summary.runtime_seconds == 0.0
+    assert delivery_summary.delivered_oz == 0.0
+
+    current_sampled_at = clock.now()
+    app.measurement_logger.log_lab_test(
+        LabTest(
+            sampled_at=current_sampled_at - timedelta(days=1),
+            free_chlorine=4.0,
+        )
+    )
+    app.measurement_logger.log_lab_test(
+        LabTest(
+            sampled_at=current_sampled_at,
+            free_chlorine=3.0,
+        )
+    )
+
+    plan = app.fc_demand_plan(now=current_sampled_at)
+    assert plan is not None
+    assert plan.status.ready is True
+    assert plan.status.added_fc_ppm == 0.0
+    assert plan.status.daily_demand_ppm == 1.0
+
+
 def modbus_relay_config() -> dict[str, object]:
     return {
         "modbus_relay": {
