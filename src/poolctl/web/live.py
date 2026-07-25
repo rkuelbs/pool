@@ -173,6 +173,12 @@ async def build_live_snapshot(app: PoolControllerApp) -> dict[str, Any]:
             if tick.chlorination_status is not None
             else None
         ),
+        "fc_demand": (
+            tick.fc_demand_status.as_payload()
+            if tick.fc_demand_status is not None
+            else None
+        ),
+        "dosing_prime": app.dosing_prime_status(),
         "safety": safety_payload(app),
         "timer_override": timer_override_payload(
             app.active_timer_override() or app.active_sample_timer_override()
@@ -184,6 +190,7 @@ async def build_live_snapshot(app: PoolControllerApp) -> dict[str, Any]:
             "loggable_measurement_count": len(tick.loggable_measurements),
             "logged_measurement_count": tick.logged_measurement_count,
             "logged_lab_test_count": tick.logged_lab_test_count,
+            "logged_chlorine_delivery_count": tick.logged_chlorine_delivery_count,
             "logged_weather_count": tick.weather_result.logged_count,
             "weather_poll_error": tick.weather_result.error,
             "mqtt_result_count": len(tick.mqtt_results),

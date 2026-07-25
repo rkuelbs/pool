@@ -232,6 +232,94 @@ async def test_tick_runs_open_loop_chlorination_after_pump_timer() -> None:
     assert result.chlorination_results[0].applied is True
 
 
+@pytest.mark.asyncio
+async def test_tick_logs_chlorine_delivery_while_dosing_pump_is_on(tmp_path: Path) -> None:
+    clock = make_clock()
+    config = {
+        "runtime": {
+            "stage": "open_loop_timer",
+            "driver_profile": "simulated",
+            "enabled_layers": ["pump_timer", "chlorination", "logging"],
+            "enabled_actuators": [
+                "pump_motor",
+                "pump_motor_speed",
+                "booster_pump",
+                "chlorine_dosing_pump",
+            ],
+            "enabled_sensor_groups": [],
+        },
+        "logging": {
+            "database_path": str(tmp_path / "chlorine_delivery.sqlite3"),
+        },
+        "pump_timer": {
+            "timezone": "UTC",
+            "schedules": [
+                {
+                    "name": "midday_filter",
+                    "start": "12:00",
+                    "end": "14:00",
+                    "pump_speed": "low",
+                    "booster": "off",
+                }
+            ],
+        },
+        "chlorination": {
+            "enabled": True,
+            "daily_dose_oz": 4.0,
+            "pump_output_oz_per_min": 1.0,
+            "no_dose_last_minutes": 10.0,
+            "max_duty_cycle": 0.5,
+            "cycle_on_seconds": 60.0,
+        },
+    }
+
+    app = build_app_from_mapping(config, clock=clock)
+    first = await app.tick()
+    await clock.advance(30.0)
+    second = await app.tick()
+
+    assert first.logged_chlorine_delivery_count == 0
+    assert second.logged_chlorine_delivery_count == 1
+    assert app.measurement_logger is not None
+    summary = app.measurement_logger.chlorine_delivery_summary()
+    assert round(summary.runtime_seconds, 3) == 30.0
+    assert round(summary.delivered_oz, 3) == 0.5
+
+
+@pytest.mark.asyncio
+async def test_dosing_prime_runs_for_30_seconds_and_then_releases() -> None:
+    clock = make_clock()
+    config = {
+        "runtime": {
+            "stage": "open_loop_timer",
+            "driver_profile": "simulated",
+            "enabled_layers": ["chlorination"],
+            "enabled_actuators": ["chlorine_dosing_pump"],
+            "enabled_sensor_groups": [],
+        },
+        "chlorination": {
+            "enabled": True,
+            "daily_dose_oz": 0.0,
+            "pump_output_oz_per_min": 1.0,
+            "no_dose_last_minutes": 10.0,
+            "max_duty_cycle": 0.5,
+            "cycle_on_seconds": 60.0,
+        },
+    }
+
+    app = build_app_from_mapping(config, clock=clock)
+    app.start_dosing_pump_prime(duration_s=30.0)
+    first = await app.tick()
+    await clock.advance(31.0)
+    second = await app.tick()
+
+    assert first.chlorination_status is not None
+    assert first.chlorination_status.reason == "dosing pump prime/test active"
+    assert app.router.actuator_states[ActuatorId.CHLORINE_DOSING_PUMP] == ActuatorState.OFF
+    assert second.chlorination_status is not None
+    assert second.chlorination_status.reason == "daily dose is zero"
+
+
 def modbus_relay_config() -> dict[str, object]:
     return {
         "modbus_relay": {

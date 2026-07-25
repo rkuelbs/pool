@@ -6,6 +6,7 @@ from poolctl.domain.models import ActuatorId, ActuatorState, CommandSource
 from poolctl.services.chlorination import (
     ChlorinationConfig,
     ChlorinationController,
+    ChlorinationPlanAdjustment,
     valid_dosing_windows_for_day,
 )
 from poolctl.services.pump_timer import PumpTimerConfig, PumpTimerSchedule
@@ -184,3 +185,55 @@ def test_controller_keeps_dosing_off_when_layer_disabled() -> None:
     assert evaluation.status.active is False
     assert evaluation.status.reason == "chlorination layer disabled"
     assert evaluation.commands[0].state == ActuatorState.OFF
+
+
+def test_controller_delays_dosing_by_eligible_minutes_without_changing_duty() -> None:
+    controller = ChlorinationController(
+        ChlorinationConfig(
+            daily_dose_oz=4.0,
+            pump_output_oz_per_min=1.0,
+            no_dose_last_minutes=10.0,
+            cycle_on_seconds=60.0,
+        )
+    )
+    config = timer_config(schedule(start="08:00", end="15:10"))
+
+    delayed = controller.evaluate(
+        now=at(11, 0),
+        pump_timer_config=config,
+        actuator_states={
+            ActuatorId.PUMP_MOTOR: ActuatorState.ON,
+            ActuatorId.CHLORINE_DOSING_PUMP: ActuatorState.ON,
+        },
+        layer_enabled=True,
+        plan_adjustment=ChlorinationPlanAdjustment(
+            delay_eligible_seconds=210.0 * 60.0,
+            source="fc_demand",
+            reason="high FC delay",
+        ),
+    )
+
+    assert delayed.status.available_runtime_min_per_day == 420.0
+    assert round(delayed.status.delay_eligible_minutes, 3) == 210.0
+    assert delayed.status.active is False
+    assert delayed.status.reason == "dosing delayed by 210.0 eligible min"
+    assert delayed.commands[0].state == ActuatorState.OFF
+
+    resumed = controller.evaluate(
+        now=at(11, 30),
+        pump_timer_config=config,
+        actuator_states={
+            ActuatorId.PUMP_MOTOR: ActuatorState.ON,
+            ActuatorId.CHLORINE_DOSING_PUMP: ActuatorState.OFF,
+        },
+        layer_enabled=True,
+        plan_adjustment=ChlorinationPlanAdjustment(
+            delay_eligible_seconds=210.0 * 60.0,
+            source="fc_demand",
+            reason="high FC delay",
+        ),
+    )
+
+    assert round(resumed.status.duty_cycle, 4) == 0.0095
+    assert resumed.status.active is True
+    assert resumed.commands[0].state == ActuatorState.ON

@@ -13,6 +13,7 @@ from poolctl.web.server import (
     apply_analog_input_config_update,
     apply_acquisition_config_update,
     apply_chlorination_config_update,
+    apply_fc_demand_config_update,
     apply_logging_config_update,
     apply_pump_timer_config_update,
     apply_runtime_config_update,
@@ -25,9 +26,11 @@ from poolctl.web.server import (
     serialize_logging_config,
     serialize_analog_input_config,
     serialize_chlorination_config,
+    serialize_fc_demand_config,
     serialize_pump_timer_config,
     serialize_runtime_config,
     serialize_safety_config,
+    start_chlorination_prime,
 )
 
 
@@ -149,6 +152,58 @@ def test_chlorination_update_applies_live_and_persists(tmp_path: Path) -> None:
     saved = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert saved["chlorination"]["daily_dose_oz"] == 12.5
     assert saved["chlorination"]["pump_output_oz_per_min"] == 2.0
+
+
+def test_fc_demand_update_applies_live_and_persists(tmp_path: Path) -> None:
+    config = config_mapping()
+    config["fc_demand"] = {
+        "enabled": False,
+        "mode": "observe_only",
+        "pool_volume_gal": 10000.0,
+        "target_fc_ppm": 4.0,
+        "chlorine_strength_percent": 12.0,
+        "minimum_test_interval_hours": 12.0,
+        "max_daily_dose_oz": 256.0,
+    }
+    path = tmp_path / "pool.yaml"
+    path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    app = build_app_from_mapping(config, clock=make_clock())
+
+    result = apply_fc_demand_config_update(
+        app=app,
+        config_path=path,
+        payload={
+            "enabled": True,
+            "mode": "automatic",
+            "pool_volume_gal": 14500.0,
+            "target_fc_ppm": 5.0,
+            "chlorine_strength_percent": 12.5,
+            "minimum_test_interval_hours": 24.0,
+            "max_daily_dose_oz": 300.0,
+        },
+    )
+
+    assert result["updated"] is True
+    assert result["applied_live"] is True
+    assert result["mode"] == "automatic"
+    assert app.fc_demand_config.pool_volume_gal == 14500.0
+    assert serialize_fc_demand_config(app)["target_fc_ppm"] == 5.0
+    saved = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert saved["fc_demand"]["mode"] == "automatic"
+    assert saved["fc_demand"]["pool_volume_gal"] == 14500.0
+
+
+def test_start_chlorination_prime_sets_runtime_timer() -> None:
+    app = build_app_from_mapping(config_mapping(), clock=make_clock())
+
+    result = start_chlorination_prime(
+        app=app,
+        payload={"duration_s": 30.0},
+    )
+
+    assert result["started"] is True
+    assert result["prime"]["active"] is True
+    assert result["prime"]["remaining_s"] == 30.0
 
 
 def test_runtime_update_writes_yaml_and_reports_restart(tmp_path: Path) -> None:
@@ -392,6 +447,48 @@ def test_lab_test_api_helpers_store_and_list(tmp_path: Path) -> None:
     assert result["lab_test"]["ph"] == 7.4
     assert len(listed["lab_tests"]) == 1
     assert listed["lab_tests"][0]["free_chlorine"] == 3.1
+
+
+def test_lab_test_api_returns_recalculated_fc_demand_feedback(tmp_path: Path) -> None:
+    config = config_mapping()
+    runtime = dict(config["runtime"])  # type: ignore[index]
+    runtime["enabled_layers"] = ["pump_timer", "logging"]
+    config["runtime"] = runtime
+    config["logging"] = {"database_path": str(tmp_path / "fc-demand-feedback.sqlite3")}
+    config["fc_demand"] = {
+        "enabled": True,
+        "mode": "automatic",
+        "pool_volume_gal": 10000.0,
+        "target_fc_ppm": 4.0,
+        "chlorine_strength_percent": 12.0,
+        "minimum_test_interval_hours": 12.0,
+        "max_daily_dose_oz": 256.0,
+    }
+    app = build_app_from_mapping(config, clock=make_clock())
+
+    first = add_lab_test(
+        app=app,
+        payload={
+            "sampled_at": "2026-05-21T12:00:00+00:00",
+            "free_chlorine": 4.0,
+        },
+        source="local_gui",
+    )
+    second = add_lab_test(
+        app=app,
+        payload={
+            "sampled_at": "2026-05-22T12:00:00+00:00",
+            "free_chlorine": 3.0,
+        },
+        source="local_gui",
+    )
+
+    assert first["fc_demand"]["ready"] is False
+    assert second["fc_demand"]["ready"] is True
+    assert second["fc_demand"]["mode"] == "automatic"
+    assert round(second["fc_demand"]["daily_demand_ppm"], 3) == 1.0
+    assert round(second["fc_demand"]["catch_up_dose_oz_next_day"], 3) == 10.667
+    assert second["fc_demand"]["next_adjustment_date"] == "2026-05-23"
 
 
 def test_lab_test_api_accepts_sparse_payload_and_defaults_sampled_at(tmp_path: Path) -> None:

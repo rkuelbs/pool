@@ -124,8 +124,6 @@
               <button data-command="pump_motor_speed:high">Speed High</button>
               <button data-command="booster_pump:on">Booster On</button>
               <button data-command="booster_pump:off">Booster Off</button>
-              <button data-command="chlorine_dosing_pump:on">Dose On</button>
-              <button data-command="chlorine_dosing_pump:off">Dose Off</button>
             </div>
             <div class="timer-actions">
               <button id="overridePumpOnHour" type="button">Pump ON 1h</button>
@@ -315,6 +313,33 @@
         <div id="chlorinationConfigStatus" class="history-status">--</div>
       </section>
 
+      <section class="history-panel" aria-label="FC demand config" data-view-section="config">
+        <div class="history-header">
+          <h2>FC Demand Config</h2>
+          <button id="fcDemandReload" type="button">Reload</button>
+        </div>
+        <div class="config-grid">
+          <label><span>Enabled</span><input id="fcDemandEnabled" type="checkbox"></label>
+          <label>Mode
+            <select id="fcDemandMode">
+              <option value="observe_only">Observe only</option>
+              <option value="recommend">Recommend</option>
+              <option value="approve_required">Approve required</option>
+              <option value="automatic">Automatic</option>
+            </select>
+          </label>
+          <label>Pool gal <input id="fcDemandPoolVolumeGal" type="number" step="100" min="1"></label>
+          <label>Target FC ppm <input id="fcDemandTargetFcPpm" type="number" step="0.1" min="0"></label>
+          <label>Chlorine strength % <input id="fcDemandChlorineStrengthPercent" type="number" step="0.1" min="0.1"></label>
+          <label>Min test interval h <input id="fcDemandMinimumTestIntervalHours" type="number" step="1" min="0"></label>
+          <label>Max daily dose oz <input id="fcDemandMaxDailyDoseOz" type="number" step="1" min="0"></label>
+        </div>
+        <div class="timer-actions">
+          <button id="fcDemandSave" type="button">Save FC Demand</button>
+        </div>
+        <div id="fcDemandConfigStatus" class="history-status">--</div>
+      </section>
+
       <section class="history-panel" aria-label="Acquisition and logging config" data-view-section="config">
         <div class="history-header">
           <h2>Acquisition + Logging</h2>
@@ -406,6 +431,7 @@
           <button id="labTestSave" type="button">Add Test Result</button>
         </div>
         <div id="labTestStatus" class="history-status">--</div>
+        <div id="labTestFcDemandStatus" class="history-status">FC demand: --</div>
         <div id="labTestList" class="timeline-list">--</div>
       </section>
 

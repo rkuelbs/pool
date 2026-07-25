@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -14,6 +14,7 @@ from poolctl.domain.models import (
     ActuatorCommand,
     ActuatorId,
     ActuatorState,
+    ChemicalType,
     CommandSource,
     LabTest,
     Measurement,
@@ -41,7 +42,15 @@ from poolctl.services.command_router import CommandRouter
 from poolctl.services.chlorination import (
     ChlorinationConfig,
     ChlorinationController,
+    ChlorinationPlanAdjustment,
     ChlorinationStatus,
+)
+from poolctl.services.fc_demand import (
+    FcDemandConfig,
+    FcDemandPlan,
+    FcDemandStatus,
+    FcTestPoint,
+    estimate_fc_demand_plan,
 )
 from poolctl.services.measurement_logging import (
     MeasurementLogger,
@@ -81,6 +90,8 @@ class AppTickResult:
     flow_estimates: FlowEstimates = FlowEstimates()
     csi_measurement: Measurement | None = None
     weather_result: WeatherPollResult = field(default_factory=WeatherPollResult)
+    fc_demand_status: FcDemandStatus | None = None
+    logged_chlorine_delivery_count: int = 0
 
     @property
     def measurements(self) -> tuple[Measurement, ...]:
@@ -141,6 +152,7 @@ class PoolControllerApp:
     acquisition_config: AcquisitionConfig
     pump_timer_config: PumpTimerConfig
     chlorination_config: ChlorinationConfig
+    fc_demand_config: FcDemandConfig
     live_view_config: LiveViewConfig
     measurement_logging_config: MeasurementLoggingConfig
     clock: Clock
@@ -160,6 +172,9 @@ class PoolControllerApp:
     calcium_saturation_index_config: CalciumSaturationIndexConfig = CalciumSaturationIndexConfig()
     weather_config: WeatherConfig = WeatherConfig()
     weather_service: WeatherService | None = None
+    chlorine_delivery_checkpoint_at: datetime | None = None
+    dosing_prime_until: datetime | None = None
+    dosing_prime_started_at: datetime | None = None
 
     async def tick(self, *, force_acquisition: bool = False) -> AppTickResult:
         await self.router.refresh_states()
@@ -213,8 +228,16 @@ class PoolControllerApp:
             if acquisition.measurements
             else tuple(latest_measurements.values())
         )
-        chlorination_results, chlorination_status = await self._run_chlorination(
+        fc_demand_plan = self.fc_demand_plan(now=self.clock.now())
+        (
+            chlorination_results,
+            chlorination_status,
+            logged_chlorine_delivery_count,
+        ) = await self._run_chlorination(
             measurements=chlorination_measurements,
+            plan_adjustment=(
+                fc_demand_plan.adjustment if fc_demand_plan is not None else None
+            ),
         )
         safety_results: tuple[ActuatorCommandResult, ...] = ()
 
@@ -247,6 +270,10 @@ class PoolControllerApp:
             weather_result=weather_result,
             chlorination_results=chlorination_results,
             chlorination_status=chlorination_status,
+            fc_demand_status=(
+                fc_demand_plan.status if fc_demand_plan is not None else None
+            ),
+            logged_chlorine_delivery_count=logged_chlorine_delivery_count,
         )
 
     def apply_pump_timer_config(self, config: PumpTimerConfig) -> None:
@@ -267,6 +294,12 @@ class PoolControllerApp:
         """
         object.__setattr__(self, "chlorination_config", config)
         object.__setattr__(self, "chlorination_controller", ChlorinationController(config))
+
+    def apply_fc_demand_config(self, config: FcDemandConfig) -> None:
+        """
+        Apply updated FC-demand estimator settings to the running app.
+        """
+        object.__setattr__(self, "fc_demand_config", config)
 
     def apply_safety_config(self, config: SafetyConfig) -> None:
         """
@@ -299,6 +332,39 @@ class PoolControllerApp:
         object.__setattr__(self, "timer_override", None)
         if current is not None:
             self._append_override_audit("clear_manual", current)
+
+    def start_dosing_pump_prime(
+        self,
+        *,
+        duration_s: float = 30.0,
+    ) -> dict[str, Any]:
+        if duration_s <= 0:
+            raise ValueError("duration_s must be > 0")
+        now = self.clock.now()
+        until = now + timedelta(seconds=duration_s)
+        object.__setattr__(self, "dosing_prime_started_at", now)
+        object.__setattr__(self, "dosing_prime_until", until)
+        return self.dosing_prime_status()
+
+    def dosing_prime_status(self) -> dict[str, Any]:
+        now = self.clock.now()
+        until = self.dosing_prime_until
+        active = until is not None and now < until
+        if until is not None and not active:
+            object.__setattr__(self, "dosing_prime_until", None)
+            object.__setattr__(self, "dosing_prime_started_at", None)
+            until = None
+        remaining_s = max(0.0, (until - now).total_seconds()) if until is not None else 0.0
+        return {
+            "active": active,
+            "started_at": (
+                self.dosing_prime_started_at.isoformat()
+                if self.dosing_prime_started_at is not None
+                else None
+            ),
+            "until": until.isoformat() if until is not None else None,
+            "remaining_s": remaining_s,
+        }
 
     def active_timer_override(self) -> TimerOverrideState | None:
         state = self.timer_override
@@ -368,23 +434,147 @@ class PoolControllerApp:
         self,
         *,
         measurements: tuple[Measurement, ...],
-    ) -> tuple[tuple[ActuatorCommandResult, ...], ChlorinationStatus | None]:
+        plan_adjustment: ChlorinationPlanAdjustment | None = None,
+    ) -> tuple[tuple[ActuatorCommandResult, ...], ChlorinationStatus | None, int]:
         if self.chlorination_controller is None:
-            return (), None
+            return (), None, self._log_chlorine_delivery_since_last_tick(self.clock.now())
 
         now = self.clock.now()
+        logged_delivery_count = self._log_chlorine_delivery_since_last_tick(now)
         evaluation = self.chlorination_controller.evaluate(
             now=now,
             pump_timer_config=self.pump_timer_config,
             actuator_states=self.router.actuator_states,
             layer_enabled=self.runtime_config.layer_enabled(FeatureLayer.CHLORINATION),
+            plan_adjustment=plan_adjustment,
         )
 
         results: list[ActuatorCommandResult] = []
+        prime_status = self.dosing_prime_status()
+        if prime_status["active"]:
+            current_state = self.router.actuator_states.get(
+                ActuatorId.CHLORINE_DOSING_PUMP,
+                ActuatorState.OFF,
+            )
+            status = replace(
+                evaluation.status,
+                desired_state=ActuatorState.ON,
+                active=True,
+                reason="dosing pump prime/test active",
+            )
+            if current_state != ActuatorState.ON:
+                command = ActuatorCommand(
+                    actuator_id=ActuatorId.CHLORINE_DOSING_PUMP,
+                    created_at=now,
+                    state=ActuatorState.ON,
+                    requested_by=CommandSource.LOCAL_GUI,
+                    reason="dosing pump prime/test active",
+                    metadata={
+                        "controller": "dosing_pump_prime",
+                        "duration_s": max(
+                            0.0,
+                            (
+                                self.dosing_prime_until - now
+                            ).total_seconds()
+                            if self.dosing_prime_until is not None
+                            else 0.0,
+                        ),
+                    },
+                )
+                results.append(await self.router.route(command, measurements=measurements))
+            return tuple(results), status, logged_delivery_count
+
         for command in evaluation.commands:
             results.append(await self.router.route(command, measurements=measurements))
 
-        return tuple(results), evaluation.status
+        return tuple(results), evaluation.status, logged_delivery_count
+
+    def _log_chlorine_delivery_since_last_tick(self, now: datetime) -> int:
+        previous = self.chlorine_delivery_checkpoint_at
+        object.__setattr__(self, "chlorine_delivery_checkpoint_at", now)
+        if previous is None or now <= previous:
+            return 0
+        if self.measurement_logger is None:
+            return 0
+        if self.router.actuator_states.get(ActuatorId.CHLORINE_DOSING_PUMP) != ActuatorState.ON:
+            return 0
+
+        runtime_seconds = max(0.0, (now - previous).total_seconds())
+        delivered_oz = runtime_seconds / 60.0 * self.chlorination_config.pump_output_oz_per_min
+        return self.measurement_logger.log_chlorine_delivery(
+            observed_at=now,
+            runtime_seconds=runtime_seconds,
+            delivered_oz=delivered_oz,
+            metadata={
+                "source": "runtime_tick",
+                "pump_output_oz_per_min": self.chlorination_config.pump_output_oz_per_min,
+            },
+        )
+
+    def fc_demand_plan(self, *, now: datetime | None = None) -> FcDemandPlan | None:
+        now = self.clock.now() if now is None else now
+        if not self.fc_demand_config.enabled:
+            return estimate_fc_demand_plan(
+                config=self.fc_demand_config,
+                now=now,
+                pump_timer_config=self.pump_timer_config,
+                chlorination_config=self.chlorination_config,
+                fc_tests=(),
+                automated_chlorine_oz=0.0,
+                sodium_hypochlorite_additions=(),
+            )
+        if self.measurement_logger is None:
+            return FcDemandPlan(
+                status=FcDemandStatus(
+                    enabled=True,
+                    mode=self.fc_demand_config.mode,
+                    ready=False,
+                    reason="measurement logging is required for FC demand estimation",
+                    target_fc_ppm=self.fc_demand_config.target_fc_ppm,
+                    pool_volume_gal=self.fc_demand_config.pool_volume_gal,
+                    chlorine_strength_percent=(
+                        self.fc_demand_config.chlorine_strength_percent
+                    ),
+                )
+            )
+
+        fc_history = self.measurement_logger.lab_value_history(
+            field="free_chlorine",
+            limit=2,
+        )
+        fc_tests = tuple(
+            FcTestPoint(sampled_at=sampled_at, free_chlorine=value)
+            for sampled_at, value in fc_history
+        )
+        since = fc_tests[0].sampled_at if len(fc_tests) >= 2 else None
+        until = fc_tests[-1].sampled_at if len(fc_tests) >= 2 else None
+        delivery_summary = self.measurement_logger.chlorine_delivery_summary(
+            since=since,
+            until=until,
+        )
+        chemical_additions = (
+            self.measurement_logger.chemical_addition_history(
+                since=since,
+                until=until,
+                limit=1000,
+            )
+            if since is not None and until is not None
+            else ()
+        )
+        sodium_hypochlorite_additions = tuple(
+            addition
+            for addition in chemical_additions
+            if addition.chemical == ChemicalType.SODIUM_HYPOCHLORITE
+        )
+        return estimate_fc_demand_plan(
+            config=self.fc_demand_config,
+            now=now,
+            pump_timer_config=self.pump_timer_config,
+            chlorination_config=self.chlorination_config,
+            fc_tests=fc_tests,
+            automated_chlorine_oz=delivery_summary.delivered_oz,
+            sodium_hypochlorite_additions=sodium_hypochlorite_additions,
+        )
 
     def _log_measurements(self, measurements: tuple[Measurement, ...]) -> int:
         if self.measurement_logger is None:
@@ -610,6 +800,7 @@ def build_app_from_mapping(
     )
     pump_timer_config = PumpTimerConfig.from_mapping(data)
     chlorination_config = ChlorinationConfig.from_mapping(data)
+    fc_demand_config = FcDemandConfig.from_mapping(data)
     live_view_config = LiveViewConfig.from_mapping(data)
     measurement_logging_config = MeasurementLoggingConfig.from_mapping(data)
     flow_estimation_config = FlowEstimationConfig.from_mapping(data)
@@ -710,6 +901,7 @@ def build_app_from_mapping(
         acquisition_config=acquisition_config,
         pump_timer_config=pump_timer_config,
         chlorination_config=chlorination_config,
+        fc_demand_config=fc_demand_config,
         live_view_config=live_view_config,
         measurement_logging_config=measurement_logging_config,
         clock=built_clock,

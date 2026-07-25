@@ -103,6 +103,7 @@ class ChlorinationStatus:
     active: bool
     reason: str
     daily_dose_oz: float
+    base_daily_dose_oz: float
     pump_output_oz_per_min: float
     requested_runtime_min_per_day: float
     available_runtime_min_per_day: float
@@ -114,6 +115,9 @@ class ChlorinationStatus:
     no_dose_last_minutes: float
     eligible_window_active: bool
     warning: str | None = None
+    dose_adjustment_source: str | None = None
+    dose_adjustment_reason: str | None = None
+    delay_eligible_minutes: float = 0.0
     next_eligible_start: datetime | None = None
     current_window_end: datetime | None = None
 
@@ -125,6 +129,7 @@ class ChlorinationStatus:
             "active": self.active,
             "reason": self.reason,
             "daily_dose_oz": self.daily_dose_oz,
+            "base_daily_dose_oz": self.base_daily_dose_oz,
             "pump_output_oz_per_min": self.pump_output_oz_per_min,
             "requested_runtime_min_per_day": self.requested_runtime_min_per_day,
             "available_runtime_min_per_day": self.available_runtime_min_per_day,
@@ -137,6 +142,9 @@ class ChlorinationStatus:
             "no_dose_last_minutes": self.no_dose_last_minutes,
             "eligible_window_active": self.eligible_window_active,
             "warning": self.warning,
+            "dose_adjustment_source": self.dose_adjustment_source,
+            "dose_adjustment_reason": self.dose_adjustment_reason,
+            "delay_eligible_minutes": self.delay_eligible_minutes,
             "next_eligible_start": (
                 self.next_eligible_start.isoformat()
                 if self.next_eligible_start is not None
@@ -148,6 +156,28 @@ class ChlorinationStatus:
                 else None
             ),
         }
+
+
+@dataclass(frozen=True)
+class ChlorinationPlanAdjustment:
+    """
+    Optional day-specific adjustment applied before duty-cycle evaluation.
+
+    This is used by higher-level estimators to change the effective daily dose
+    or delay the start of eligible dosing time without changing the persisted
+    open-loop chlorination setpoint.
+    """
+
+    daily_dose_oz: float | None = None
+    delay_eligible_seconds: float = 0.0
+    source: str = "controller_adjustment"
+    reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.daily_dose_oz is not None and self.daily_dose_oz < 0:
+            raise ValueError("daily_dose_oz adjustment must be >= 0")
+        if self.delay_eligible_seconds < 0:
+            raise ValueError("delay_eligible_seconds must be >= 0")
 
 
 @dataclass(frozen=True)
@@ -171,6 +201,7 @@ class ChlorinationController:
         pump_timer_config: PumpTimerConfig,
         actuator_states: Mapping[ActuatorId, ActuatorState],
         layer_enabled: bool = True,
+        plan_adjustment: ChlorinationPlanAdjustment | None = None,
     ) -> ChlorinationEvaluation:
         timezone = ZoneInfo(pump_timer_config.timezone)
         local_now = now.astimezone(timezone)
@@ -180,7 +211,18 @@ class ChlorinationController:
             no_dose_last_minutes=self.config.no_dose_last_minutes,
         )
         available_runtime_min = sum(window.duration_seconds for window in windows) / 60.0
-        requested_runtime_min = self.config.daily_dose_oz / self.config.pump_output_oz_per_min
+        effective_daily_dose_oz = self.config.daily_dose_oz
+        dose_adjustment_source = None
+        dose_adjustment_reason = None
+        delay_eligible_seconds = 0.0
+        if plan_adjustment is not None:
+            dose_adjustment_source = plan_adjustment.source
+            dose_adjustment_reason = plan_adjustment.reason
+            delay_eligible_seconds = plan_adjustment.delay_eligible_seconds
+            if plan_adjustment.daily_dose_oz is not None:
+                effective_daily_dose_oz = plan_adjustment.daily_dose_oz
+
+        requested_runtime_min = effective_daily_dose_oz / self.config.pump_output_oz_per_min
         raw_duty_cycle = (
             requested_runtime_min / available_runtime_min
             if available_runtime_min > 0
@@ -211,7 +253,7 @@ class ChlorinationController:
             reason = "chlorination layer disabled"
         elif not self.config.enabled:
             reason = "chlorination disabled"
-        elif self.config.daily_dose_oz <= 0:
+        elif effective_daily_dose_oz <= 0:
             reason = "daily dose is zero"
         elif available_runtime_min <= 0:
             reason = "no valid dosing time in pump schedule"
@@ -224,12 +266,20 @@ class ChlorinationController:
             reason = "dosing duty cycle is zero"
         else:
             elapsed_eligible_seconds = _elapsed_eligible_seconds(windows, local_now)
-            cycle_position = elapsed_eligible_seconds % cycle_period_seconds
-            if cycle_position < self.config.cycle_on_seconds:
-                desired_state = ActuatorState.ON
-                reason = "open-loop chlorination duty cycle on interval"
+            if delay_eligible_seconds > 0 and elapsed_eligible_seconds < delay_eligible_seconds:
+                delay_min = delay_eligible_seconds / 60.0
+                reason = f"dosing delayed by {delay_min:.1f} eligible min"
             else:
-                reason = "open-loop chlorination duty cycle off interval"
+                adjusted_elapsed_seconds = max(
+                    0.0,
+                    elapsed_eligible_seconds - delay_eligible_seconds,
+                )
+                cycle_position = adjusted_elapsed_seconds % cycle_period_seconds
+                if cycle_position < self.config.cycle_on_seconds:
+                    desired_state = ActuatorState.ON
+                    reason = "open-loop chlorination duty cycle on interval"
+                else:
+                    reason = "open-loop chlorination duty cycle off interval"
 
         status = ChlorinationStatus(
             enabled=self.config.enabled,
@@ -237,7 +287,8 @@ class ChlorinationController:
             desired_state=desired_state,
             active=desired_state == ActuatorState.ON,
             reason=reason,
-            daily_dose_oz=self.config.daily_dose_oz,
+            daily_dose_oz=effective_daily_dose_oz,
+            base_daily_dose_oz=self.config.daily_dose_oz,
             pump_output_oz_per_min=self.config.pump_output_oz_per_min,
             requested_runtime_min_per_day=requested_runtime_min,
             available_runtime_min_per_day=available_runtime_min,
@@ -249,6 +300,9 @@ class ChlorinationController:
             no_dose_last_minutes=self.config.no_dose_last_minutes,
             eligible_window_active=current_window is not None,
             warning=warning,
+            dose_adjustment_source=dose_adjustment_source,
+            dose_adjustment_reason=dose_adjustment_reason,
+            delay_eligible_minutes=delay_eligible_seconds / 60.0,
             next_eligible_start=next_eligible_start,
             current_window_end=current_window.end if current_window is not None else None,
         )
@@ -265,12 +319,16 @@ class ChlorinationController:
                     reason=reason,
                     metadata={
                         "controller": "open_loop_chlorination",
-                        "daily_dose_oz": self.config.daily_dose_oz,
+                        "daily_dose_oz": effective_daily_dose_oz,
+                        "base_daily_dose_oz": self.config.daily_dose_oz,
                         "pump_output_oz_per_min": self.config.pump_output_oz_per_min,
                         "available_runtime_min_per_day": available_runtime_min,
                         "requested_runtime_min_per_day": requested_runtime_min,
                         "duty_cycle": duty_cycle,
                         "duty_cycle_limited": duty_cycle_limited,
+                        "dose_adjustment_source": dose_adjustment_source,
+                        "dose_adjustment_reason": dose_adjustment_reason,
+                        "delay_eligible_seconds": delay_eligible_seconds,
                     },
                 ),
             )

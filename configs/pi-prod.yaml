@@ -51,7 +51,7 @@ modbus_relay:
     pump_motor: 1
     pump_motor_speed: 2
     booster_pump: 3
-    chlorine_dosing_pump: 6
+    chlorine_dosing_pump: 7
   pump_speed_relay:
     low_state: true
     high_state: false
@@ -138,6 +138,14 @@ chlorination:
   no_dose_last_minutes: 10.0
   max_duty_cycle: 0.5
   cycle_on_seconds: 60.0
+fc_demand:
+  enabled: true
+  mode: observe_only
+  pool_volume_gal: 10000.0
+  target_fc_ppm: 4.0
+  chlorine_strength_percent: 12.0
+  minimum_test_interval_hours: 12.0
+  max_daily_dose_oz: 256.0
 safety:
   pressure_sensor_ids:
     pump_output: pump_output_psi

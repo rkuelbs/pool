@@ -20,7 +20,9 @@ The project is intentionally layered:
 - Raspberry Pi Modbus analog input support for pressure and pH channels.
 - DFRobot Modbus ORP sensor support.
 - Pump timer scheduling with manual dashboard overrides.
-- Open-loop chlorine dosing on relay 6.
+- Open-loop chlorine dosing on relay 7, with a dashboard prime/test button.
+- Optional FC-demand estimator based on manual FC tests and logged chlorine
+  delivery/additions. ORP and pH are not used by this estimator.
 - Safety enforcement layer with configurable pressure gates and lockouts.
 - Freeze protection with hysteresis and minimum runtime.
 - Sensor acquisition with per-group read/log rates and oversampling.
@@ -138,6 +140,7 @@ Important sections:
   enabled sensor groups.
 - `pump_timer`: local timezone and daily pump/booster schedule windows.
 - `chlorination`: open-loop liquid chlorine dose settings.
+- `fc_demand`: optional free-chlorine demand estimator settings.
 - `safety`: pressure interlocks, lockout thresholds, freeze protection.
 - `acquisition`: sensor groups, read intervals, log intervals, validation rules,
   oversampling, chemistry refresh runs.
@@ -185,12 +188,13 @@ wired, calibrated, and verified.
 ## Dashboard Pages
 
 - Live: schematic or mobile list view, current sensor/actuator state, quick
-  pump controls, chlorination dose target, safety status, CPU status on Pi.
+  pump controls, chlorination dose target, dosing prime, FC-demand status,
+  safety status, CPU status on Pi.
 - History: measurement/weather/test-result/chemical-addition charts with
   selectable series and auto-scaled axes.
 - Schedule: pump timer schedule editor.
-- Config: forms for runtime layers, safety, chlorination, acquisition, logging,
-  and analog input calibration.
+- Config: forms for runtime layers, safety, chlorination, FC demand,
+  acquisition, logging, and analog input calibration.
 
 Some config changes apply live. Others write YAML and require restart because
 drivers or long-lived services must be rebuilt.
@@ -198,7 +202,7 @@ drivers or long-lived services must be rebuilt.
 ## Open-loop Chlorination
 
 Liquid chlorine dosing is implemented as the `chlorination` layer. On Raspberry
-Pi hardware, the chlorine dosing pump is mapped to relay 6 by default.
+Pi hardware, the chlorine dosing pump is mapped to relay 7 by default.
 
 The controller:
 
@@ -213,6 +217,8 @@ The controller:
 
 Changing `daily_dose_oz` from the dashboard applies the new duty cycle going
 forward. The controller does not try to make up for earlier parts of the day.
+The Live page also has a `Prime 30s` button that runs the dosing pump through
+the normal command router for a timed prime/test.
 
 Example:
 
@@ -226,7 +232,7 @@ runtime:
 
 modbus_relay:
   relays:
-    chlorine_dosing_pump: 6
+    chlorine_dosing_pump: 7
 
 chlorination:
   enabled: true
@@ -235,6 +241,15 @@ chlorination:
   no_dose_last_minutes: 10.0
   max_duty_cycle: 0.5
   cycle_on_seconds: 60.0
+
+fc_demand:
+  enabled: true
+  mode: observe_only
+  pool_volume_gal: 10000.0
+  target_fc_ppm: 4.0
+  chlorine_strength_percent: 12.0
+  minimum_test_interval_hours: 12.0
+  max_daily_dose_oz: 256.0
 ```
 
 If safety enforcement is enabled, dosing ON commands still pass through the
@@ -245,6 +260,48 @@ safety:
   thresholds:
     chlorine_requires_high_speed: false
 ```
+
+## FC-Demand Estimator
+
+`fc_demand` estimates daily free-chlorine demand from manual FC tests plus
+logged chlorine additions/delivery. It deliberately does not use ORP or pH.
+
+The estimator needs at least two manual free-chlorine test results separated by
+`minimum_test_interval_hours`. Between those tests, it sums:
+
+- automated dosing pump delivery logged by the runtime loop
+- manually logged sodium hypochlorite additions
+
+It converts liquid chlorine ounces to FC ppm using:
+
+```text
+FC ppm = (fluid ounces / 128) * strength_percent * (10000 / pool_volume_gal)
+```
+
+Then it estimates:
+
+```text
+daily demand ppm = max(0, previous FC + added FC - current FC) / elapsed days
+maintenance dose oz/day = dose needed to replace daily demand
+```
+
+When FC is below `target_fc_ppm`, the catch-up dose is added only on the day
+after the latest FC test. After that day, the dose returns to the estimated
+maintenance dose.
+
+When FC is above target, the estimator converts the high FC amount into
+`skip_days = high_fc_ppm / daily_demand_ppm`. In automatic mode, it keeps the
+normal maintenance duty cycle but delays dosing by that fraction of eligible
+schedule time. For example, if the schedule has 420 valid dosing minutes and FC
+is high by 0.5 days of demand, dosing starts 210 eligible minutes later.
+
+`mode` controls whether the estimate is applied:
+
+- `observe_only`: calculate and display status only.
+- `recommend`: calculate recommendations without applying them.
+- `approve_required`: reserved for a future approval workflow.
+- `automatic`: pass the effective daily dose and any high-FC delay into the
+  chlorination controller.
 
 ## Raspberry Pi First Install
 
@@ -443,14 +500,14 @@ python -m poolctl.tools.modbus_bringup \
   --scan-max-id 8
 ```
 
-Read relays and pulse relay 6:
+Read relays and pulse relay 7:
 
 ```bash
 python -m poolctl.tools.modbus_bringup \
   --port /dev/ttyUSB0 \
   --baudrate 4800 \
   --relay-slave-id 0x03 \
-  --toggle-relay 6 \
+  --toggle-relay 7 \
   --toggle-seconds 2
 ```
 

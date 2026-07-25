@@ -193,7 +193,9 @@ let acquisitionConfigLoading = false;
 let loggingConfigLoading = false;
 let analogConfigLoading = false;
 let chlorinationConfigLoading = false;
+let fcDemandConfigLoading = false;
 let chlorinationQuickSaving = false;
+let chlorinationPrimeBusy = false;
 let timerOverrideBusy = false;
 let healthLoading = false;
 let lastHealthLoadedAt = 0;
@@ -308,6 +310,33 @@ async function saveQuickChlorinationDose(inputId) {
     setChlorinationQuickStatus(error.message);
   } finally {
     chlorinationQuickSaving = false;
+  }
+}
+
+async function primeChlorinationPump() {
+  if (chlorinationPrimeBusy) {
+    return;
+  }
+  chlorinationPrimeBusy = true;
+  setControlsDisabled(true);
+  setChlorinationQuickStatus("Starting dosing pump prime...");
+  try {
+    const response = await fetch("/api/chlorination/prime", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ duration_s: 30.0 }),
+    });
+    const payload = await parseApiResponse(response, "dosing prime failed");
+    const remaining = payload.prime && Number.isFinite(Number(payload.prime.remaining_s))
+      ? Math.ceil(Number(payload.prime.remaining_s))
+      : 30;
+    setChlorinationQuickStatus(`Dosing pump prime active (${remaining}s)`);
+    await loadLive();
+  } catch (error) {
+    setChlorinationQuickStatus(error.message);
+  } finally {
+    setControlsDisabled(false);
+    chlorinationPrimeBusy = false;
   }
 }
 
@@ -432,6 +461,7 @@ function render(payload) {
   renderFreezeStatus(payload.safety);
   renderCsiStatus(payload.sensors || {});
   renderChlorinationStatus(payload.chlorination);
+  renderFcDemandStatus(payload.fc_demand, payload.dosing_prime);
   renderTimerOverride(payload.timer_override);
   renderEvents(payload.tick);
   if (PAGE_MODE !== "live") {
@@ -480,6 +510,7 @@ async function refreshTopStatus(force) {
     renderFreezeStatus(payload.safety);
     renderCsiStatus(payload.sensors || {});
     renderChlorinationStatus(payload.chlorination);
+    renderFcDemandStatus(payload.fc_demand, payload.dosing_prime);
     renderTimerOverride(payload.timer_override);
     lastTopStatusLoadedAt = now;
   } catch (error) {
@@ -671,6 +702,42 @@ function renderChlorinationStatus(chlorination) {
       return;
     }
     input.value = dose.toFixed(1);
+  });
+}
+
+function renderFcDemandStatus(fcDemand, dosingPrime) {
+  const payload = fcDemand || {};
+  const prime = dosingPrime || {};
+  const nodes = [
+    document.getElementById("fcDemandStatus"),
+    document.getElementById("mobileFcDemandStatus"),
+  ].filter(Boolean);
+  if (!nodes.length) {
+    return;
+  }
+
+  let text = "FC demand: disabled";
+  if (payload.enabled && !payload.ready) {
+    text = `FC demand: ${payload.reason || "waiting for test data"}`;
+  } else if (payload.enabled && payload.ready) {
+    const demand = Number(payload.daily_demand_ppm);
+    const dose = Number(payload.recommended_daily_dose_oz);
+    const delay = Number(payload.delay_eligible_minutes_today);
+    const mode = String(payload.mode || "observe_only").replaceAll("_", " ");
+    const pieces = [`FC demand: ${Number.isFinite(demand) ? demand.toFixed(2) : "--"} ppm/day`];
+    pieces.push(`rec ${Number.isFinite(dose) ? dose.toFixed(1) : "--"} oz/day`);
+    if (Number.isFinite(delay) && delay > 0) {
+      pieces.push(`delay ${delay.toFixed(0)} min`);
+    }
+    pieces.push(mode);
+    text = pieces.join(" | ");
+  }
+  if (prime.active) {
+    const remaining = Number(prime.remaining_s);
+    text = `Dosing prime active (${Number.isFinite(remaining) ? Math.ceil(remaining) : "--"}s)`;
+  }
+  nodes.forEach((node) => {
+    node.textContent = text;
   });
 }
 
@@ -2144,6 +2211,7 @@ async function loadAllConfigSections() {
     loadLoggingConfig(),
     loadAnalogConfig(),
     loadChlorinationConfig(),
+    loadFcDemandConfig(),
   ]);
 }
 
@@ -2784,6 +2852,92 @@ function initializeChlorinationControls() {
   loadChlorinationConfig();
 }
 
+async function loadFcDemandConfig() {
+  if (fcDemandConfigLoading) {
+    return;
+  }
+  fcDemandConfigLoading = true;
+  try {
+    const response = await fetch("/api/config/fc_demand", { cache: "no-store" });
+    const payload = await parseApiResponse(response, "FC demand config load failed");
+    renderFcDemandConfig(payload);
+    setFcDemandConfigStatus("FC demand config loaded");
+  } catch (error) {
+    setFcDemandConfigStatus(error.message);
+  } finally {
+    fcDemandConfigLoading = false;
+  }
+}
+
+async function saveFcDemandConfig() {
+  setFcDemandConfigStatus("Saving FC demand config...");
+  try {
+    const response = await fetch("/api/config/fc_demand", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(collectFcDemandConfig()),
+    });
+    const payload = await parseApiResponse(response, "FC demand config save failed");
+    renderFcDemandConfig(payload);
+    setFcDemandConfigStatus(
+      payload.applied_live ? "FC demand config saved and applied live" : "FC demand config saved",
+    );
+    clearConfigDraftState(true);
+  } catch (error) {
+    setFcDemandConfigStatus(error.message);
+  }
+}
+
+function renderFcDemandConfig(payload) {
+  const enabled = document.getElementById("fcDemandEnabled");
+  const mode = document.getElementById("fcDemandMode");
+  const poolVolume = document.getElementById("fcDemandPoolVolumeGal");
+  const target = document.getElementById("fcDemandTargetFcPpm");
+  const strength = document.getElementById("fcDemandChlorineStrengthPercent");
+  const minInterval = document.getElementById("fcDemandMinimumTestIntervalHours");
+  const maxDose = document.getElementById("fcDemandMaxDailyDoseOz");
+  if (!enabled || !mode || !poolVolume || !target || !strength || !minInterval || !maxDose) {
+    return;
+  }
+  enabled.checked = payload.enabled === true;
+  mode.value = payload.mode || "observe_only";
+  poolVolume.value = String(payload.pool_volume_gal ?? 10000.0);
+  target.value = String(payload.target_fc_ppm ?? 4.0);
+  strength.value = String(payload.chlorine_strength_percent ?? 12.0);
+  minInterval.value = String(payload.minimum_test_interval_hours ?? 12.0);
+  maxDose.value = String(payload.max_daily_dose_oz ?? 256.0);
+}
+
+function collectFcDemandConfig() {
+  return {
+    enabled: document.getElementById("fcDemandEnabled").checked,
+    mode: document.getElementById("fcDemandMode").value,
+    pool_volume_gal: Number(document.getElementById("fcDemandPoolVolumeGal").value),
+    target_fc_ppm: Number(document.getElementById("fcDemandTargetFcPpm").value),
+    chlorine_strength_percent: Number(document.getElementById("fcDemandChlorineStrengthPercent").value),
+    minimum_test_interval_hours: Number(document.getElementById("fcDemandMinimumTestIntervalHours").value),
+    max_daily_dose_oz: Number(document.getElementById("fcDemandMaxDailyDoseOz").value),
+  };
+}
+
+function setFcDemandConfigStatus(message) {
+  const status = document.getElementById("fcDemandConfigStatus");
+  if (status) {
+    status.textContent = message;
+  }
+}
+
+function initializeFcDemandControls() {
+  const reload = document.getElementById("fcDemandReload");
+  const save = document.getElementById("fcDemandSave");
+  if (!reload || !save) {
+    return;
+  }
+  reload.addEventListener("click", loadFcDemandConfig);
+  save.addEventListener("click", saveFcDemandConfig);
+  loadFcDemandConfig();
+}
+
 async function loadAnalogConfig() {
   if (analogConfigLoading) {
     return;
@@ -2955,8 +3109,9 @@ async function saveLabTest() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(collectLabTestPayload()),
     });
-    await parseApiResponse(response, "lab test save failed");
+    const payload = await parseApiResponse(response, "lab test save failed");
     setLabTestStatus("Lab test saved");
+    renderLabTestFcDemandFeedback(payload.fc_demand);
     await loadLabTests();
   } catch (error) {
     setLabTestStatus(error.message);
@@ -3011,6 +3166,54 @@ function renderLabTests(tests) {
 
 function setLabTestStatus(message) {
   document.getElementById("labTestStatus").textContent = message;
+}
+
+function renderLabTestFcDemandFeedback(fcDemand) {
+  const node = document.getElementById("labTestFcDemandStatus");
+  if (!node) {
+    return;
+  }
+  if (!fcDemand) {
+    node.textContent = "FC demand: unavailable";
+    return;
+  }
+  if (!fcDemand.enabled) {
+    node.textContent = "FC demand: disabled";
+    return;
+  }
+  if (!fcDemand.ready) {
+    node.textContent = `FC demand: ${fcDemand.reason || "waiting for more FC tests"}`;
+    return;
+  }
+
+  const mode = String(fcDemand.mode || "observe_only");
+  const demand = Number(fcDemand.daily_demand_ppm);
+  const recommended = Number(fcDemand.recommended_daily_dose_oz);
+  const effective = Number(fcDemand.effective_daily_dose_oz);
+  const catchUp = Number(fcDemand.catch_up_dose_oz_next_day);
+  const skipDays = Number(fcDemand.skip_days);
+  const delay = Number(fcDemand.delay_eligible_minutes_today);
+  const adjustmentDate = fcDemand.next_adjustment_date || "next scheduled day";
+  const pieces = [
+    `FC demand ${Number.isFinite(demand) ? demand.toFixed(2) : "--"} ppm/day`,
+    `recommended ${Number.isFinite(recommended) ? recommended.toFixed(1) : "--"} oz/day`,
+  ];
+
+  if (Number.isFinite(catchUp) && catchUp > 0) {
+    pieces.push(`catch-up ${catchUp.toFixed(1)} oz on ${adjustmentDate}`);
+  }
+  if (Number.isFinite(skipDays) && skipDays > 0) {
+    pieces.push(`skip ${skipDays.toFixed(2)} dosing days from ${adjustmentDate}`);
+  }
+  if (Number.isFinite(delay) && delay > 0) {
+    pieces.push(`delay dosing ${delay.toFixed(0)} eligible min`);
+  }
+  if (mode === "automatic") {
+    pieces.push(`automatic effective dose ${Number.isFinite(effective) ? effective.toFixed(1) : "--"} oz/day`);
+  } else {
+    pieces.push(`${mode.replaceAll("_", " ")} only`);
+  }
+  node.textContent = pieces.join(" | ");
 }
 
 function initializeLabTestControls() {
@@ -3282,6 +3485,16 @@ function initializeChlorinationQuickControls() {
       }
     });
   });
+  [
+    "chlorinationPrimeButton",
+    "mobileChlorinationPrimeButton",
+  ].forEach((buttonId) => {
+    const button = document.getElementById(buttonId);
+    if (!button) {
+      return;
+    }
+    button.addEventListener("click", primeChlorinationPump);
+  });
 }
 
 function initializeLiveModeControls() {
@@ -3399,6 +3612,7 @@ function initializeForPage() {
     initializeLoggingControls();
     initializeAnalogControls();
     initializeChlorinationControls();
+    initializeFcDemandControls();
     return;
   }
 }

@@ -60,8 +60,10 @@
               <div class="dose-entry">
                 <input id="mobileChlorinationDoseInput" type="number" step="0.1" min="0" placeholder="oz/day">
                 <button id="mobileChlorinationDoseSave" type="button">Set Dose</button>
+                <button id="mobileChlorinationPrimeButton" type="button">Prime 30s</button>
               </div>
               <div id="mobileChlorinationStatus" class="history-status">Chlorination: --</div>
+              <div id="mobileFcDemandStatus" class="history-status">FC demand: --</div>
             </div>
             <div id="mobileCommandStatus" class="command-status">--</div>
           </div>
@@ -206,8 +208,10 @@
               <div class="dose-entry">
                 <input id="chlorinationDoseInput" type="number" step="0.1" min="0" placeholder="oz/day">
                 <button id="chlorinationDoseSave" type="button">Set Dose</button>
+                <button id="chlorinationPrimeButton" type="button">Prime 30s</button>
               </div>
               <div id="chlorinationStatus" class="history-status">Chlorination: --</div>
+              <div id="fcDemandStatus" class="history-status">FC demand: --</div>
             </div>
             <div id="commandStatus" class="command-status">--</div>
           </section>
@@ -384,6 +388,33 @@
         <div id="chlorinationConfigStatus" class="history-status">--</div>
       </section>
 
+      <section class="history-panel" aria-label="FC demand config" data-view-section="config">
+        <div class="history-header">
+          <h2>FC Demand Config</h2>
+          <button id="fcDemandReload" type="button">Reload</button>
+        </div>
+        <div class="config-grid">
+          <label><span>Enabled</span><input id="fcDemandEnabled" type="checkbox"></label>
+          <label>Mode
+            <select id="fcDemandMode">
+              <option value="observe_only">Observe only</option>
+              <option value="recommend">Recommend</option>
+              <option value="approve_required">Approve required</option>
+              <option value="automatic">Automatic</option>
+            </select>
+          </label>
+          <label>Pool gal <input id="fcDemandPoolVolumeGal" type="number" step="100" min="1"></label>
+          <label>Target FC ppm <input id="fcDemandTargetFcPpm" type="number" step="0.1" min="0"></label>
+          <label>Chlorine strength % <input id="fcDemandChlorineStrengthPercent" type="number" step="0.1" min="0.1"></label>
+          <label>Min test interval h <input id="fcDemandMinimumTestIntervalHours" type="number" step="1" min="0"></label>
+          <label>Max daily dose oz <input id="fcDemandMaxDailyDoseOz" type="number" step="1" min="0"></label>
+        </div>
+        <div class="timer-actions">
+          <button id="fcDemandSave" type="button">Save FC Demand</button>
+        </div>
+        <div id="fcDemandConfigStatus" class="history-status">--</div>
+      </section>
+
       <section class="history-panel" aria-label="Acquisition and logging config" data-view-section="config">
         <div class="history-header">
           <h2>Acquisition + Logging</h2>
@@ -475,6 +506,7 @@
           <button id="labTestSave" type="button">Add Test Result</button>
         </div>
         <div id="labTestStatus" class="history-status">--</div>
+        <div id="labTestFcDemandStatus" class="history-status">FC demand: --</div>
         <div id="labTestList" class="timeline-list">--</div>
       </section>
 

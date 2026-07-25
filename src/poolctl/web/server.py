@@ -34,6 +34,7 @@ from poolctl.drivers.raspberrypi.analog_inputs import WaveshareAnalogInputConfig
 from poolctl.services.acquisition import AcquisitionConfig
 from poolctl.services.chlorination import ChlorinationConfig
 from poolctl.services.clock import AcceleratedClock, Clock
+from poolctl.services.fc_demand import FcDemandConfig
 from poolctl.services.measurement_logging import MeasurementLoggingConfig
 from poolctl.services.pump_timer import PumpTimerConfig, PumpTimerOverride
 from poolctl.services.safety import SafetyConfig
@@ -234,6 +235,10 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             self._serve_chlorination_config()
             return
 
+        if path == "/api/config/fc_demand":
+            self._serve_fc_demand_config()
+            return
+
         if path == "/api/config/acquisition":
             self._serve_acquisition_config()
             return
@@ -271,6 +276,10 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             self._serve_update_chlorination_config()
             return
 
+        if path == "/api/config/fc_demand":
+            self._serve_update_fc_demand_config()
+            return
+
         if path == "/api/config/acquisition":
             self._serve_update_acquisition_config()
             return
@@ -289,6 +298,10 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
 
         if path == "/api/timer/override":
             self._serve_update_timer_override()
+            return
+
+        if path == "/api/chlorination/prime":
+            self._serve_chlorination_prime()
             return
 
         if path == "/api/lab_tests":
@@ -559,6 +572,23 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
 
         self._serve_json(result)
 
+    def _serve_fc_demand_config(self) -> None:
+        self._serve_json(serialize_fc_demand_config(self.app))
+
+    def _serve_update_fc_demand_config(self) -> None:
+        try:
+            payload = self._read_json_body()
+            result = apply_fc_demand_config_update(
+                app=self.app,
+                config_path=self.config_path,
+                payload=payload,
+            )
+        except ValueError as error:
+            self._serve_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        self._serve_json(result)
+
     def _serve_acquisition_config(self) -> None:
         self._serve_json(serialize_acquisition_config(self.app))
 
@@ -613,6 +643,16 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
         try:
             payload = self._read_json_body()
             result = apply_timer_override_update(app=self.app, payload=payload)
+        except ValueError as error:
+            self._serve_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        self._serve_json(result)
+
+    def _serve_chlorination_prime(self) -> None:
+        try:
+            payload = self._read_json_body()
+            result = start_chlorination_prime(app=self.app, payload=payload)
         except ValueError as error:
             self._serve_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
             return
@@ -1135,9 +1175,15 @@ def add_lab_test(
         raise ValueError(f"invalid lab test payload: {error}") from error
 
     app.measurement_logger.log_lab_test(test)
+    fc_demand_plan = app.fc_demand_plan()
     return {
         "saved": True,
         "lab_test": _lab_test_payload(test),
+        "fc_demand": (
+            fc_demand_plan.status.as_payload()
+            if fc_demand_plan is not None
+            else None
+        ),
     }
 
 
@@ -1361,6 +1407,7 @@ def build_health_payload(app: PoolControllerApp) -> dict[str, Any]:
             else {"enabled": False}
         ),
         "chlorination": serialize_chlorination_config(app),
+        "fc_demand": serialize_fc_demand_config(app),
     }
 
 
@@ -1570,6 +1617,63 @@ def apply_chlorination_config_update(
         "updated": True,
         "applied_live": True,
         **serialize_chlorination_config(app),
+    }
+
+
+def serialize_fc_demand_config(app: PoolControllerApp) -> dict[str, Any]:
+    config = app.fc_demand_config
+    return {
+        "enabled": config.enabled,
+        "mode": config.mode.value,
+        "pool_volume_gal": config.pool_volume_gal,
+        "target_fc_ppm": config.target_fc_ppm,
+        "chlorine_strength_percent": config.chlorine_strength_percent,
+        "minimum_test_interval_hours": config.minimum_test_interval_hours,
+        "max_daily_dose_oz": config.max_daily_dose_oz,
+        "applied_live": True,
+    }
+
+
+def apply_fc_demand_config_update(
+    *,
+    app: PoolControllerApp,
+    config_path: Path,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    proposed = FcDemandConfig.from_mapping({"fc_demand": payload})
+
+    config_data = _load_config_mapping(config_path)
+    config_data["fc_demand"] = {
+        "enabled": proposed.enabled,
+        "mode": proposed.mode.value,
+        "pool_volume_gal": proposed.pool_volume_gal,
+        "target_fc_ppm": proposed.target_fc_ppm,
+        "chlorine_strength_percent": proposed.chlorine_strength_percent,
+        "minimum_test_interval_hours": proposed.minimum_test_interval_hours,
+        "max_daily_dose_oz": proposed.max_daily_dose_oz,
+    }
+    _save_config_mapping(config_path, config_data)
+
+    app.apply_fc_demand_config(proposed)
+    return {
+        "updated": True,
+        "applied_live": True,
+        **serialize_fc_demand_config(app),
+    }
+
+
+def start_chlorination_prime(
+    *,
+    app: PoolControllerApp,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    duration_s = payload.get("duration_s", 30.0)
+    if not isinstance(duration_s, int | float):
+        raise ValueError("duration_s must be a number")
+
+    return {
+        "started": True,
+        "prime": app.start_dosing_pump_prime(duration_s=float(duration_s)),
     }
 
 

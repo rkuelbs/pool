@@ -102,6 +102,12 @@ class MeasurementRollupRecord:
         )
 
 
+@dataclass(frozen=True)
+class ChlorineDeliverySummary:
+    runtime_seconds: float = 0.0
+    delivered_oz: float = 0.0
+
+
 class MeasurementLogger:
     """
     SQLite-backed store for loggable measurement history.
@@ -353,6 +359,72 @@ class MeasurementLogger:
                 ),
             )
         return addition.id
+
+    def log_chlorine_delivery(
+        self,
+        *,
+        observed_at: datetime,
+        runtime_seconds: float,
+        delivered_oz: float,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> int:
+        if runtime_seconds <= 0 or delivered_oz <= 0:
+            return 0
+
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO chlorine_delivery (
+                    observed_at,
+                    runtime_seconds,
+                    delivered_oz,
+                    metadata_json
+                )
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    observed_at.isoformat(),
+                    runtime_seconds,
+                    delivered_oz,
+                    json.dumps(dict(metadata or {}), sort_keys=True),
+                ),
+            )
+        return 1
+
+    def chlorine_delivery_summary(
+        self,
+        *,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> ChlorineDeliverySummary:
+        clauses = ["1=1"]
+        parameters: list[str] = []
+        if since is not None:
+            clauses.append("observed_at >= ?")
+            parameters.append(since.isoformat())
+        if until is not None:
+            clauses.append("observed_at <= ?")
+            parameters.append(until.isoformat())
+        where_clause = " AND ".join(clauses)
+
+        with self._connect() as connection:
+            row = connection.execute(
+                f"""
+                SELECT
+                    COALESCE(SUM(runtime_seconds), 0.0) AS runtime_seconds,
+                    COALESCE(SUM(delivered_oz), 0.0) AS delivered_oz
+                FROM chlorine_delivery
+                WHERE {where_clause}
+                """,
+                parameters,
+            ).fetchone()
+
+        if row is None:
+            return ChlorineDeliverySummary()
+        return ChlorineDeliverySummary(
+            runtime_seconds=float(row["runtime_seconds"]),
+            delivered_oz=float(row["delivered_oz"]),
+        )
 
     def latest_lab_values(
         self,
@@ -752,6 +824,23 @@ class MeasurementLogger:
                 """
                 CREATE INDEX IF NOT EXISTS idx_chemical_additions_chemical_time
                 ON chemical_additions (chemical, added_at)
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chlorine_delivery (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    observed_at TEXT NOT NULL,
+                    runtime_seconds REAL NOT NULL,
+                    delivered_oz REAL NOT NULL,
+                    metadata_json TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_chlorine_delivery_observed
+                ON chlorine_delivery (observed_at)
                 """
             )
             weather_columns = "\n".join(

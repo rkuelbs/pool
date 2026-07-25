@@ -152,6 +152,39 @@ def test_measurement_logger_persists_and_queries_chemical_additions(tmp_path: Pa
     assert points[0][1] == 64.0
 
 
+def test_measurement_logger_summarizes_chlorine_delivery(tmp_path: Path) -> None:
+    logger = MeasurementLogger(
+        MeasurementLoggingConfig(database_path=tmp_path / "measurements.sqlite3")
+    )
+    now = datetime(2026, 5, 22, 12, 0, tzinfo=timezone.utc)
+
+    assert logger.log_chlorine_delivery(
+        observed_at=now,
+        runtime_seconds=30.0,
+        delivered_oz=0.5,
+        metadata={"source": "test"},
+    ) == 1
+    assert logger.log_chlorine_delivery(
+        observed_at=now + timedelta(minutes=10),
+        runtime_seconds=60.0,
+        delivered_oz=1.0,
+    ) == 1
+
+    summary = logger.chlorine_delivery_summary(
+        since=now - timedelta(minutes=1),
+        until=now + timedelta(minutes=1),
+    )
+    total = logger.chlorine_delivery_summary(
+        since=now - timedelta(minutes=1),
+        until=now + timedelta(minutes=20),
+    )
+
+    assert summary.runtime_seconds == 30.0
+    assert summary.delivered_oz == 0.5
+    assert total.runtime_seconds == 90.0
+    assert total.delivered_oz == 1.5
+
+
 def test_measurement_logger_latest_lab_values_uses_latest_non_null_per_field(
     tmp_path: Path,
 ) -> None:
