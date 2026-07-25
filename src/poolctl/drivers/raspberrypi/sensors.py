@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from glob import glob
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from poolctl.domain.models import (
     Measurement,
@@ -20,7 +20,11 @@ from poolctl.drivers.modbus.registers import (
     PymodbusRtuRegisterTransport,
     signed_16,
 )
-from poolctl.drivers.modbus.rtu_bus import ModbusRtuBusRegistry, SharedModbusRtuBus
+from poolctl.drivers.modbus.rtu_bus import (
+    ModbusRtuBusConfig,
+    ModbusRtuBusRegistry,
+    SharedModbusRtuBus,
+)
 from poolctl.drivers.raspberrypi.analog_inputs import (
     build_waveshare_analog_driver_from_mapping,
 )
@@ -45,7 +49,7 @@ class DFRobotWaterQualitySensorConfig:
             ph=ModbusRegisterDeviceConfig.from_mapping(
                 data,
                 "modbus_ph_sensor",
-                default_slave_id=2,
+                default_slave_id=4,
             ),
             orp=ModbusRegisterDeviceConfig.from_mapping(
                 data,
@@ -55,12 +59,43 @@ class DFRobotWaterQualitySensorConfig:
         )
 
 
+DFROBOT_PH_CALIBRATION_START_REGISTER = 0x0120
+DFROBOT_PH_LOW_POINT = 1
+DFROBOT_PH_HIGH_POINT = 2
+
+
+@dataclass(frozen=True)
+class DFRobotPhCalibrationResult:
+    """
+    Result of a DFRobot SEN0708 pH calibration write.
+    """
+
+    slave_id: int
+    point: Literal["low", "high"]
+    ph_value: float
+    register_address: int
+    register_values: tuple[int, int]
+
+    def as_payload(self) -> dict[str, Any]:
+        return {
+            "slave_id": self.slave_id,
+            "point": self.point,
+            "ph_value": self.ph_value,
+            "register_address": f"0x{self.register_address:04X}",
+            "register_values": list(self.register_values),
+        }
+
+
 class DFRobotPhSensor:
     """
     DFRobot SEN0708 pH sensor.
 
     Registers:
       - 0x0000: pH value, unsigned, actual pH * 100
+      - 0x0001: temperature C, signed, actual temperature * 10
+
+    The sensor reports temperature in C; we normalize to degF for
+    consistency with the rest of poolctl temperature signals.
     """
 
     name = "dfrobot_sen0708_ph"
@@ -77,12 +112,14 @@ class DFRobotPhSensor:
         self._slave_id = slave_id
 
     async def read_all(self) -> list[Measurement]:
-        ph_register, _temp_register = await self._transport.read_holding_registers(
+        ph_register, temp_register = await self._transport.read_holding_registers(
             start_address=0x0000,
             count=2,
         )
         observed_at = self._clock.now()
         raw_ph = ph_register / 100.0
+        temp_c = signed_16(temp_register) / 10.0
+        temp_f = (temp_c * 9.0 / 5.0) + 32.0
 
         return [
             Measurement(
@@ -99,7 +136,82 @@ class DFRobotPhSensor:
                     "register_address": "0x0000",
                 },
             ),
+            Measurement(
+                sensor_id=SensorId.PH_TEMP,
+                observed_at=observed_at,
+                kind=MeasurementKind.RAW,
+                value=round(temp_f, 1),
+                unit="degF",
+                quality=Quality.GOOD,
+                metadata={
+                    "driver": self.name,
+                    "modbus_slave_id": self._slave_id,
+                    "raw_register": temp_register,
+                    "register_address": "0x0001",
+                    "raw_temp_c": round(temp_c, 1),
+                },
+            ),
         ]
+
+
+async def calibrate_dfrobot_ph_sensor(
+    *,
+    config: ModbusRegisterDeviceConfig,
+    point: Literal["low", "high"],
+    ph_value: float,
+    bus: SharedModbusRtuBus | None = None,
+) -> DFRobotPhCalibrationResult:
+    register_values = dfrobot_ph_calibration_register_values(
+        point=point,
+        ph_value=ph_value,
+    )
+    local_bus = bus is None
+    if bus is None:
+        active_bus = SharedModbusRtuBus(
+            ModbusRtuBusConfig(
+                port=config.port,
+                baudrate=config.baudrate,
+                timeout_s=config.timeout_s,
+            )
+        )
+    else:
+        active_bus = bus
+
+    try:
+        await active_bus.write_holding_registers(
+            slave_id=config.slave_id,
+            start_address=DFROBOT_PH_CALIBRATION_START_REGISTER,
+            values=register_values,
+        )
+    finally:
+        if local_bus:
+            await active_bus.close()
+
+    return DFRobotPhCalibrationResult(
+        slave_id=config.slave_id,
+        point=point,
+        ph_value=ph_value,
+        register_address=DFROBOT_PH_CALIBRATION_START_REGISTER,
+        register_values=register_values,
+    )
+
+
+def dfrobot_ph_calibration_register_values(
+    *,
+    point: Literal["low", "high"],
+    ph_value: float,
+) -> tuple[int, int]:
+    if point == "low":
+        point_register = DFROBOT_PH_LOW_POINT
+    elif point == "high":
+        point_register = DFROBOT_PH_HIGH_POINT
+    else:
+        raise ValueError("point must be low or high")
+
+    if not 0.0 < ph_value <= 14.0:
+        raise ValueError("ph_value must be greater than 0 and less than or equal to 14")
+
+    return point_register, int(round(ph_value * 100.0))
 
 
 class DFRobotOrpSensor:

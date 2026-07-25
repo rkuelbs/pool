@@ -85,7 +85,7 @@
             <div class="sensor green ph">
               <span>pH</span>
               <strong data-sensor="raw_ph">--</strong>
-              <small data-sensor="raw_ph_voltage">--</small>
+              <small data-sensor="ph_temp">--</small>
             </div>
             <div class="sensor green temp">
               <span>WATER</span>
@@ -382,6 +382,35 @@
           <button id="loggingSave" type="button">Save Logging</button>
         </div>
         <div id="loggingStatus" class="history-status">--</div>
+      </section>
+
+      <section class="history-panel" aria-label="pH sensor config" data-view-section="config">
+        <div class="history-header">
+          <h2>pH Sensor Config</h2>
+          <button id="phSensorReload" type="button">Reload</button>
+        </div>
+        <div class="config-grid">
+          <label><span>Enable RS485 pH sensor</span><input id="phSensorEnabled" type="checkbox"></label>
+          <label>Port <input id="phSensorPort" type="text"></label>
+          <label>Slave ID <input id="phSensorSlaveId" type="number" step="1" min="1" max="254"></label>
+          <label>Baudrate <input id="phSensorBaudrate" type="number" step="1" min="1"></label>
+          <label>Timeout (s) <input id="phSensorTimeout" type="number" step="0.1" min="0.1"></label>
+        </div>
+        <div class="timer-actions">
+          <button id="phSensorSave" type="button">Save pH Sensor Config</button>
+        </div>
+        <div class="history-header">
+          <h2>pH Sensor Calibration</h2>
+        </div>
+        <div class="config-grid">
+          <label>Low point pH <input id="phCalLowValue" type="number" step="0.01" min="0.01" max="14"></label>
+          <label>High point pH <input id="phCalHighValue" type="number" step="0.01" min="0.01" max="14"></label>
+        </div>
+        <div class="timer-actions">
+          <button id="phCalLowButton" type="button">Calibrate Low Point</button>
+          <button id="phCalHighButton" type="button">Calibrate High Point</button>
+        </div>
+        <div id="phSensorStatus" class="history-status">--</div>
       </section>
 
       <section class="history-panel" aria-label="Notifications config" data-view-section="config">

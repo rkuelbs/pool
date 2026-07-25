@@ -16,6 +16,7 @@ from poolctl.web.server import (
     apply_fc_demand_config_update,
     apply_logging_config_update,
     apply_notifications_config_update,
+    apply_ph_sensor_config_update,
     apply_pump_timer_config_update,
     apply_runtime_config_update,
     apply_safety_config_update,
@@ -29,6 +30,7 @@ from poolctl.web.server import (
     serialize_analog_input_config,
     serialize_chlorination_config,
     serialize_fc_demand_config,
+    serialize_ph_sensor_config,
     serialize_pump_timer_config,
     serialize_runtime_config,
     serialize_safety_config,
@@ -460,6 +462,110 @@ def test_analog_input_update_writes_yaml(tmp_path: Path) -> None:
     serialized = serialize_analog_input_config(path)
     assert serialized["modbus_analog_input"]["sensors"]["raw_ph"]["channel"] == 6
     assert serialized["modbus_analog_input"]["startup_channel_mode"] == 0
+
+
+def test_ph_sensor_update_disables_driver_and_removes_acquisition_ids(tmp_path: Path) -> None:
+    config = config_mapping()
+    runtime = dict(config["runtime"])  # type: ignore[index]
+    runtime["driver_profile"] = "raspberry_pi"
+    runtime["enabled_sensor_groups"] = ["chemistry_loop"]
+    config["runtime"] = runtime
+    config["enable_modbus_ph_sensor"] = True
+    config["modbus_ph_sensor"] = {
+        "port": "/dev/ttyUSB0",
+        "slave_id": 4,
+        "baudrate": 4800,
+        "timeout_s": 1.0,
+    }
+    config["acquisition"] = {
+        "groups": {
+            "chemistry_loop": {
+                "sensor_ids": ["raw_orp", "orp_temp", "raw_ph", "ph_temp"],
+                "read_interval_s": 5.0,
+                "log_interval_s": 60.0,
+                "requires_pump_flow": True,
+                "min_pump_on_seconds": 60.0,
+                "oversample": {
+                    "sample_count": 1,
+                    "sample_interval_s": 0.0,
+                    "reducer": "last",
+                },
+            }
+        }
+    }
+    path = tmp_path / "pool.yaml"
+    path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+    result = apply_ph_sensor_config_update(
+        config_path=path,
+        payload={
+            "enabled": False,
+            "modbus_ph_sensor": {
+                "port": "/dev/ttyUSB0",
+                "slave_id": 4,
+                "baudrate": 4800,
+                "timeout_s": 1.0,
+            },
+        },
+    )
+
+    assert result["enabled"] is False
+    assert result["requires_restart"] is True
+    saved = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert saved["enable_modbus_ph_sensor"] is False
+    assert saved["acquisition"]["groups"]["chemistry_loop"]["sensor_ids"] == [
+        "raw_orp",
+        "orp_temp",
+    ]
+    serialized = serialize_ph_sensor_config(path)
+    assert serialized["modbus_ph_sensor"]["slave_id"] == 4
+
+
+def test_ph_sensor_update_enables_driver_and_adds_acquisition_ids(tmp_path: Path) -> None:
+    config = config_mapping()
+    runtime = dict(config["runtime"])  # type: ignore[index]
+    runtime["driver_profile"] = "raspberry_pi"
+    config["runtime"] = runtime
+    config["acquisition"] = {
+        "groups": {
+            "chemistry_loop": {
+                "sensor_ids": ["raw_orp", "orp_temp"],
+                "read_interval_s": 5.0,
+                "log_interval_s": 60.0,
+                "requires_pump_flow": True,
+                "min_pump_on_seconds": 60.0,
+                "oversample": {
+                    "sample_count": 1,
+                    "sample_interval_s": 0.0,
+                    "reducer": "last",
+                },
+            }
+        }
+    }
+    path = tmp_path / "pool.yaml"
+    path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+    apply_ph_sensor_config_update(
+        config_path=path,
+        payload={
+            "enabled": True,
+            "modbus_ph_sensor": {
+                "port": "/dev/ttyUSB0",
+                "slave_id": 4,
+                "baudrate": 4800,
+                "timeout_s": 1.0,
+            },
+        },
+    )
+
+    saved = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert saved["enable_modbus_ph_sensor"] is True
+    assert saved["acquisition"]["groups"]["chemistry_loop"]["sensor_ids"] == [
+        "raw_orp",
+        "orp_temp",
+        "raw_ph",
+        "ph_temp",
+    ]
 
 
 def test_health_payload_includes_status_fields() -> None:

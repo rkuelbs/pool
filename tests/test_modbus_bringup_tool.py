@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import pytest
 
-from poolctl.tools.modbus_bringup import _analog_check, _relay_check, _scan_slaves
+from poolctl.tools.modbus_bringup import _analog_check, _ph_check, _relay_check, _scan_slaves
 
 
 class FakeBus:
     def __init__(self) -> None:
         self.coils_by_slave: dict[int, dict[int, bool]] = {}
         self.input_regs_by_slave: dict[int, tuple[int, ...]] = {}
+        self.holding_regs_by_slave: dict[int, tuple[int, ...]] = {}
         self.writes: list[tuple[int, int, bool]] = []
 
     async def read_coils(
@@ -46,6 +47,18 @@ class FakeBus:
         if slave_id not in self.input_regs_by_slave:
             raise RuntimeError("no response")
         return self.input_regs_by_slave[slave_id][:count]
+
+    async def read_holding_registers(
+        self,
+        *,
+        slave_id: int,
+        start_address: int,
+        count: int,
+    ) -> tuple[int, ...]:
+        del start_address
+        if slave_id not in self.holding_regs_by_slave:
+            raise RuntimeError("no response")
+        return self.holding_regs_by_slave[slave_id][:count]
 
 
 @pytest.mark.asyncio
@@ -94,3 +107,13 @@ async def test_analog_check_reads_input_registers() -> None:
     assert result.ok is True
     assert "read 3 analog channels successfully" in result.message
 
+
+@pytest.mark.asyncio
+async def test_ph_check_reads_ph_and_temperature_registers() -> None:
+    bus = FakeBus()
+    bus.holding_regs_by_slave[4] = (0x0316, 0x0109)
+
+    result = await _ph_check(bus=bus, slave_id=4)
+
+    assert result.ok is True
+    assert "read pH and pH temperature successfully" in result.message

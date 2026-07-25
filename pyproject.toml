@@ -39,6 +39,7 @@ raspberrypi = [
 poolctl = "poolctl.main:main"
 poolctl-modbus-bringup = "poolctl.tools.modbus_bringup:main"
 poolctl-modbus-device-config = "poolctl.tools.modbus_device_config:main"
+poolctl-dfrobot-device-config = "poolctl.tools.dfrobot_device_config:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

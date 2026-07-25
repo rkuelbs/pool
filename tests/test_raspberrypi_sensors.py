@@ -9,6 +9,7 @@ from poolctl.domain.models import MeasurementKind, Quality, SensorId
 from poolctl.drivers.base import MultiSensorDriver
 from poolctl.drivers.raspberrypi.sensors import (
     DFRobotOrpSensor,
+    calibrate_dfrobot_ph_sensor,
     DFRobotPhSensor,
     RaspberryPiCpuFanRpmSensor,
     RaspberryPiCpuLoadSensor,
@@ -16,6 +17,7 @@ from poolctl.drivers.raspberrypi.sensors import (
     DFRobotWaterQualitySensorConfig,
     build_raspberrypi_sensor_drivers_from_mapping,
     build_raspberrypi_sensors_from_mapping,
+    dfrobot_ph_calibration_register_values,
 )
 from poolctl.services.clock import SimulatedClock
 
@@ -35,6 +37,20 @@ class FakeRegisterTransport:
         return self.registers[:count]
 
 
+class FakeModbusBus:
+    def __init__(self) -> None:
+        self.writes: list[tuple[int, int, tuple[int, ...]]] = []
+
+    async def write_holding_registers(
+        self,
+        *,
+        slave_id: int,
+        start_address: int,
+        values: tuple[int, ...],
+    ) -> None:
+        self.writes.append((slave_id, start_address, values))
+
+
 def make_clock() -> SimulatedClock:
     return SimulatedClock(
         start_at=datetime(2026, 5, 21, 12, 0, tzinfo=timezone.utc),
@@ -48,36 +64,50 @@ async def test_dfrobot_ph_sensor_reads_raw_ph() -> None:
     sensor = DFRobotPhSensor(
         transport=transport,
         clock=clock,
-        slave_id=2,
+        slave_id=4,
     )
 
     measurements = await sensor.read_all()
 
     assert transport.reads == [(0x0000, 2)]
-    assert [measurement.sensor_id for measurement in measurements] == [SensorId.RAW_PH]
+    assert [measurement.sensor_id for measurement in measurements] == [
+        SensorId.RAW_PH,
+        SensorId.PH_TEMP,
+    ]
     assert measurements[0].value == 7.9
     assert measurements[0].unit == "pH"
     assert measurements[0].kind == MeasurementKind.RAW
     assert measurements[0].quality == Quality.GOOD
-    assert measurements[0].metadata["modbus_slave_id"] == 2
+    assert measurements[0].metadata["modbus_slave_id"] == 4
     assert measurements[0].metadata["raw_register"] == 0x0316
 
+    assert measurements[1].value == 79.7
+    assert measurements[1].unit == "degF"
+    assert measurements[1].kind == MeasurementKind.RAW
+    assert measurements[1].quality == Quality.GOOD
+    assert measurements[1].metadata["modbus_slave_id"] == 4
+    assert measurements[1].metadata["raw_register"] == 0x0109
+    assert measurements[1].metadata["raw_temp_c"] == 26.5
+
     assert measurements[0].observed_at == clock.now()
+    assert measurements[1].observed_at == clock.now()
 
 
 @pytest.mark.asyncio
-async def test_dfrobot_ph_sensor_ignores_temperature_register() -> None:
+async def test_dfrobot_ph_sensor_reads_signed_temperature_register() -> None:
     clock = make_clock()
     transport = FakeRegisterTransport((0x02BC, 0xFFF6))
     sensor = DFRobotPhSensor(
         transport=transport,
         clock=clock,
-        slave_id=2,
+        slave_id=4,
     )
 
     measurements = await sensor.read_all()
 
     assert measurements[0].value == 7.0
+    assert measurements[1].value == 30.2
+    assert measurements[1].metadata["raw_temp_c"] == -1.0
 
 
 @pytest.mark.asyncio
@@ -155,6 +185,12 @@ def test_dfrobot_water_quality_sensor_config_uses_configurable_addresses() -> No
     assert config.orp.timeout_s == 0.75
 
 
+def test_dfrobot_water_quality_sensor_config_defaults_to_non_conflicting_ph_address() -> None:
+    config = DFRobotWaterQualitySensorConfig.from_mapping({})
+
+    assert config.ph.slave_id == 4
+
+
 def test_build_raspberrypi_sensors_from_mapping_returns_multi_sensor_drivers() -> None:
     sensors = build_raspberrypi_sensors_from_mapping(
         {
@@ -170,6 +206,60 @@ def test_build_raspberrypi_sensors_from_mapping_returns_multi_sensor_drivers() -
 
     assert len(sensors) == 1
     assert all(isinstance(sensor, MultiSensorDriver) for sensor in sensors)
+
+
+def test_build_raspberrypi_sensors_from_mapping_includes_enabled_ph_sensor() -> None:
+    sensors = build_raspberrypi_sensors_from_mapping(
+        {
+            "enable_modbus_ph_sensor": True,
+            "modbus_ph_sensor": {
+                "port": "/dev/ttyUSB0",
+                "slave_id": 4,
+                "baudrate": 4800,
+                "timeout_s": 1.0,
+            },
+            "modbus_orp_sensor": {
+                "port": "/dev/ttyUSB0",
+                "slave_id": 1,
+                "baudrate": 4800,
+                "timeout_s": 1.0,
+            },
+        },
+        clock=make_clock(),
+    )
+
+    assert len(sensors) == 2
+    assert all(isinstance(sensor, MultiSensorDriver) for sensor in sensors)
+
+
+def test_dfrobot_ph_calibration_register_values_scale_ph() -> None:
+    assert dfrobot_ph_calibration_register_values(point="low", ph_value=4.01) == (1, 401)
+    assert dfrobot_ph_calibration_register_values(point="high", ph_value=9.18) == (2, 918)
+
+
+@pytest.mark.asyncio
+async def test_calibrate_dfrobot_ph_sensor_writes_two_registers() -> None:
+    bus = FakeModbusBus()
+    config = DFRobotWaterQualitySensorConfig.from_mapping(
+        {
+            "modbus_ph_sensor": {
+                "port": "/dev/ttyUSB0",
+                "slave_id": 4,
+                "baudrate": 4800,
+                "timeout_s": 1.0,
+            }
+        }
+    ).ph
+
+    result = await calibrate_dfrobot_ph_sensor(
+        config=config,
+        point="low",
+        ph_value=4.01,
+        bus=bus,
+    )
+
+    assert bus.writes == [(4, 0x0120, (1, 401))]
+    assert result.as_payload()["register_address"] == "0x0120"
 
 
 @pytest.mark.asyncio

@@ -131,6 +131,7 @@ acquisition:
       - raw_orp
       - orp_temp
       - raw_ph
+      - ph_temp
       - raw_ph_voltage
       - temp
       read_interval_s: 5
@@ -201,6 +202,11 @@ live_view:
       normal_min: 7.2
       normal_max: 7.8
       caution_max: 8.2
+    ph_temp:
+      caution_min: 35.0
+      normal_min: 65.0
+      normal_max: 90.0
+      caution_max: 100.0
     raw_ph_voltage:
       caution_min: 0.0
       normal_min: 0.2

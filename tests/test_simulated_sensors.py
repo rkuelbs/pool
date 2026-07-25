@@ -58,6 +58,7 @@ def test_default_simulated_sensors_match_sensor_driver_protocol() -> None:
         SensorId.RAW_ORP,
         SensorId.ORP_TEMP,
         SensorId.RAW_PH,
+        SensorId.PH_TEMP,
         SensorId.RAW_PH_VOLTAGE,
         SensorId.TEMP,
         SensorId.TANK_LEVEL,
@@ -137,11 +138,17 @@ async def test_chemical_sensors_publish_raw_readings(
     sensors = build_default_simulated_sensors(plant)
 
     raw_ph = await sensor_by_id(sensors, SensorId.RAW_PH).read()
+    ph_temp = await sensor_by_id(sensors, SensorId.PH_TEMP).read()
     raw_orp = await sensor_by_id(sensors, SensorId.RAW_ORP).read()
+    orp_temp = await sensor_by_id(sensors, SensorId.ORP_TEMP).read()
 
     assert raw_ph.kind == MeasurementKind.RAW
     assert raw_ph.unit == "pH"
     assert raw_ph.value == 7.55
+
+    assert ph_temp.kind == MeasurementKind.RAW
+    assert ph_temp.unit == "degF"
+    assert ph_temp.value == orp_temp.value
 
     assert raw_orp.kind == MeasurementKind.RAW
     assert raw_orp.unit == "mV"

@@ -7,6 +7,7 @@ const SENSOR_ORDER = [
   "raw_orp",
   "orp_temp",
   "raw_ph",
+  "ph_temp",
   "raw_ph_voltage",
   "temp",
   "cpu_temp",
@@ -72,6 +73,7 @@ const SENSOR_LABELS = {
   raw_orp: "ORP",
   orp_temp: "ORP temp",
   raw_ph: "pH",
+  ph_temp: "pH temp",
   raw_ph_voltage: "pH Vraw",
   temp: "Water temp",
   cpu_temp: "CPU temp",
@@ -216,6 +218,7 @@ let acquisitionConfigLoading = false;
 let loggingConfigLoading = false;
 let notificationsConfigLoading = false;
 let analogConfigLoading = false;
+let phSensorConfigLoading = false;
 let chlorinationConfigLoading = false;
 let fcDemandConfigLoading = false;
 let chlorinationQuickSaving = false;
@@ -1101,7 +1104,7 @@ function renderMobileChemCard(sensors) {
   setNodeText("mobileTempLine", `Temp: ${sensorDisplay(sensors, "temp")}`);
   setNodeText(
     "mobilePhLine",
-    `pH: ${sensorDisplay(sensors, "raw_ph")} | Vraw: ${sensorDisplay(sensors, "raw_ph_voltage")}`,
+    `pH: ${sensorDisplay(sensors, "raw_ph")} | Temp: ${sensorDisplay(sensors, "ph_temp")}`,
   );
   setNodeText(
     "mobileOrpLine",
@@ -2246,6 +2249,7 @@ async function loadAllConfigSections() {
     loadLoggingConfig(),
     loadNotificationsConfig(),
     loadAnalogConfig(),
+    loadPhSensorConfig(),
     loadChlorinationConfig(),
     loadFcDemandConfig(),
   ]);
@@ -3207,6 +3211,107 @@ function analogSensorRow(sensorId = "", mapping = {}) {
   return card;
 }
 
+async function loadPhSensorConfig() {
+  if (phSensorConfigLoading) {
+    return;
+  }
+  phSensorConfigLoading = true;
+  try {
+    const response = await fetch("/api/config/ph_sensor", { cache: "no-store" });
+    const payload = await parseApiResponse(response, "pH sensor config load failed");
+    renderPhSensorConfig(payload);
+    setPhSensorStatus(
+      payload.enabled ? "pH sensor config loaded" : "pH sensor config loaded; disabled",
+    );
+  } catch (error) {
+    setPhSensorStatus(error.message);
+  } finally {
+    phSensorConfigLoading = false;
+  }
+}
+
+async function savePhSensorConfig() {
+  setPhSensorStatus("Saving pH sensor config...");
+  try {
+    const response = await fetch("/api/config/ph_sensor", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(collectPhSensorConfig()),
+    });
+    const payload = await parseApiResponse(response, "pH sensor config save failed");
+    renderPhSensorConfig(payload);
+    setPhSensorStatus(payload.message || "pH sensor config saved");
+    clearConfigDraftState(true);
+  } catch (error) {
+    setPhSensorStatus(error.message);
+  }
+}
+
+function renderPhSensorConfig(payload) {
+  const config = payload.modbus_ph_sensor || {};
+  document.getElementById("phSensorEnabled").checked = payload.enabled === true;
+  document.getElementById("phSensorPort").value = config.port || "/dev/ttyUSB0";
+  document.getElementById("phSensorSlaveId").value = String(config.slave_id ?? 4);
+  document.getElementById("phSensorBaudrate").value = String(config.baudrate ?? 4800);
+  document.getElementById("phSensorTimeout").value = String(config.timeout_s ?? 1.0);
+  document.getElementById("phCalLowValue").value = String(payload.calibration?.low_default_ph ?? 4.01);
+  document.getElementById("phCalHighValue").value = String(payload.calibration?.high_default_ph ?? 9.18);
+}
+
+function collectPhSensorConfig() {
+  return {
+    enabled: document.getElementById("phSensorEnabled").checked,
+    modbus_ph_sensor: {
+      port: document.getElementById("phSensorPort").value.trim() || "/dev/ttyUSB0",
+      slave_id: Number(document.getElementById("phSensorSlaveId").value),
+      baudrate: Number(document.getElementById("phSensorBaudrate").value),
+      timeout_s: Number(document.getElementById("phSensorTimeout").value),
+    },
+  };
+}
+
+async function calibratePhSensor(point) {
+  const inputId = point === "low" ? "phCalLowValue" : "phCalHighValue";
+  const phValue = Number(document.getElementById(inputId).value);
+  setPhSensorStatus(`Writing ${point} pH calibration...`);
+  try {
+    const response = await fetch("/api/ph/calibrate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        point,
+        ph_value: phValue,
+      }),
+    });
+    const payload = await parseApiResponse(response, "pH calibration failed");
+    setPhSensorStatus(payload.message || "pH calibration written");
+  } catch (error) {
+    setPhSensorStatus(error.message);
+  }
+}
+
+function setPhSensorStatus(message) {
+  const status = document.getElementById("phSensorStatus");
+  if (status) {
+    status.textContent = message;
+  }
+}
+
+function initializePhSensorControls() {
+  const reload = document.getElementById("phSensorReload");
+  const save = document.getElementById("phSensorSave");
+  const low = document.getElementById("phCalLowButton");
+  const high = document.getElementById("phCalHighButton");
+  if (!reload || !save || !low || !high) {
+    return;
+  }
+  reload.addEventListener("click", loadPhSensorConfig);
+  save.addEventListener("click", savePhSensorConfig);
+  low.addEventListener("click", () => calibratePhSensor("low"));
+  high.addEventListener("click", () => calibratePhSensor("high"));
+  loadPhSensorConfig();
+}
+
 function collectAnalogConfig() {
   const sensors = {};
   const rows = [...document.querySelectorAll('[data-analog-sensor="true"]')];
@@ -3759,6 +3864,7 @@ function initializeForPage() {
     initializeLoggingControls();
     initializeNotificationsControls();
     initializeAnalogControls();
+    initializePhSensorControls();
     initializeChlorinationControls();
     initializeFcDemandControls();
     return;

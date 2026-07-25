@@ -36,6 +36,7 @@ SENSOR_LABELS = {
     SensorId.RAW_ORP: "ORP",
     SensorId.ORP_TEMP: "ORP temp",
     SensorId.RAW_PH: "pH",
+    SensorId.PH_TEMP: "pH temp",
     SensorId.RAW_PH_VOLTAGE: "pH Vraw",
     SensorId.TEMP: "Water temp",
     SensorId.CPU_TEMP: "CPU temp",

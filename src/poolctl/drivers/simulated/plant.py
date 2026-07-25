@@ -207,6 +207,13 @@ class SimulatedPlant:
         self.update()
         return noisy(self.water_temp_f, 0.10)
 
+    def ph_probe_temp_f(self) -> float:
+        """
+        Return simulated temperature near the pH probe.
+        """
+        self.update()
+        return noisy(self.water_temp_f, 0.12)
+
     def raw_ph(self) -> float:
         """
         Return simulated pH in pH units.

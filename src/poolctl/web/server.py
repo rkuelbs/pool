@@ -14,7 +14,7 @@ from enum import Enum
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 from urllib.parse import parse_qs, urlparse
 
 from poolctl.app import PoolControllerApp, build_app_from_config
@@ -30,7 +30,9 @@ from poolctl.domain.models import (
     Measurement,
     SensorId,
 )
+from poolctl.drivers.modbus.registers import ModbusRegisterDeviceConfig
 from poolctl.drivers.raspberrypi.analog_inputs import WaveshareAnalogInputConfig
+from poolctl.drivers.raspberrypi.sensors import calibrate_dfrobot_ph_sensor
 from poolctl.services.acquisition import AcquisitionConfig
 from poolctl.services.chlorination import ChlorinationConfig
 from poolctl.services.clock import AcceleratedClock, Clock
@@ -256,6 +258,10 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             self._serve_analog_input_config()
             return
 
+        if path == "/api/config/ph_sensor":
+            self._serve_ph_sensor_config()
+            return
+
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
     def do_POST(self) -> None:
@@ -301,6 +307,10 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             self._serve_update_analog_input_config()
             return
 
+        if path == "/api/config/ph_sensor":
+            self._serve_update_ph_sensor_config()
+            return
+
         if path == "/api/safety/clear_lockout":
             self._serve_clear_safety_lockout()
             return
@@ -327,6 +337,10 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
 
         if path == "/api/notifications/test":
             self._serve_test_notification()
+            return
+
+        if path == "/api/ph/calibrate":
+            self._serve_calibrate_ph_sensor()
             return
 
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
@@ -665,6 +679,47 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             )
         except ValueError as error:
             self._serve_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        self._serve_json(result)
+
+    def _serve_ph_sensor_config(self) -> None:
+        try:
+            payload = serialize_ph_sensor_config(self.config_path)
+        except ValueError as error:
+            self._serve_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        self._serve_json(payload)
+
+    def _serve_update_ph_sensor_config(self) -> None:
+        try:
+            payload = self._read_json_body()
+            result = apply_ph_sensor_config_update(
+                config_path=self.config_path,
+                payload=payload,
+            )
+        except ValueError as error:
+            self._serve_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        self._serve_json(result)
+
+    def _serve_calibrate_ph_sensor(self) -> None:
+        try:
+            payload = self._read_json_body()
+            result = self.async_runtime.run_serial(
+                calibrate_ph_sensor_from_config(
+                    app=self.app,
+                    config_path=self.config_path,
+                    payload=payload,
+                )
+            )
+        except ValueError as error:
+            self._serve_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        except Exception as error:
+            self._serve_json({"error": str(error)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
             return
 
         self._serve_json(result)
@@ -1933,6 +1988,150 @@ def apply_analog_input_config_update(
         "requires_restart": True,
         "message": "Analog input config updated on disk. Restart is required to rebuild hardware drivers.",
     }
+
+
+def serialize_ph_sensor_config(config_path: Path) -> dict[str, Any]:
+    data = _load_config_mapping(config_path)
+    enabled = _bool_config_value(data, "enable_modbus_ph_sensor", False)
+    config = ModbusRegisterDeviceConfig.from_mapping(
+        data,
+        "modbus_ph_sensor",
+        default_slave_id=4,
+    )
+
+    return {
+        "enabled": enabled,
+        "modbus_ph_sensor": {
+            "port": config.port,
+            "slave_id": config.slave_id,
+            "baudrate": config.baudrate,
+            "timeout_s": config.timeout_s,
+        },
+        "calibration": {
+            "low_default_ph": 4.01,
+            "high_default_ph": 9.18,
+        },
+        "requires_restart": True,
+    }
+
+
+def apply_ph_sensor_config_update(
+    *,
+    config_path: Path,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    enabled = _bool_payload_value(payload, "enabled", False)
+    sensor_data = payload.get("modbus_ph_sensor", {})
+    if not isinstance(sensor_data, dict):
+        raise ValueError("modbus_ph_sensor must be a mapping")
+
+    proposed = ModbusRegisterDeviceConfig.from_mapping(
+        {"modbus_ph_sensor": sensor_data},
+        "modbus_ph_sensor",
+        default_slave_id=4,
+    )
+
+    config_data = _load_config_mapping(config_path)
+    config_data["enable_modbus_ph_sensor"] = enabled
+    config_data["modbus_ph_sensor"] = {
+        "port": proposed.port,
+        "slave_id": proposed.slave_id,
+        "baudrate": proposed.baudrate,
+        "timeout_s": proposed.timeout_s,
+    }
+
+    runtime = config_data.get("runtime", {})
+    if isinstance(runtime, dict) and runtime.get("driver_profile") == DriverProfile.RASPBERRY_PI.value:
+        _set_acquisition_ph_sensor_ids(config_data, enabled=enabled)
+
+    _save_config_mapping(config_path, config_data)
+
+    return {
+        "updated": True,
+        "requires_restart": True,
+        "message": (
+            "pH sensor config updated on disk. Restart is required to rebuild hardware drivers."
+        ),
+        **serialize_ph_sensor_config(config_path),
+    }
+
+
+async def calibrate_ph_sensor_from_config(
+    *,
+    app: PoolControllerApp,
+    config_path: Path,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    if app.runtime_config.driver_profile != DriverProfile.RASPBERRY_PI:
+        raise ValueError("pH calibration requires the raspberry_pi driver profile")
+
+    point_value = payload.get("point")
+    if point_value not in {"low", "high"}:
+        raise ValueError("point must be low or high")
+    point: Literal["low", "high"] = "low" if point_value == "low" else "high"
+
+    ph_value = payload.get("ph_value")
+    if not isinstance(ph_value, int | float):
+        raise ValueError("ph_value must be a number")
+
+    data = _load_config_mapping(config_path)
+    config = ModbusRegisterDeviceConfig.from_mapping(
+        data,
+        "modbus_ph_sensor",
+        default_slave_id=4,
+    )
+    bus = (
+        app.modbus_bus_registry.bus_for(
+            port=config.port,
+            baudrate=config.baudrate,
+            timeout_s=config.timeout_s,
+        )
+        if app.modbus_bus_registry is not None
+        else None
+    )
+    result = await calibrate_dfrobot_ph_sensor(
+        config=config,
+        point=point,
+        ph_value=float(ph_value),
+        bus=bus,
+    )
+
+    return {
+        "calibrated": True,
+        "message": f"pH {point} calibration written at {float(ph_value):.2f} pH.",
+        "result": result.as_payload(),
+    }
+
+
+def _set_acquisition_ph_sensor_ids(config_data: dict[str, Any], *, enabled: bool) -> None:
+    acquisition = config_data.get("acquisition")
+    if not isinstance(acquisition, dict):
+        return
+    groups = acquisition.get("groups")
+    if not isinstance(groups, dict):
+        return
+
+    ph_sensor_ids = {SensorId.RAW_PH.value, SensorId.PH_TEMP.value}
+    for group_name, group_data in groups.items():
+        if not isinstance(group_data, dict):
+            continue
+        sensor_ids = group_data.get("sensor_ids")
+        if not isinstance(sensor_ids, list):
+            continue
+
+        updated = [str(sensor_id) for sensor_id in sensor_ids if str(sensor_id) not in ph_sensor_ids]
+        if enabled and group_name == "chemistry_loop":
+            for sensor_id in (SensorId.RAW_PH.value, SensorId.PH_TEMP.value):
+                if sensor_id not in updated:
+                    updated.append(sensor_id)
+        group_data["sensor_ids"] = updated
+
+
+def _bool_config_value(data: dict[str, Any], key: str, default: bool) -> bool:
+    value = data.get(key, default)
+    if isinstance(value, bool):
+        return value
+    raise ValueError(f"{key} must be true or false")
 
 
 def _format_time(hour: int, minute: int) -> str:

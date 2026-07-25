@@ -5,6 +5,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import Sequence
 
+from poolctl.drivers.modbus.registers import signed_16
 from poolctl.drivers.modbus.rtu_bus import ModbusRtuBusConfig, SharedModbusRtuBus
 
 
@@ -47,6 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--analog-channel-count", type=int, default=8)
     parser.add_argument("--raw-to-volts-scale", type=float, default=0.001)
     parser.add_argument("--raw-to-volts-offset", type=float, default=0.0)
+    parser.add_argument("--ph-slave-id", type=_int_auto, default=None)
 
     parser.add_argument(
         "--scan",
@@ -69,8 +71,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    if not args.scan and args.relay_slave_id is None and args.analog_slave_id is None:
-        parser.error("select at least one action: --scan, --relay-slave-id, or --analog-slave-id")
+    if (
+        not args.scan
+        and args.relay_slave_id is None
+        and args.analog_slave_id is None
+        and args.ph_slave_id is None
+    ):
+        parser.error(
+            "select at least one action: --scan, --relay-slave-id, --analog-slave-id, or --ph-slave-id"
+        )
 
     if args.relay_count < 1:
         parser.error("--relay-count must be at least 1")
@@ -141,6 +150,11 @@ async def _run(args: argparse.Namespace) -> int:
             )
             print(f"[analog] {analog_result.message}")
             any_failure = any_failure or not analog_result.ok
+
+        if args.ph_slave_id is not None:
+            ph_result = await _ph_check(bus=bus, slave_id=args.ph_slave_id)
+            print(f"[ph] {ph_result.message}")
+            any_failure = any_failure or not ph_result.ok
     finally:
         await bus.close()
 
@@ -254,6 +268,31 @@ async def _analog_check(
         print(f"[analog] slave {slave_id} CH{index}: raw={raw:5d} volts={volts:7.4f} V")
 
     return BringupResult(True, f"read {len(registers)} analog channels successfully")
+
+
+async def _ph_check(
+    *,
+    bus: SharedModbusRtuBus,
+    slave_id: int,
+) -> BringupResult:
+    try:
+        ph_register, temp_register = await bus.read_holding_registers(
+            slave_id=slave_id,
+            start_address=0,
+            count=2,
+        )
+    except Exception as error:
+        return BringupResult(False, f"failed to read pH sensor for slave {slave_id}: {error}")
+
+    ph_value = ph_register / 100.0
+    temp_c = signed_16(temp_register) / 10.0
+    temp_f = (temp_c * 9.0 / 5.0) + 32.0
+    print(
+        f"[ph] slave {slave_id}: pH={ph_value:.2f} "
+        f"temp={temp_f:.1f} degF ({temp_c:.1f} degC)"
+    )
+
+    return BringupResult(True, "read pH and pH temperature successfully")
 
 
 if __name__ == "__main__":

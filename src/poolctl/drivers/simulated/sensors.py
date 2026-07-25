@@ -143,6 +143,14 @@ def build_default_simulated_sensors(plant: SimulatedPlant) -> list[SimulatedSens
             decimal_places=2,
         ),
         SimulatedSensor(
+            name="simulated_ph_temp",
+            sensor_id=SensorId.PH_TEMP,
+            unit="degF",
+            read_value=plant.ph_probe_temp_f,
+            observed_at=plant.clock.now,
+            decimal_places=2,
+        ),
+        SimulatedSensor(
             name="simulated_raw_ph_voltage",
             sensor_id=SensorId.RAW_PH_VOLTAGE,
             unit="V",

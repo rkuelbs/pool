@@ -61,6 +61,7 @@ class SensorId(str, Enum):
     ORP_TEMP = "orp_temp"
 
     RAW_PH = "raw_ph"
+    PH_TEMP = "ph_temp"
     RAW_PH_VOLTAGE = "raw_ph_voltage"
 
     TEMP = "temp"

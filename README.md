@@ -17,8 +17,8 @@ The project is intentionally layered:
 
 - Windows simulation using a correlated simulated pool plant.
 - Raspberry Pi Modbus relay control through a Waveshare 8-channel RTU relay.
-- Raspberry Pi Modbus analog input support for pressure and pH channels.
-- DFRobot Modbus ORP sensor support.
+- Raspberry Pi Modbus analog input support for pressure channels.
+- DFRobot Modbus ORP and pH sensor support, including probe temperatures.
 - Pump timer scheduling with manual dashboard overrides.
 - Open-loop chlorine dosing on relay 7, with a dashboard prime/test button.
 - Optional FC-demand estimator based on manual FC tests and logged chlorine
@@ -150,6 +150,7 @@ Important sections:
 - `modbus_analog_input`: analog board serial settings, channel mappings, 2-point
   calibration.
 - `modbus_orp_sensor`: ORP sensor serial settings.
+- `modbus_ph_sensor`: pH sensor serial settings.
 - `flow_estimation`: pump/branch flow constants and filter restriction limits.
 - `live_view`: dashboard display limits.
 - `weather`: Open-Meteo location, units, and polling settings.
@@ -535,6 +536,7 @@ Current intended bus settings:
 - ORP sensor address: `0x01`.
 - Analog input module address: `0x02`.
 - Relay module address: `0x03`.
+- pH sensor address: `0x04`.
 
 Stop `poolctl.service` before using Modbus tools so the serial port is free:
 
@@ -568,8 +570,58 @@ python -m poolctl.tools.modbus_device_config \
   --new-parity N
 ```
 
+Configure a new DFRobot SEN0708 pH sensor from factory defaults to address
+`0x04` at 4800:
+
+```bash
+python -m poolctl.tools.dfrobot_device_config \
+  --port /dev/ttyUSB0 \
+  --current-id 0x01 \
+  --current-baudrate 4800 \
+  --new-id 0x04 \
+  --new-baudrate 4800
+```
+
 Only one factory-default address module should be connected while changing
-address/baud settings.
+address/baud settings. This matters especially for the ORP and pH sensors,
+because both DFRobot probes ship at address `0x01`.
+
+The pH sensor produces:
+
+- `raw_ph`: pH units from register `0x0000`.
+- `ph_temp`: probe temperature from register `0x0001`, converted from C to F
+  before display and logging.
+
+`pi-prod.yaml` keeps the pH sensor disabled until the probe is installed:
+
+```yaml
+enable_modbus_ph_sensor: false
+modbus_ph_sensor:
+  port: /dev/ttyUSB0
+  slave_id: 4
+  baudrate: 4800
+  timeout_s: 1.0
+```
+
+The Config page has a `pH Sensor Config` section. Turning the sensor on or off
+writes `enable_modbus_ph_sensor` and also adds or removes `raw_ph` and
+`ph_temp` from the Pi chemistry acquisition group. Restart the service after
+changing this setting so hardware drivers are rebuilt.
+
+Verify the pH sensor after changing its address:
+
+```bash
+python -m poolctl.tools.modbus_bringup \
+  --port /dev/ttyUSB0 \
+  --baudrate 4800 \
+  --ph-slave-id 0x04
+```
+
+The same Config page has low-point and high-point pH calibration buttons. Enter
+the buffer pH value, then press the matching button while the probe is in that
+buffer. The server writes DFRobot's two-register calibration command starting at
+register `0x0120`, using `1` for the low point, `2` for the high point, and
+`pH * 100` for the calibration value.
 
 Set all analog channels to mode `0` for the non-B 0-5V board:
 

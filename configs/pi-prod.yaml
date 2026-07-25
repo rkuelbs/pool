@@ -18,13 +18,13 @@ pump_timer:
   timezone: America/Chicago
   schedules:
   - name: morning_vacuum
-    start: 07:00
-    end: 08:00
+    start: '07:00'
+    end: '08:00'
     pump_speed: low
     booster: 'on'
   - name: morning_filter
-    start: 08:00
-    end: 09:00
+    start: '08:00'
+    end: '09:00'
     pump_speed: low
     booster: 'off'
   - name: afternoon_filter
@@ -58,6 +58,12 @@ modbus_relay:
 modbus_orp_sensor:
   port: /dev/ttyUSB0
   slave_id: 1
+  baudrate: 4800
+  timeout_s: 1.0
+enable_modbus_ph_sensor: false
+modbus_ph_sensor:
+  port: /dev/ttyUSB0
+  slave_id: 4
   baudrate: 4800
   timeout_s: 1.0
 modbus_analog_input:
@@ -104,13 +110,6 @@ modbus_analog_input:
         value_1: 0
         voltage_2: 5
         value_2: 80
-    raw_ph:
-      channel: 4
-      calibration:
-        voltage_1: 1.684
-        value_1: 6.86
-        voltage_2: 2.577
-        value_2: 9.18
 flow_estimation:
   pump_pressure:
     pressure_scale_psi: 0.4335
@@ -155,7 +154,7 @@ safety:
     enabled: true
     source: temp
     temp_sensor: orp_temp
-    ph_temp_sensor: orp_temp
+    ph_temp_sensor: ph_temp
     low_speed_on_below_temp: 35
     low_speed_off_above_temp: 37
     high_speed_on_below_temp: 33
@@ -230,8 +229,6 @@ acquisition:
       sensor_ids:
       - raw_orp
       - orp_temp
-      - raw_ph
-      - raw_ph_voltage
       read_interval_s: 10
       log_interval_s: 60
       requires_pump_flow: true
@@ -288,6 +285,11 @@ live_view:
       normal_min: 7.2
       normal_max: 7.8
       caution_max: 8.2
+    ph_temp:
+      caution_min: 35.0
+      normal_min: 65.0
+      normal_max: 90.0
+      caution_max: 100.0
     raw_ph_voltage:
       caution_min: 0.0
       normal_min: 0.2
@@ -320,7 +322,7 @@ live_view:
       caution_max: 0.6
 calcium_saturation_index:
   enabled: true
-  temp_sensor_id: temp
+  temp_sensor_id: ph_temp
   ph_sensor_id: raw_ph
 weather:
   enabled: true
