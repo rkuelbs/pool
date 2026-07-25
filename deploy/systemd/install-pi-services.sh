@@ -71,6 +71,18 @@ $SUDO install -m 0644 "$TMP_DIR/poolctl-backup.service" /etc/systemd/system/pool
 $SUDO install -m 0644 "$TMP_DIR/poolctl-backup.timer" /etc/systemd/system/poolctl-backup.timer
 $SUDO install -m 0750 "$TMP_DIR/poolctl-backup.sh" /usr/local/bin/poolctl-backup.sh
 
+echo "Preparing optional environment file..."
+$SUDO mkdir -p /etc/poolctl
+if [ ! -e /etc/poolctl/poolctl.env ]; then
+  cat > "$TMP_DIR/poolctl.env" <<'EOF'
+# Optional poolctl runtime secrets.
+# Uncomment and fill these to enable Pushover notifications.
+# PUSHOVER_APP_TOKEN=
+# PUSHOVER_USER_KEY=
+EOF
+  $SUDO install -m 0600 "$TMP_DIR/poolctl.env" /etc/poolctl/poolctl.env
+fi
+
 echo "Creating backup directory..."
 $SUDO mkdir -p "$BACKUP_DIR"
 $SUDO chown root:root "$BACKUP_DIR"

@@ -191,6 +191,7 @@ let runtimeConfigLoading = false;
 let safetyConfigLoading = false;
 let acquisitionConfigLoading = false;
 let loggingConfigLoading = false;
+let notificationsConfigLoading = false;
 let analogConfigLoading = false;
 let chlorinationConfigLoading = false;
 let fcDemandConfigLoading = false;
@@ -835,7 +836,13 @@ async function refreshHealth(force) {
           ? "mqtt connected"
           : "mqtt disconnected"
         : "mqtt disabled";
-    line.textContent = `Health: ${payload.status} | Modbus errors: ${modbusErrors} | ${mqttState}`;
+    const notifyState =
+      payload.notifications && payload.notifications.enabled
+        ? payload.notifications.pushover && payload.notifications.pushover.configured
+          ? "notify ready"
+          : "notify not configured"
+        : "notify disabled";
+    line.textContent = `Health: ${payload.status} | Modbus errors: ${modbusErrors} | ${mqttState} | ${notifyState}`;
     lastHealthLoadedAt = now;
   } catch (error) {
     document.getElementById("healthLine").textContent = `Health error: ${error.message}`;
@@ -2209,6 +2216,7 @@ async function loadAllConfigSections() {
     loadSafetyConfig(),
     loadAcquisitionConfig(),
     loadLoggingConfig(),
+    loadNotificationsConfig(),
     loadAnalogConfig(),
     loadChlorinationConfig(),
     loadFcDemandConfig(),
@@ -2773,6 +2781,123 @@ function initializeLoggingControls() {
   document.getElementById("loggingReload").addEventListener("click", loadLoggingConfig);
   document.getElementById("loggingSave").addEventListener("click", saveLoggingConfig);
   loadLoggingConfig();
+}
+
+async function loadNotificationsConfig() {
+  if (notificationsConfigLoading) {
+    return;
+  }
+  notificationsConfigLoading = true;
+  try {
+    const response = await fetch("/api/config/notifications", { cache: "no-store" });
+    const payload = await parseApiResponse(response, "notifications config load failed");
+    renderNotificationsConfig(payload);
+    setNotificationsStatus(
+      payload.enabled
+        ? payload.pushover && payload.pushover.configured
+          ? "Notifications config loaded"
+          : "Notifications loaded; Pushover credentials not visible to service"
+        : "Notifications config loaded; disabled",
+    );
+  } catch (error) {
+    setNotificationsStatus(error.message);
+  } finally {
+    notificationsConfigLoading = false;
+  }
+}
+
+async function saveNotificationsConfig() {
+  setNotificationsStatus("Saving notifications config...");
+  try {
+    const response = await fetch("/api/config/notifications", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(collectNotificationsConfig()),
+    });
+    const payload = await parseApiResponse(response, "notifications config save failed");
+    renderNotificationsConfig(payload);
+    setNotificationsStatus(
+      payload.applied_live ? "Notifications config saved and applied live" : "Notifications config saved",
+    );
+    clearConfigDraftState(true);
+  } catch (error) {
+    setNotificationsStatus(error.message);
+  }
+}
+
+async function sendTestNotification() {
+  setNotificationsStatus("Sending test notification...");
+  try {
+    const response = await fetch("/api/notifications/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title: document.getElementById("notificationsDefaultTitle").value || "poolctl",
+        message: "poolctl test notification",
+      }),
+    });
+    const payload = await parseApiResponse(response, "test notification failed");
+    if (payload.notification && payload.notification.sent) {
+      setNotificationsStatus("Test notification sent");
+      return;
+    }
+    setNotificationsStatus(
+      payload.notification && payload.notification.error
+        ? payload.notification.error
+        : "Test notification was not sent",
+    );
+  } catch (error) {
+    setNotificationsStatus(error.message);
+  }
+}
+
+function renderNotificationsConfig(payload) {
+  const pushover = payload.pushover || {};
+  document.getElementById("notificationsEnabled").checked = payload.enabled === true;
+  document.getElementById("notificationsProvider").value = payload.provider || "pushover";
+  document.getElementById("notificationsDefaultTitle").value = payload.default_title || "poolctl";
+  document.getElementById("pushoverAppTokenEnv").value = pushover.app_token_env || "PUSHOVER_APP_TOKEN";
+  document.getElementById("pushoverUserKeyEnv").value = pushover.user_key_env || "PUSHOVER_USER_KEY";
+  document.getElementById("pushoverApiUrl").value = pushover.api_url || "https://api.pushover.net/1/messages.json";
+  document.getElementById("pushoverTimeout").value = String(pushover.timeout_s ?? 5.0);
+  document.getElementById("pushoverPriority").value = String(pushover.priority ?? 0);
+  document.getElementById("pushoverSound").value = pushover.sound || "";
+}
+
+function collectNotificationsConfig() {
+  return {
+    enabled: document.getElementById("notificationsEnabled").checked,
+    provider: document.getElementById("notificationsProvider").value,
+    default_title: document.getElementById("notificationsDefaultTitle").value.trim() || "poolctl",
+    pushover: {
+      app_token_env: document.getElementById("pushoverAppTokenEnv").value.trim() || "PUSHOVER_APP_TOKEN",
+      user_key_env: document.getElementById("pushoverUserKeyEnv").value.trim() || "PUSHOVER_USER_KEY",
+      api_url: document.getElementById("pushoverApiUrl").value.trim() || "https://api.pushover.net/1/messages.json",
+      timeout_s: Number(document.getElementById("pushoverTimeout").value),
+      priority: Number(document.getElementById("pushoverPriority").value),
+      sound: stringOrNull(document.getElementById("pushoverSound").value),
+    },
+  };
+}
+
+function setNotificationsStatus(message) {
+  const status = document.getElementById("notificationsStatus");
+  if (status) {
+    status.textContent = message;
+  }
+}
+
+function initializeNotificationsControls() {
+  const reload = document.getElementById("notificationsReload");
+  const save = document.getElementById("notificationsSave");
+  const test = document.getElementById("notificationsTest");
+  if (!reload || !save || !test) {
+    return;
+  }
+  reload.addEventListener("click", loadNotificationsConfig);
+  save.addEventListener("click", saveNotificationsConfig);
+  test.addEventListener("click", sendTestNotification);
+  loadNotificationsConfig();
 }
 
 async function loadChlorinationConfig() {
@@ -3610,6 +3735,7 @@ function initializeForPage() {
     initializeSafetyControls();
     initializeAcquisitionControls();
     initializeLoggingControls();
+    initializeNotificationsControls();
     initializeAnalogControls();
     initializeChlorinationControls();
     initializeFcDemandControls();

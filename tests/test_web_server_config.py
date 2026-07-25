@@ -15,6 +15,7 @@ from poolctl.web.server import (
     apply_chlorination_config_update,
     apply_fc_demand_config_update,
     apply_logging_config_update,
+    apply_notifications_config_update,
     apply_pump_timer_config_update,
     apply_runtime_config_update,
     apply_safety_config_update,
@@ -24,12 +25,14 @@ from poolctl.web.server import (
     list_lab_tests,
     serialize_acquisition_config,
     serialize_logging_config,
+    serialize_notifications_config,
     serialize_analog_input_config,
     serialize_chlorination_config,
     serialize_fc_demand_config,
     serialize_pump_timer_config,
     serialize_runtime_config,
     serialize_safety_config,
+    send_test_notification,
     start_chlorination_prime,
 )
 
@@ -317,6 +320,52 @@ def test_acquisition_and_logging_updates_write_yaml(tmp_path: Path) -> None:
 
     saved = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert str(saved["logging"]["database_path"]).endswith("new.sqlite3")
+
+
+def test_notifications_update_applies_live_and_persists(tmp_path: Path) -> None:
+    path = tmp_path / "pool.yaml"
+    path.write_text(yaml.safe_dump(config_mapping(), sort_keys=False), encoding="utf-8")
+    app = build_app_from_mapping(config_mapping(), clock=make_clock())
+
+    result = apply_notifications_config_update(
+        app=app,
+        config_path=path,
+        payload={
+            "enabled": True,
+            "provider": "pushover",
+            "default_title": "poolctl pi",
+            "pushover": {
+                "app_token_env": "POOL_PUSHOVER_TOKEN",
+                "user_key_env": "POOL_PUSHOVER_USER",
+                "api_url": "https://api.pushover.net/1/messages.json",
+                "timeout_s": 4.0,
+                "priority": 1,
+                "sound": "bike",
+            },
+        },
+    )
+
+    assert result["updated"] is True
+    assert result["applied_live"] is True
+    assert app.notification_service is not None
+    assert serialize_notifications_config(app)["default_title"] == "poolctl pi"
+    saved = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert saved["notifications"]["enabled"] is True
+    assert saved["notifications"]["pushover"]["app_token_env"] == "POOL_PUSHOVER_TOKEN"
+    assert "app_token" not in saved["notifications"]["pushover"]
+    assert "user_key" not in saved["notifications"]["pushover"]
+
+
+def test_send_test_notification_reports_disabled_when_not_enabled() -> None:
+    app = build_app_from_mapping(config_mapping(), clock=make_clock())
+
+    result = send_test_notification(
+        app=app,
+        payload={"title": "poolctl", "message": "test"},
+    )
+
+    assert result["notification"]["sent"] is False
+    assert result["notification"]["error"] == "notifications disabled"
 
 
 def test_timer_override_update_sets_and_clears_runtime_override() -> None:

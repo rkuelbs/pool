@@ -31,6 +31,7 @@ The project is intentionally layered:
   test result entry, chemical addition entry, and history charts.
 - Hourly Open-Meteo weather observation logging plus a 48-hour in-memory forecast.
 - MQTT telemetry and selected input support when enabled.
+- Optional Pushover notification provider with a dashboard test button.
 - Systemd deployment with automatic restart and SQLite backup timer.
 
 ## Repository Layout
@@ -153,6 +154,8 @@ Important sections:
 - `live_view`: dashboard display limits.
 - `weather`: Open-Meteo location, units, and polling settings.
 - `mqtt`: MQTT connection, topics, and permission switches.
+- `notifications`: push notification provider settings. Pushover secrets should
+  live in environment variables, not YAML.
 
 Schedule `start` and `end` values should be quoted strings:
 
@@ -302,6 +305,65 @@ is high by 0.5 days of demand, dosing starts 210 eligible minutes later.
 - `approve_required`: reserved for a future approval workflow.
 - `automatic`: pass the effective daily dose and any high-FC delay into the
   chlorination controller.
+
+## Pushover Notifications
+
+Notifications are provider-based. The first provider is Pushover. The service
+uses Pushover's standard HTTPS message API and sends `token`, `user`, `title`,
+`message`, and `priority` form fields to:
+
+```text
+https://api.pushover.net/1/messages.json
+```
+
+Pushover setup:
+
+1. Create a Pushover account and install the mobile app.
+2. Create a Pushover application/API token from your Pushover dashboard.
+3. Copy your Pushover user key.
+4. Put the secrets on the Pi in `/etc/poolctl/poolctl.env`.
+5. Enable notifications in the Config page or YAML.
+6. Press `Send Test` on the Config page.
+
+The project keeps secrets out of the repo. `pi-prod.yaml` stores only the names
+of the environment variables:
+
+```yaml
+notifications:
+  enabled: true
+  provider: pushover
+  default_title: poolctl
+  pushover:
+    app_token_env: PUSHOVER_APP_TOKEN
+    user_key_env: PUSHOVER_USER_KEY
+    api_url: https://api.pushover.net/1/messages.json
+    timeout_s: 5.0
+    priority: 0
+    sound: null
+```
+
+On the Pi:
+
+```bash
+sudo install -d -m 0755 /etc/poolctl
+sudo nano /etc/poolctl/poolctl.env
+```
+
+Add:
+
+```bash
+PUSHOVER_APP_TOKEN=your_app_token_here
+PUSHOVER_USER_KEY=your_user_key_here
+```
+
+Then restart:
+
+```bash
+sudo systemctl restart poolctl.service
+```
+
+The systemd service reads `/etc/poolctl/poolctl.env` if it exists. Keep that
+file out of Git.
 
 ## Raspberry Pi First Install
 

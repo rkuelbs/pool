@@ -36,6 +36,7 @@ from poolctl.services.chlorination import ChlorinationConfig
 from poolctl.services.clock import AcceleratedClock, Clock
 from poolctl.services.fc_demand import FcDemandConfig
 from poolctl.services.measurement_logging import MeasurementLoggingConfig
+from poolctl.services.notifications import NotificationsConfig
 from poolctl.services.pump_timer import PumpTimerConfig, PumpTimerOverride
 from poolctl.services.safety import SafetyConfig
 from poolctl.web.live import (
@@ -247,6 +248,10 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             self._serve_logging_config()
             return
 
+        if path == "/api/config/notifications":
+            self._serve_notifications_config()
+            return
+
         if path == "/api/config/analog_input":
             self._serve_analog_input_config()
             return
@@ -288,6 +293,10 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             self._serve_update_logging_config()
             return
 
+        if path == "/api/config/notifications":
+            self._serve_update_notifications_config()
+            return
+
         if path == "/api/config/analog_input":
             self._serve_update_analog_input_config()
             return
@@ -314,6 +323,10 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
 
         if path == "/api/system/restart":
             self._serve_restart_service()
+            return
+
+        if path == "/api/notifications/test":
+            self._serve_test_notification()
             return
 
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
@@ -623,6 +636,23 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
 
         self._serve_json(result)
 
+    def _serve_notifications_config(self) -> None:
+        self._serve_json(serialize_notifications_config(self.app))
+
+    def _serve_update_notifications_config(self) -> None:
+        try:
+            payload = self._read_json_body()
+            result = apply_notifications_config_update(
+                app=self.app,
+                config_path=self.config_path,
+                payload=payload,
+            )
+        except ValueError as error:
+            self._serve_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        self._serve_json(result)
+
     def _serve_analog_input_config(self) -> None:
         self._serve_json(serialize_analog_input_config(self.config_path))
 
@@ -700,6 +730,16 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
                 "message": "Restart requested. Service should return in a few seconds.",
             }
         )
+
+    def _serve_test_notification(self) -> None:
+        try:
+            payload = self._read_json_body()
+            result = send_test_notification(app=self.app, payload=payload)
+        except ValueError as error:
+            self._serve_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        self._serve_json(result)
 
     def _record_live_events(self, payload: dict[str, Any]) -> None:
         observed_at = str(payload.get("observed_at", self.app.clock.now().isoformat()))
@@ -1406,6 +1446,7 @@ def build_health_payload(app: PoolControllerApp) -> dict[str, Any]:
             if app.weather_service is not None
             else {"enabled": False}
         ),
+        "notifications": app.notification_status(),
         "chlorination": serialize_chlorination_config(app),
         "fc_demand": serialize_fc_demand_config(app),
     }
@@ -1751,6 +1792,83 @@ def serialize_logging_config(app: PoolControllerApp) -> dict[str, Any]:
         "database_path": str(app.measurement_logging_config.database_path),
         "layer_enabled": app.runtime_config.layer_enabled(FeatureLayer.LOGGING),
         "requires_restart": True,
+    }
+
+
+def serialize_notifications_config(app: PoolControllerApp) -> dict[str, Any]:
+    config = app.notifications_config
+    return {
+        "enabled": config.enabled,
+        "provider": config.provider.value,
+        "default_title": config.default_title,
+        "pushover": {
+            "app_token_env": config.pushover.app_token_env,
+            "user_key_env": config.pushover.user_key_env,
+            "api_url": config.pushover.api_url,
+            "timeout_s": config.pushover.timeout_s,
+            "priority": config.pushover.priority,
+            "sound": config.pushover.sound,
+            "configured": config.pushover.as_payload()["configured"],
+        },
+        "applied_live": True,
+    }
+
+
+def apply_notifications_config_update(
+    *,
+    app: PoolControllerApp,
+    config_path: Path,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    proposed = NotificationsConfig.from_mapping({"notifications": payload})
+
+    config_data = _load_config_mapping(config_path)
+    config_data["notifications"] = {
+        "enabled": proposed.enabled,
+        "provider": proposed.provider.value,
+        "default_title": proposed.default_title,
+        "pushover": {
+            "app_token_env": proposed.pushover.app_token_env,
+            "user_key_env": proposed.pushover.user_key_env,
+            "api_url": proposed.pushover.api_url,
+            "timeout_s": proposed.pushover.timeout_s,
+            "priority": proposed.pushover.priority,
+            "sound": proposed.pushover.sound,
+        },
+    }
+    _save_config_mapping(config_path, config_data)
+
+    app.apply_notifications_config(proposed)
+    return {
+        "updated": True,
+        "applied_live": True,
+        **serialize_notifications_config(app),
+    }
+
+
+def send_test_notification(
+    *,
+    app: PoolControllerApp,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    title = payload.get("title", app.notifications_config.default_title)
+    message = payload.get("message", "poolctl test notification")
+    priority = payload.get("priority")
+    if not isinstance(title, str) or not title.strip():
+        raise ValueError("title must be a non-empty string")
+    if not isinstance(message, str) or not message.strip():
+        raise ValueError("message must be a non-empty string")
+    if priority is not None and not isinstance(priority, int):
+        raise ValueError("priority must be an integer")
+
+    result = app.send_notification(
+        title=title.strip(),
+        message=message.strip(),
+        priority=priority,
+    )
+    return {
+        "notification": result.as_payload(),
+        "status": app.notification_status(),
     }
 
 

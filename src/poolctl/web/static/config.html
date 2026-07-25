@@ -383,6 +383,33 @@
         <div id="loggingStatus" class="history-status">--</div>
       </section>
 
+      <section class="history-panel" aria-label="Notifications config" data-view-section="config">
+        <div class="history-header">
+          <h2>Notifications</h2>
+          <button id="notificationsReload" type="button">Reload</button>
+        </div>
+        <div class="config-grid">
+          <label><span>Enabled</span><input id="notificationsEnabled" type="checkbox"></label>
+          <label>Provider
+            <select id="notificationsProvider">
+              <option value="pushover">Pushover</option>
+            </select>
+          </label>
+          <label>Default title <input id="notificationsDefaultTitle" type="text"></label>
+          <label>Pushover token env <input id="pushoverAppTokenEnv" type="text"></label>
+          <label>Pushover user env <input id="pushoverUserKeyEnv" type="text"></label>
+          <label>Pushover API URL <input id="pushoverApiUrl" type="text"></label>
+          <label>Timeout s <input id="pushoverTimeout" type="number" step="0.1" min="0.1"></label>
+          <label>Priority <input id="pushoverPriority" type="number" step="1" min="-2" max="2"></label>
+          <label>Sound <input id="pushoverSound" type="text" placeholder="blank = default"></label>
+        </div>
+        <div class="timer-actions">
+          <button id="notificationsSave" type="button">Save Notifications</button>
+          <button id="notificationsTest" type="button">Send Test</button>
+        </div>
+        <div id="notificationsStatus" class="history-status">--</div>
+      </section>
+
       <section class="history-panel" aria-label="Fault timeline" data-view-section="history">
         <div class="history-header">
           <h2>Fault Timeline</h2>

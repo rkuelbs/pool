@@ -62,6 +62,12 @@ from poolctl.services.flow_estimation import (
     estimate_flows,
 )
 from poolctl.services.mqtt import MqttBridge, MqttBridgeConfig
+from poolctl.services.notifications import (
+    NotificationMessage,
+    NotificationResult,
+    NotificationService,
+    NotificationsConfig,
+)
 from poolctl.services.pump_timer import PumpTimer, PumpTimerConfig
 from poolctl.services.pump_timer import PumpTimerOverride
 from poolctl.services.saturation_index import (
@@ -172,6 +178,8 @@ class PoolControllerApp:
     calcium_saturation_index_config: CalciumSaturationIndexConfig = CalciumSaturationIndexConfig()
     weather_config: WeatherConfig = WeatherConfig()
     weather_service: WeatherService | None = None
+    notifications_config: NotificationsConfig = field(default_factory=NotificationsConfig)
+    notification_service: NotificationService | None = None
     chlorine_delivery_checkpoint_at: datetime | None = None
     dosing_prime_until: datetime | None = None
     dosing_prime_started_at: datetime | None = None
@@ -301,6 +309,17 @@ class PoolControllerApp:
         """
         object.__setattr__(self, "fc_demand_config", config)
 
+    def apply_notifications_config(self, config: NotificationsConfig) -> None:
+        """
+        Apply updated notification settings to the running app.
+        """
+        object.__setattr__(self, "notifications_config", config)
+        object.__setattr__(
+            self,
+            "notification_service",
+            NotificationService(config) if config.enabled else None,
+        )
+
     def apply_safety_config(self, config: SafetyConfig) -> None:
         """
         Apply updated safety thresholds to the running app.
@@ -365,6 +384,34 @@ class PoolControllerApp:
             "until": until.isoformat() if until is not None else None,
             "remaining_s": remaining_s,
         }
+
+    def notification_status(self) -> dict[str, Any]:
+        if self.notification_service is not None:
+            return self.notification_service.status_payload()
+        return {
+            "enabled": self.notifications_config.enabled,
+            "provider": self.notifications_config.provider.value,
+            "default_title": self.notifications_config.default_title,
+            "pushover": self.notifications_config.pushover.as_payload(),
+        }
+
+    def send_notification(
+        self,
+        *,
+        message: str,
+        title: str | None = None,
+        priority: int | None = None,
+    ) -> NotificationResult:
+        service = self.notification_service
+        if service is None:
+            service = NotificationService(self.notifications_config)
+        return service.send(
+            NotificationMessage(
+                title=title or self.notifications_config.default_title,
+                message=message,
+                priority=priority,
+            )
+        )
 
     def active_timer_override(self) -> TimerOverrideState | None:
         state = self.timer_override
@@ -810,6 +857,7 @@ def build_app_from_mapping(
     )
     mqtt_config = MqttBridgeConfig.from_mapping(data)
     weather_config = WeatherConfig.from_mapping(data)
+    notifications_config = NotificationsConfig.from_mapping(data)
 
     built_clock = clock if clock is not None else _default_clock(runtime_config)
     simulated_plant: SimulatedPlant | None = None
@@ -895,6 +943,10 @@ def build_app_from_mapping(
     if weather_config.enabled:
         weather_service = WeatherService(weather_config)
 
+    notification_service: NotificationService | None = None
+    if notifications_config.enabled:
+        notification_service = NotificationService(notifications_config)
+
     return PoolControllerApp(
         runtime_config=runtime_config,
         safety_config=safety_config,
@@ -920,6 +972,8 @@ def build_app_from_mapping(
         calcium_saturation_index_config=calcium_saturation_index_config,
         weather_config=weather_config,
         weather_service=weather_service,
+        notifications_config=notifications_config,
+        notification_service=notification_service,
     )
 
 

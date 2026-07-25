@@ -194,6 +194,17 @@ mqtt:
   publish_health: true
   allow_remote_commands: false
   allow_remote_lab_tests: true
+notifications:
+  enabled: false
+  provider: pushover
+  default_title: poolctl
+  pushover:
+    app_token_env: PUSHOVER_APP_TOKEN
+    user_key_env: PUSHOVER_USER_KEY
+    api_url: https://api.pushover.net/1/messages.json
+    timeout_s: 5.0
+    priority: 0
+    sound: null
 acquisition:
   groups:
     pressures:
