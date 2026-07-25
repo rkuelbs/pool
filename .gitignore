@@ -14,3 +14,6 @@ venv/
 data/
 .idea/
 /data/
+
+*.egg-info/
+src/poolctl.egg-info/
