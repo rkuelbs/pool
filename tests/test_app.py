@@ -405,10 +405,98 @@ async def test_dosing_prime_runs_for_30_seconds_and_then_releases() -> None:
     second = await app.tick()
 
     assert first.chlorination_status is not None
-    assert first.chlorination_status.reason == "dosing pump prime/test active"
+    assert first.chlorination_status.reason == "dosing pump prime active"
     assert app.router.actuator_states[ActuatorId.CHLORINE_DOSING_PUMP] == ActuatorState.OFF
     assert second.chlorination_status is not None
     assert second.chlorination_status.reason == "daily dose is zero"
+
+
+@pytest.mark.asyncio
+async def test_dosing_calibration_uses_duty_cycle_and_bypasses_interlock(
+    tmp_path: Path,
+) -> None:
+    clock = make_clock()
+    config = {
+        "runtime": {
+            "stage": "open_loop_timer",
+            "driver_profile": "simulated",
+            "enabled_layers": ["chlorination", "logging", "safety_enforcement"],
+            "enabled_actuators": ["chlorine_dosing_pump"],
+            "enabled_sensor_groups": [],
+        },
+        "logging": {
+            "database_path": str(tmp_path / "calibration_delivery.sqlite3"),
+        },
+        "chlorination": {
+            "enabled": True,
+            "daily_dose_oz": 0.0,
+            "pump_output_oz_per_min": 1.0,
+            "no_dose_last_minutes": 10.0,
+            "max_duty_cycle": 0.5,
+            "cycle_on_seconds": 60.0,
+        },
+    }
+
+    app = build_app_from_mapping(config, clock=clock)
+    app.start_dosing_pump_calibration(
+        duration_s=120.0,
+        duty_cycle=0.5,
+        cycle_period_s=60.0,
+    )
+    first = await app.tick()
+    await clock.advance(31.0)
+    second = await app.tick()
+    await clock.advance(31.0)
+    third = await app.tick()
+
+    assert first.chlorination_status is not None
+    assert first.chlorination_status.reason == "dosing pump calibration active"
+    assert first.chlorination_results[0].metadata["safety_bypassed"] is True
+    assert first.safety_results == ()
+    assert second.logged_chlorine_delivery_count == 0
+    assert second.chlorination_status is not None
+    assert second.chlorination_status.active is False
+    assert app.router.actuator_states[ActuatorId.CHLORINE_DOSING_PUMP] == ActuatorState.ON
+    assert third.chlorination_status is not None
+    assert third.chlorination_status.active is True
+
+    assert app.measurement_logger is not None
+    delivery_summary = app.measurement_logger.chlorine_delivery_summary()
+    assert delivery_summary.runtime_seconds == 0.0
+    assert delivery_summary.delivered_oz == 0.0
+
+
+@pytest.mark.asyncio
+async def test_stop_dosing_diagnostic_turns_dosing_pump_off() -> None:
+    clock = make_clock()
+    config = {
+        "runtime": {
+            "stage": "open_loop_timer",
+            "driver_profile": "simulated",
+            "enabled_layers": ["chlorination"],
+            "enabled_actuators": ["chlorine_dosing_pump"],
+            "enabled_sensor_groups": [],
+        },
+        "chlorination": {
+            "enabled": True,
+            "daily_dose_oz": 0.0,
+            "pump_output_oz_per_min": 1.0,
+            "no_dose_last_minutes": 10.0,
+            "max_duty_cycle": 0.5,
+            "cycle_on_seconds": 60.0,
+        },
+    }
+
+    app = build_app_from_mapping(config, clock=clock)
+    app.start_dosing_pump_calibration()
+    await app.tick()
+
+    result = await app.stop_dosing_pump_diagnostic()
+
+    assert result["stopped"] is True
+    assert result["prime"]["active"] is False
+    assert result["command"]["applied"] is True
+    assert app.router.actuator_states[ActuatorId.CHLORINE_DOSING_PUMP] == ActuatorState.OFF
 
 
 @pytest.mark.asyncio

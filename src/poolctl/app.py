@@ -188,6 +188,10 @@ class PoolControllerApp:
     chlorine_delivery_checkpoint_at: datetime | None = None
     dosing_prime_until: datetime | None = None
     dosing_prime_started_at: datetime | None = None
+    dosing_prime_mode: str = "prime"
+    dosing_prime_duty_cycle: float = 1.0
+    dosing_prime_cycle_period_s: float = 60.0
+    dosing_prime_safety_bypass: bool = True
     dosing_prime_delivery_exclude_started_at: datetime | None = None
     dosing_prime_delivery_exclude_until: datetime | None = None
 
@@ -275,8 +279,16 @@ class PoolControllerApp:
                     self.acquisition_service.latest_measurements.values()
                 )
 
+            suppressed_reason_codes = (
+                ("chlorine_interlock_lost",)
+                if self.dosing_pump_diagnostic_active()
+                else ()
+            )
             safety_results = tuple(
-                await self.router.enforce_safety(measurements=safety_measurements)
+                await self.router.enforce_safety(
+                    measurements=safety_measurements,
+                    suppressed_action_reason_codes=suppressed_reason_codes,
+                )
             )
 
         publish_measurements = acquisition.measurements
@@ -377,12 +389,82 @@ class PoolControllerApp:
         *,
         duration_s: float = 30.0,
     ) -> dict[str, Any]:
+        return self._start_dosing_pump_diagnostic(
+            duration_s=duration_s,
+            mode="prime",
+            duty_cycle=1.0,
+            cycle_period_s=60.0,
+        )
+
+    def start_dosing_pump_calibration(
+        self,
+        *,
+        duration_s: float = 20.0 * 60.0,
+        duty_cycle: float = 0.5,
+        cycle_period_s: float = 120.0,
+    ) -> dict[str, Any]:
+        return self._start_dosing_pump_diagnostic(
+            duration_s=duration_s,
+            mode="calibration",
+            duty_cycle=duty_cycle,
+            cycle_period_s=cycle_period_s,
+        )
+
+    async def stop_dosing_pump_diagnostic(self) -> dict[str, Any]:
+        now = self.clock.now()
+        started_at = self.dosing_prime_started_at
+        if started_at is not None:
+            object.__setattr__(self, "dosing_prime_delivery_exclude_started_at", started_at)
+            object.__setattr__(self, "dosing_prime_delivery_exclude_until", now)
+
+        self._clear_dosing_pump_diagnostic()
+        result: ActuatorCommandResult | None = None
+        await self.router.refresh_states()
+        if self.router.actuator_states.get(ActuatorId.CHLORINE_DOSING_PUMP) == ActuatorState.ON:
+            result = await self.router.route(
+                ActuatorCommand(
+                    actuator_id=ActuatorId.CHLORINE_DOSING_PUMP,
+                    created_at=now,
+                    state=ActuatorState.OFF,
+                    requested_by=CommandSource.LOCAL_GUI,
+                    reason="stop dosing pump diagnostic",
+                    metadata={"controller": "dosing_pump_diagnostic"},
+                ),
+                bypass_safety=True,
+            )
+
+        return {
+            "stopped": True,
+            "prime": self.dosing_prime_status(),
+            "command": _command_result_payload(result) if result is not None else None,
+        }
+
+    def dosing_pump_diagnostic_active(self) -> bool:
+        return self.dosing_prime_status()["active"] is True
+
+    def _start_dosing_pump_diagnostic(
+        self,
+        *,
+        duration_s: float,
+        mode: str,
+        duty_cycle: float,
+        cycle_period_s: float,
+    ) -> dict[str, Any]:
         if duration_s <= 0:
             raise ValueError("duration_s must be > 0")
+        if not 0.0 < duty_cycle <= 1.0:
+            raise ValueError("duty_cycle must be > 0 and <= 1")
+        if cycle_period_s <= 0:
+            raise ValueError("cycle_period_s must be > 0")
+
         now = self.clock.now()
         until = now + timedelta(seconds=duration_s)
         object.__setattr__(self, "dosing_prime_started_at", now)
         object.__setattr__(self, "dosing_prime_until", until)
+        object.__setattr__(self, "dosing_prime_mode", mode)
+        object.__setattr__(self, "dosing_prime_duty_cycle", duty_cycle)
+        object.__setattr__(self, "dosing_prime_cycle_period_s", cycle_period_s)
+        object.__setattr__(self, "dosing_prime_safety_bypass", True)
         object.__setattr__(self, "dosing_prime_delivery_exclude_started_at", now)
         object.__setattr__(self, "dosing_prime_delivery_exclude_until", until)
         return self.dosing_prime_status()
@@ -392,12 +474,13 @@ class PoolControllerApp:
         until = self.dosing_prime_until
         active = until is not None and now < until
         if until is not None and not active:
-            object.__setattr__(self, "dosing_prime_until", None)
-            object.__setattr__(self, "dosing_prime_started_at", None)
+            self._clear_dosing_pump_diagnostic()
             until = None
+        desired_state = self._dosing_pump_diagnostic_desired_state(now) if active else ActuatorState.OFF
         remaining_s = max(0.0, (until - now).total_seconds()) if until is not None else 0.0
         return {
             "active": active,
+            "mode": self.dosing_prime_mode if active else None,
             "started_at": (
                 self.dosing_prime_started_at.isoformat()
                 if self.dosing_prime_started_at is not None
@@ -405,7 +488,38 @@ class PoolControllerApp:
             ),
             "until": until.isoformat() if until is not None else None,
             "remaining_s": remaining_s,
+            "duty_cycle": self.dosing_prime_duty_cycle if active else 0.0,
+            "cycle_period_s": self.dosing_prime_cycle_period_s if active else 0.0,
+            "desired_state": desired_state.value,
+            "safety_bypass": self.dosing_prime_safety_bypass if active else False,
         }
+
+    def _clear_dosing_pump_diagnostic(self) -> None:
+        object.__setattr__(self, "dosing_prime_until", None)
+        object.__setattr__(self, "dosing_prime_started_at", None)
+        object.__setattr__(self, "dosing_prime_mode", "prime")
+        object.__setattr__(self, "dosing_prime_duty_cycle", 1.0)
+        object.__setattr__(self, "dosing_prime_cycle_period_s", 60.0)
+        object.__setattr__(self, "dosing_prime_safety_bypass", True)
+
+    def _dosing_pump_diagnostic_desired_state(self, now: datetime) -> ActuatorState:
+        started_at = self.dosing_prime_started_at
+        until = self.dosing_prime_until
+        if started_at is None or until is None or now >= until:
+            return ActuatorState.OFF
+
+        duty_cycle = max(0.0, min(1.0, self.dosing_prime_duty_cycle))
+        if duty_cycle >= 1.0:
+            return ActuatorState.ON
+
+        cycle_period_s = max(0.001, self.dosing_prime_cycle_period_s)
+        on_seconds = cycle_period_s * duty_cycle
+        elapsed_s = max(0.0, (now - started_at).total_seconds())
+        return (
+            ActuatorState.ON
+            if elapsed_s % cycle_period_s < on_seconds
+            else ActuatorState.OFF
+        )
 
     def notification_status(self) -> dict[str, Any]:
         if self.notification_service is not None:
@@ -521,25 +635,42 @@ class PoolControllerApp:
         results: list[ActuatorCommandResult] = []
         prime_status = self.dosing_prime_status()
         if prime_status["active"]:
+            safety_locked_out = self.router.safety_gate.locked_out
+            desired_state = (
+                ActuatorState.OFF
+                if safety_locked_out
+                else ActuatorState(str(prime_status["desired_state"]))
+            )
             current_state = self.router.actuator_states.get(
                 ActuatorId.CHLORINE_DOSING_PUMP,
                 ActuatorState.OFF,
             )
+            mode = str(prime_status["mode"] or "prime")
+            reason = (
+                "dosing pump diagnostic blocked by safety lockout"
+                if safety_locked_out
+                else f"dosing pump {mode} active"
+            )
             status = replace(
                 evaluation.status,
-                desired_state=ActuatorState.ON,
-                active=True,
-                reason="dosing pump prime/test active",
+                desired_state=desired_state,
+                active=desired_state == ActuatorState.ON,
+                reason=reason,
+                duty_cycle=float(prime_status["duty_cycle"]),
+                duty_cycle_window_active=False,
             )
-            if current_state != ActuatorState.ON:
+            if current_state != desired_state:
                 command = ActuatorCommand(
                     actuator_id=ActuatorId.CHLORINE_DOSING_PUMP,
                     created_at=now,
-                    state=ActuatorState.ON,
+                    state=desired_state,
                     requested_by=CommandSource.LOCAL_GUI,
-                    reason="dosing pump prime/test active",
+                    reason=reason,
                     metadata={
-                        "controller": "dosing_pump_prime",
+                        "controller": "dosing_pump_diagnostic",
+                        "mode": mode,
+                        "duty_cycle": prime_status["duty_cycle"],
+                        "cycle_period_s": prime_status["cycle_period_s"],
                         "duration_s": max(
                             0.0,
                             (
@@ -550,7 +681,13 @@ class PoolControllerApp:
                         ),
                     },
                 )
-                results.append(await self.router.route(command, measurements=measurements))
+                results.append(
+                    await self.router.route(
+                        command,
+                        measurements=measurements,
+                        bypass_safety=bool(prime_status["safety_bypass"]),
+                    )
+                )
             return tuple(results), status, logged_delivery_count
 
         for command in evaluation.commands:
@@ -1595,6 +1732,16 @@ def _previous_base_fc_demand(
     if not records:
         return None
     return records[-1].value
+
+
+def _command_result_payload(result: ActuatorCommandResult) -> dict[str, Any]:
+    return {
+        "command_id": result.command_id,
+        "accepted": result.accepted,
+        "applied": result.applied,
+        "rejection_reason": result.rejection_reason,
+        "metadata": result.metadata,
+    }
 
 
 def _flow_derived_measurements(

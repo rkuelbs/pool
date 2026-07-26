@@ -135,6 +135,47 @@ async def test_chlorine_output_requires_pump_high_and_pressure() -> None:
 
 
 @pytest.mark.asyncio
+async def test_route_can_bypass_safety_for_diagnostic_command() -> None:
+    clock, _, router = make_router()
+
+    result = await router.route(
+        command(clock, ActuatorId.CHLORINE_DOSING_PUMP, ActuatorState.ON),
+        bypass_safety=True,
+    )
+
+    assert result.accepted
+    assert result.applied
+    assert result.metadata["safety_bypassed"] is True
+    assert router.actuator_states[ActuatorId.CHLORINE_DOSING_PUMP] == ActuatorState.ON
+
+
+@pytest.mark.asyncio
+async def test_enforce_safety_can_suppress_selected_action_reason() -> None:
+    clock, _, router = make_router()
+
+    await router.route(
+        command(clock, ActuatorId.CHLORINE_DOSING_PUMP, ActuatorState.ON),
+        bypass_safety=True,
+    )
+    results = await router.enforce_safety(
+        measurements=[],
+        suppressed_action_reason_codes=("chlorine_interlock_lost",),
+    )
+
+    assert results == []
+    assert router.actuator_states[ActuatorId.CHLORINE_DOSING_PUMP] == ActuatorState.ON
+
+    overpressure_results = await router.enforce_safety(
+        measurements=[pressure(clock, SensorId.PUMP_OUTPUT_PSI, 31.0)],
+        suppressed_action_reason_codes=("chlorine_interlock_lost",),
+    )
+
+    assert len(overpressure_results) == 4
+    assert overpressure_results[0].metadata["safety_action"] == "pump_output_overpressure"
+    assert router.actuator_states[ActuatorId.CHLORINE_DOSING_PUMP] == ActuatorState.OFF
+
+
+@pytest.mark.asyncio
 async def test_booster_pump_requires_pump_motor_on() -> None:
     clock, _, router = make_router()
 

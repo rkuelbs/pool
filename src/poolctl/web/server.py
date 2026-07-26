@@ -323,6 +323,14 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             self._serve_chlorination_prime()
             return
 
+        if path == "/api/chlorination/calibration":
+            self._serve_chlorination_calibration()
+            return
+
+        if path == "/api/chlorination/diagnostic_stop":
+            self._serve_chlorination_diagnostic_stop()
+            return
+
         if path == "/api/lab_tests":
             self._serve_add_lab_test()
             return
@@ -742,6 +750,23 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             self._serve_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
             return
 
+        self._serve_json(result)
+
+    def _serve_chlorination_calibration(self) -> None:
+        try:
+            payload = self._read_json_body()
+            result = start_chlorination_calibration(app=self.app, payload=payload)
+        except ValueError as error:
+            self._serve_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        self._serve_json(result)
+
+    def _serve_chlorination_diagnostic_stop(self) -> None:
+        self._discard_request_body()
+        result = self.async_runtime.run_serial(
+            stop_chlorination_diagnostic(app=self.app)
+        )
         self._serve_json(result)
 
     def _serve_add_lab_test(self) -> None:
@@ -1771,6 +1796,38 @@ def start_chlorination_prime(
         "started": True,
         "prime": app.start_dosing_pump_prime(duration_s=float(duration_s)),
     }
+
+
+def start_chlorination_calibration(
+    *,
+    app: PoolControllerApp,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    duration_s = payload.get("duration_s", 20.0 * 60.0)
+    duty_cycle = payload.get("duty_cycle", 0.5)
+    cycle_period_s = payload.get("cycle_period_s", 120.0)
+    if not isinstance(duration_s, int | float):
+        raise ValueError("duration_s must be a number")
+    if not isinstance(duty_cycle, int | float):
+        raise ValueError("duty_cycle must be a number")
+    if not isinstance(cycle_period_s, int | float):
+        raise ValueError("cycle_period_s must be a number")
+
+    return {
+        "started": True,
+        "prime": app.start_dosing_pump_calibration(
+            duration_s=float(duration_s),
+            duty_cycle=float(duty_cycle),
+            cycle_period_s=float(cycle_period_s),
+        ),
+    }
+
+
+async def stop_chlorination_diagnostic(
+    *,
+    app: PoolControllerApp,
+) -> dict[str, Any]:
+    return await app.stop_dosing_pump_diagnostic()
 
 
 def serialize_acquisition_config(app: PoolControllerApp) -> dict[str, Any]:

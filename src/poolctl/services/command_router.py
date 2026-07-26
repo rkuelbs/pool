@@ -70,6 +70,7 @@ class CommandRouter:
         command: ActuatorCommand,
         *,
         measurements: Iterable[Measurement] = (),
+        bypass_safety: bool = False,
     ) -> ActuatorCommandResult:
         await self._ensure_state_loaded()
         now = self._clock.now()
@@ -92,7 +93,7 @@ class CommandRouter:
                 rejection_reason="command is expired",
             )
 
-        if self._safety_enabled:
+        if self._safety_enabled and not bypass_safety:
             snapshot = self._snapshot(measurements, now=now)
             decision = self._safety_gate.check_command(command, snapshot)
 
@@ -106,12 +107,18 @@ class CommandRouter:
                     metadata=decision.metadata,
                 )
 
-        return await self._apply_driver_command(command, decided_at=now)
+        metadata = {"safety_bypassed": True} if bypass_safety else None
+        return await self._apply_driver_command(
+            command,
+            decided_at=now,
+            metadata=metadata,
+        )
 
     async def enforce_safety(
         self,
         *,
         measurements: Iterable[Measurement],
+        suppressed_action_reason_codes: Iterable[str] = (),
     ) -> list[ActuatorCommandResult]:
         if not self._safety_enabled:
             return []
@@ -120,9 +127,12 @@ class CommandRouter:
         now = self._clock.now()
         snapshot = self._snapshot(measurements, now=now)
         actions = self._safety_gate.evaluate(snapshot)
+        suppressed = set(suppressed_action_reason_codes)
 
         results: list[ActuatorCommandResult] = []
         for action in actions:
+            if action.reason_code in suppressed:
+                continue
             results.append(await self._apply_safety_action(action, decided_at=now))
 
         return results

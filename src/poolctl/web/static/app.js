@@ -367,6 +367,61 @@ async function primeChlorinationPump() {
   }
 }
 
+async function startChlorinationCalibration() {
+  if (chlorinationPrimeBusy) {
+    return;
+  }
+  chlorinationPrimeBusy = true;
+  setControlsDisabled(true);
+  setChlorinationPrimeStatus("Starting dosing pump calibration test...");
+  try {
+    const response = await fetch("/api/chlorination/calibration", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        duration_s: 20.0 * 60.0,
+        duty_cycle: 0.5,
+        cycle_period_s: 120.0,
+      }),
+    });
+    const payload = await parseApiResponse(response, "dosing calibration failed");
+    const remaining = payload.prime && Number.isFinite(Number(payload.prime.remaining_s))
+      ? Math.ceil(Number(payload.prime.remaining_s))
+      : 1200;
+    setChlorinationPrimeStatus(`Dosing pump calibration active (${remaining}s, 50% DC)`);
+    await loadLive();
+  } catch (error) {
+    setChlorinationPrimeStatus(error.message);
+  } finally {
+    setControlsDisabled(false);
+    chlorinationPrimeBusy = false;
+  }
+}
+
+async function stopChlorinationDiagnostic() {
+  if (chlorinationPrimeBusy) {
+    return;
+  }
+  chlorinationPrimeBusy = true;
+  setControlsDisabled(true);
+  setChlorinationPrimeStatus("Stopping dosing pump diagnostic...");
+  try {
+    const response = await fetch("/api/chlorination/diagnostic_stop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    await parseApiResponse(response, "dosing diagnostic stop failed");
+    setChlorinationPrimeStatus("Dosing pump diagnostic stopped");
+    await loadLive();
+  } catch (error) {
+    setChlorinationPrimeStatus(error.message);
+  } finally {
+    setControlsDisabled(false);
+    chlorinationPrimeBusy = false;
+  }
+}
+
 function setChlorinationPrimeStatus(message) {
   setChlorinationQuickStatus(message);
   setChlorinationConfigStatus(message);
@@ -766,7 +821,12 @@ function renderFcDemandStatus(fcDemand, dosingPrime) {
   }
   if (prime.active) {
     const remaining = Number(prime.remaining_s);
-    text = `Dosing prime active (${Number.isFinite(remaining) ? Math.ceil(remaining) : "--"}s)`;
+    const mode = prime.mode === "calibration" ? "Dosing calibration" : "Dosing prime";
+    const dutyCycle = Number(prime.duty_cycle);
+    const dutyText = prime.mode === "calibration" && Number.isFinite(dutyCycle)
+      ? `, ${(dutyCycle * 100).toFixed(0)}% DC`
+      : "";
+    text = `${mode} active (${Number.isFinite(remaining) ? Math.ceil(remaining) : "--"}s${dutyText})`;
   }
   nodes.forEach((node) => {
     node.textContent = text;
@@ -3009,6 +3069,14 @@ function initializeChlorinationControls() {
   const primeButton = document.getElementById("chlorinationPrimeConfigButton");
   if (primeButton) {
     primeButton.addEventListener("click", primeChlorinationPump);
+  }
+  const calibrationButton = document.getElementById("chlorinationCalibrationConfigButton");
+  if (calibrationButton) {
+    calibrationButton.addEventListener("click", startChlorinationCalibration);
+  }
+  const stopButton = document.getElementById("chlorinationDiagnosticStopButton");
+  if (stopButton) {
+    stopButton.addEventListener("click", stopChlorinationDiagnostic);
   }
   loadChlorinationConfig();
 }

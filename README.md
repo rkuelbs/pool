@@ -20,7 +20,8 @@ The project is intentionally layered:
 - Raspberry Pi Modbus analog input support for pressure channels.
 - DFRobot Modbus ORP and pH sensor support, including probe temperatures.
 - Pump timer scheduling with manual dashboard overrides.
-- Open-loop chlorine dosing on relay 7, with a dashboard prime/test button.
+- Open-loop chlorine dosing on relay 7, with dashboard prime and calibration
+  test buttons.
 - Optional FC-demand estimator based on manual FC tests and logged chlorine
   delivery/additions. ORP and pH are not used by this estimator.
 - Safety enforcement layer with configurable pressure gates and lockouts.
@@ -199,7 +200,7 @@ wired, calibrated, and verified.
 - Schedule: pump timer schedule editor.
 - Config: forms for runtime layers, safety, chlorination, FC demand,
   acquisition, logging, analog input calibration, and diagnostic dosing-pump
-  prime.
+  prime/calibration tests.
 
 Some config changes apply live. Others write YAML and require restart because
 drivers or long-lived services must be rebuilt.
@@ -222,11 +223,20 @@ The controller:
 
 Changing `daily_dose_oz` from the dashboard applies the new duty cycle going
 forward. The controller does not try to make up for earlier parts of the day.
-The Config page has a diagnostic `Prime Dosing Pump 30s` button. It runs the
-dosing pump through the normal command router, but that diagnostic runtime is
-excluded from logged chlorine delivery, daily chlorine totals, and FC-demand
-estimator addition math. It is intended for priming the line with the hose
-disconnected from the pool, not for normal chlorination.
+The Config page has diagnostic dosing-pump buttons:
+
+- `Prime Dosing Pump 30s`: runs the dosing pump continuously for 30 seconds.
+- `Calibrate Dosing Pump 20m`: runs the dosing pump at 50% duty cycle for 20
+  minutes, using 60 seconds ON and 60 seconds OFF. Put the delivery line in a
+  graduated cylinder, then manually compute and update `pump_output_oz_per_min`.
+- `Stop Dosing Test`: stops either diagnostic run early.
+
+These diagnostic commands bypass the normal chlorinator interlock so they can be
+used with the filter pump off and the dosing line disconnected. Diagnostic
+runtime is excluded from logged chlorine delivery, daily chlorine totals, and
+FC-demand estimator addition math. The bypass is intentionally narrow; hard
+safety faults such as overpressure still remain part of the runtime safety
+loop.
 
 The History page can graph chlorination control signals:
 

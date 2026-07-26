@@ -35,6 +35,7 @@ from poolctl.web.server import (
     serialize_runtime_config,
     serialize_safety_config,
     send_test_notification,
+    start_chlorination_calibration,
     start_chlorination_prime,
 )
 
@@ -209,6 +210,23 @@ def test_start_chlorination_prime_sets_runtime_timer() -> None:
     assert result["started"] is True
     assert result["prime"]["active"] is True
     assert result["prime"]["remaining_s"] == 30.0
+
+
+def test_start_chlorination_calibration_sets_runtime_duty_cycle() -> None:
+    app = build_app_from_mapping(config_mapping(), clock=make_clock())
+
+    result = start_chlorination_calibration(
+        app=app,
+        payload={},
+    )
+
+    assert result["started"] is True
+    assert result["prime"]["active"] is True
+    assert result["prime"]["mode"] == "calibration"
+    assert result["prime"]["remaining_s"] == 1200.0
+    assert result["prime"]["duty_cycle"] == 0.5
+    assert result["prime"]["cycle_period_s"] == 120.0
+    assert result["prime"]["safety_bypass"] is True
 
 
 def test_runtime_update_writes_yaml_and_reports_restart(tmp_path: Path) -> None:
