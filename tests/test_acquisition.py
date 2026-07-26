@@ -16,6 +16,8 @@ from poolctl.services.acquisition import (
     AcquisitionConfig,
     AcquisitionGroupConfig,
     AcquisitionService,
+    FilterType,
+    MeasurementFilterConfig,
     OversamplingConfig,
     Reducer,
     load_acquisition_config,
@@ -64,6 +66,39 @@ class FakeSensor:
         return self._unit
 
 
+class FakeMultiSensor:
+    def __init__(
+        self,
+        *,
+        name: str,
+        clock: SimulatedClock,
+        sensor_ids: tuple[SensorId, ...] | None,
+        values: dict[SensorId, float],
+        unit: str = "psi",
+    ) -> None:
+        self.name = name
+        self._clock = clock
+        self._values = values
+        self._unit = unit
+        self.read_count = 0
+        if sensor_ids is not None:
+            self.sensor_ids = sensor_ids
+
+    async def read_all(self) -> list[Measurement]:
+        self.read_count += 1
+        return [
+            Measurement(
+                sensor_id=sensor_id,
+                observed_at=self._clock.now(),
+                value=value,
+                unit=self._unit,
+                quality=Quality.GOOD,
+                metadata={"driver": self.name},
+            )
+            for sensor_id, value in self._values.items()
+        ]
+
+
 def make_clock() -> SimulatedClock:
     return SimulatedClock(
         start_at=datetime(2026, 5, 21, 12, 0, tzinfo=timezone.utc),
@@ -95,6 +130,10 @@ acquisition:
         sample_count: 3
         sample_interval_s: 0.1
         reducer: median
+      filter:
+        type: boxcar
+        window_samples: 2
+        min_samples: 1
 """,
         encoding="utf-8",
     )
@@ -112,6 +151,9 @@ acquisition:
     assert config.groups[0].oversampling.sample_count == 3
     assert config.groups[0].oversampling.sample_interval_s == 0.1
     assert config.groups[0].oversampling.reducer == Reducer.MEDIAN
+    assert config.groups[0].filtering.filter_type == FilterType.BOXCAR
+    assert config.groups[0].filtering.window_samples == 2
+    assert config.groups[0].filtering.min_samples == 1
 
 
 @pytest.mark.asyncio
@@ -156,6 +198,169 @@ async def test_read_group_oversamples_and_reduces_measurement() -> None:
     assert result.measurements[0].metadata["raw_min"] == 1.0
     assert result.measurements[0].metadata["raw_max"] == 100.0
     assert result.loggable_measurements == result.measurements
+
+
+@pytest.mark.asyncio
+async def test_read_group_applies_rolling_boxcar_filter() -> None:
+    clock = make_clock()
+    sensor = FakeSensor(
+        name="pump_output",
+        sensor_id=SensorId.PUMP_OUTPUT_PSI,
+        clock=clock,
+        values=[10.0, 12.0, 18.0],
+    )
+    service = AcquisitionService(
+        config=AcquisitionConfig(
+            groups=(
+                AcquisitionGroupConfig(
+                    name="pressures",
+                    sensor_ids=(SensorId.PUMP_OUTPUT_PSI,),
+                    read_interval_s=1.0,
+                    log_interval_s=30.0,
+                    filtering=MeasurementFilterConfig(
+                        filter_type=FilterType.BOXCAR,
+                        window_samples=2,
+                    ),
+                ),
+            )
+        ),
+        clock=clock,
+        sensor_drivers=[sensor],
+    )
+
+    first = await service.read_group(
+        "pressures",
+        actuator_states=no_actuator_states(),
+        state_started_at=no_state_started_at(),
+    )
+    second = await service.read_group(
+        "pressures",
+        actuator_states=no_actuator_states(),
+        state_started_at=no_state_started_at(),
+    )
+    third = await service.read_group(
+        "pressures",
+        actuator_states=no_actuator_states(),
+        state_started_at=no_state_started_at(),
+    )
+
+    assert sensor.read_count == 3
+    assert first.measurements[0].value == 10.0
+    assert second.measurements[0].value == 11.0
+    assert third.measurements[0].value == 15.0
+    assert third.measurements[0].metadata["filter"]["sample_count"] == 2
+    assert third.measurements[0].metadata["filter"]["raw_latest"] == 18.0
+    assert service.latest_raw_measurements[SensorId.PUMP_OUTPUT_PSI].value == 18.0
+    assert service.latest_measurements[SensorId.PUMP_OUTPUT_PSI].value == 15.0
+
+
+@pytest.mark.asyncio
+async def test_flow_invalid_measurements_do_not_enter_rolling_filter() -> None:
+    clock = make_clock()
+    sensor = FakeSensor(
+        name="raw_ph",
+        sensor_id=SensorId.RAW_PH,
+        clock=clock,
+        values=[7.4, 99.0, 7.6],
+        unit="pH",
+    )
+    service = AcquisitionService(
+        config=AcquisitionConfig(
+            groups=(
+                AcquisitionGroupConfig(
+                    name="chemistry",
+                    sensor_ids=(SensorId.RAW_PH,),
+                    read_interval_s=5.0,
+                    log_interval_s=120.0,
+                    requires_pump_flow=True,
+                    min_pump_on_seconds=60.0,
+                    filtering=MeasurementFilterConfig(
+                        filter_type=FilterType.BOXCAR,
+                        window_seconds=120.0,
+                    ),
+                ),
+            )
+        ),
+        clock=clock,
+        sensor_drivers=[sensor],
+    )
+
+    first = await service.read_group(
+        "chemistry",
+        actuator_states={ActuatorId.PUMP_MOTOR: ActuatorState.ON},
+        state_started_at={
+            ActuatorId.PUMP_MOTOR: clock.now() - timedelta(seconds=61),
+        },
+    )
+    second = await service.read_group(
+        "chemistry",
+        actuator_states={ActuatorId.PUMP_MOTOR: ActuatorState.OFF},
+        state_started_at={ActuatorId.PUMP_MOTOR: clock.now()},
+    )
+    third = await service.read_group(
+        "chemistry",
+        actuator_states={ActuatorId.PUMP_MOTOR: ActuatorState.ON},
+        state_started_at={
+            ActuatorId.PUMP_MOTOR: clock.now() - timedelta(seconds=61),
+        },
+    )
+
+    assert first.measurements[0].value == 7.4
+    assert second.measurements[0].quality == Quality.SUSPECT
+    assert second.measurements[0].metadata["filter"]["status"] == "skipped"
+    assert second.loggable_measurements == ()
+    assert third.measurements[0].value == 7.6
+    assert third.measurements[0].metadata["filter"]["sample_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_multi_sensor_drivers_are_skipped_when_their_sensor_ids_are_not_due() -> None:
+    clock = make_clock()
+    pressure_driver = FakeMultiSensor(
+        name="pressure_module",
+        clock=clock,
+        sensor_ids=(SensorId.PUMP_OUTPUT_PSI, SensorId.FILTER_OUTPUT_PSI),
+        values={SensorId.PUMP_OUTPUT_PSI: 7.0, SensorId.FILTER_OUTPUT_PSI: 5.0},
+    )
+    chemistry_driver = FakeMultiSensor(
+        name="orp_module",
+        clock=clock,
+        sensor_ids=(SensorId.RAW_ORP, SensorId.ORP_TEMP),
+        values={SensorId.RAW_ORP: 650.0, SensorId.ORP_TEMP: 82.0},
+        unit="mV",
+    )
+    service = AcquisitionService(
+        config=AcquisitionConfig(
+            groups=(
+                AcquisitionGroupConfig(
+                    name="pressures",
+                    sensor_ids=(SensorId.PUMP_OUTPUT_PSI,),
+                    read_interval_s=1.0,
+                    log_interval_s=30.0,
+                    oversampling=OversamplingConfig(
+                        sample_count=3,
+                        reducer=Reducer.MEDIAN,
+                    ),
+                ),
+            )
+        ),
+        clock=clock,
+        sensor_drivers=[],
+        multi_sensor_drivers=[pressure_driver, chemistry_driver],
+    )
+
+    result = await service.read_group(
+        "pressures",
+        actuator_states=no_actuator_states(),
+        state_started_at=no_state_started_at(),
+    )
+
+    assert pressure_driver.read_count == 3
+    assert chemistry_driver.read_count == 0
+    assert [measurement.sensor_id for measurement in result.measurements] == [
+        SensorId.PUMP_OUTPUT_PSI,
+    ]
+    assert result.failures == ()
 
 
 @pytest.mark.asyncio

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
 from statistics import mean, median
@@ -32,6 +32,15 @@ class Reducer(str, Enum):
     TRIMMED_MEAN = "trimmed_mean"
 
 
+class FilterType(str, Enum):
+    """
+    Continuous filtering applied across acquisition polls.
+    """
+
+    NONE = "none"
+    BOXCAR = "boxcar"
+
+
 @dataclass(frozen=True)
 class OversamplingConfig:
     """
@@ -51,6 +60,45 @@ class OversamplingConfig:
 
 
 @dataclass(frozen=True)
+class MeasurementFilterConfig:
+    """
+    Rolling filter settings for one acquisition group.
+
+    Burst oversampling reduces several immediate samples into one reading.
+    This filter smooths readings across normal acquisition polls so the control
+    loop is not blocked by long sensor-sampling bursts.
+    """
+
+    filter_type: FilterType = FilterType.NONE
+    window_samples: int | None = None
+    window_seconds: float | None = None
+    min_samples: int = 1
+
+    def __post_init__(self) -> None:
+        if self.min_samples < 1:
+            raise ValueError("min_samples must be at least 1")
+
+        if self.window_samples is not None and self.window_samples < 1:
+            raise ValueError("window_samples must be at least 1 when set")
+
+        if self.window_seconds is not None and self.window_seconds <= 0:
+            raise ValueError("window_seconds must be greater than zero when set")
+
+        if (
+            self.filter_type == FilterType.BOXCAR
+            and self.window_samples is None
+            and self.window_seconds is None
+        ):
+            raise ValueError("boxcar filter requires window_samples or window_seconds")
+
+        if (
+            self.window_samples is not None
+            and self.min_samples > self.window_samples
+        ):
+            raise ValueError("min_samples cannot exceed window_samples")
+
+
+@dataclass(frozen=True)
 class AcquisitionGroupConfig:
     """
     Read/log policy for a related group of sensors.
@@ -64,6 +112,7 @@ class AcquisitionGroupConfig:
     min_pump_on_seconds: float = 0.0
     required_pump_speed: ActuatorState | None = None
     oversampling: OversamplingConfig = field(default_factory=OversamplingConfig)
+    filtering: MeasurementFilterConfig = field(default_factory=MeasurementFilterConfig)
 
     def __post_init__(self) -> None:
         if not self.sensor_ids:
@@ -172,6 +221,8 @@ class AcquisitionService:
 
         self._multi_sensor_drivers = tuple(multi_sensor_drivers)
         self._latest_measurements: dict[SensorId, Measurement] = {}
+        self._latest_raw_measurements: dict[SensorId, Measurement] = {}
+        self._filter_buffers: dict[SensorId, list[Measurement]] = {}
         self._last_read_at: dict[str, datetime] = {}
         self._last_logged_at: dict[SensorId, datetime] = {}
         self._groups_by_name = {group.name: group for group in config.groups}
@@ -181,6 +232,10 @@ class AcquisitionService:
     @property
     def latest_measurements(self) -> dict[SensorId, Measurement]:
         return dict(self._latest_measurements)
+
+    @property
+    def latest_raw_measurements(self) -> dict[SensorId, Measurement]:
+        return dict(self._latest_raw_measurements)
 
     async def poll_due(
         self,
@@ -277,17 +332,26 @@ class AcquisitionService:
                 await self._clock.sleep(group.oversampling.sample_interval_s)
 
         now = self._clock.now()
-        measurements = [
-            self._apply_flow_validity(
-                self._reduce_measurements(samples, group.oversampling),
+        measurements: list[Measurement] = []
+        for samples in samples_by_sensor.values():
+            if not samples:
+                continue
+
+            reduced_measurement = self._reduce_measurements(samples, group.oversampling)
+            self._latest_raw_measurements[reduced_measurement.sensor_id] = reduced_measurement
+            validated_measurement = self._apply_flow_validity(
+                reduced_measurement,
                 group,
                 actuator_states=actuator_states,
                 state_started_at=state_started_at,
                 now=now,
             )
-            for samples in samples_by_sensor.values()
-            if samples
-        ]
+            measurements.append(
+                self._apply_filter(
+                    validated_measurement,
+                    group.filtering,
+                )
+            )
 
         log_decisions = [
             self._log_decision(measurement, group, now=now)
@@ -339,6 +403,12 @@ class AcquisitionService:
                 )
 
         for multi_driver in self._multi_sensor_drivers:
+            driver_sensor_ids = getattr(multi_driver, "sensor_ids", None)
+            if driver_sensor_ids is not None and not sensor_id_set.intersection(
+                driver_sensor_ids
+            ):
+                continue
+
             try:
                 for measurement in await multi_driver.read_all():
                     if measurement.sensor_id in sensor_id_set:
@@ -478,6 +548,80 @@ class AcquisitionService:
 
         return True, None, pump_on_seconds
 
+    def _apply_filter(
+        self,
+        measurement: Measurement,
+        filtering: MeasurementFilterConfig,
+    ) -> Measurement:
+        if filtering.filter_type == FilterType.NONE:
+            self._filter_buffers.pop(measurement.sensor_id, None)
+            return measurement
+
+        if filtering.filter_type != FilterType.BOXCAR:
+            raise ValueError(f"unknown filter type: {filtering.filter_type.value}")
+
+        if measurement.quality != Quality.GOOD:
+            self._filter_buffers.pop(measurement.sensor_id, None)
+            return measurement.model_copy(
+                update={
+                    "metadata": {
+                        **measurement.metadata,
+                        "filter": {
+                            "type": filtering.filter_type.value,
+                            "status": "skipped",
+                            "reason": f"quality_{measurement.quality.value}",
+                            "raw_latest": measurement.value,
+                        },
+                    }
+                }
+            )
+
+        buffer = [
+            *self._filter_buffers.get(measurement.sensor_id, []),
+            measurement,
+        ]
+        buffer = _trim_filter_buffer(buffer, filtering, measurement.observed_at)
+        self._filter_buffers[measurement.sensor_id] = buffer
+
+        filter_metadata = {
+            "type": filtering.filter_type.value,
+            "status": "filtered",
+            "window_samples": filtering.window_samples,
+            "window_seconds": filtering.window_seconds,
+            "min_samples": filtering.min_samples,
+            "sample_count": len(buffer),
+            "raw_latest": measurement.value,
+        }
+
+        if len(buffer) < filtering.min_samples:
+            return measurement.model_copy(
+                update={
+                    "metadata": {
+                        **measurement.metadata,
+                        "filter": {
+                            **filter_metadata,
+                            "status": "warming_up",
+                        },
+                    }
+                }
+            )
+
+        values = [sample.value for sample in buffer]
+        return measurement.model_copy(
+            update={
+                "value": round(mean(values), _decimal_places(values)),
+                "source_measurement_ids": [sample.id for sample in buffer],
+                "metadata": {
+                    **measurement.metadata,
+                    "filter": {
+                        **filter_metadata,
+                        "min": min(values),
+                        "max": max(values),
+                    },
+                },
+            }
+        )
+
     def _pump_on_seconds(
         self,
         state_started_at: Mapping[ActuatorId, datetime],
@@ -565,6 +709,7 @@ def _group_from_mapping(
     data: Mapping[str, Any],
 ) -> AcquisitionGroupConfig:
     oversampling_data = _mapping_value(data, "oversample", default={})
+    filter_data = _mapping_value(data, "filter", default={})
     required_pump_speed = _optional_actuator_state(data.get("required_pump_speed"))
 
     return AcquisitionGroupConfig(
@@ -582,6 +727,12 @@ def _group_from_mapping(
             sample_count=_int_value(oversampling_data, "sample_count", 1),
             sample_interval_s=_float_value(oversampling_data, "sample_interval_s", 0.0),
             reducer=_reducer_value(oversampling_data, "reducer", Reducer.LAST),
+        ),
+        filtering=MeasurementFilterConfig(
+            filter_type=_filter_type_value(filter_data, "type", FilterType.NONE),
+            window_samples=_optional_int_value(filter_data, "window_samples"),
+            window_seconds=_optional_float_value(filter_data, "window_seconds"),
+            min_samples=_int_value(filter_data, "min_samples", 1),
         ),
     )
 
@@ -615,6 +766,28 @@ def _worst_quality(qualities: Iterable[Quality]) -> Quality:
     }
 
     return max(qualities, key=lambda quality: quality_order[quality])
+
+
+def _trim_filter_buffer(
+    buffer: list[Measurement],
+    filtering: MeasurementFilterConfig,
+    observed_at: datetime,
+) -> list[Measurement]:
+    if filtering.window_seconds is not None:
+        cutoff = observed_at - timedelta(seconds=filtering.window_seconds)
+        buffer = [
+            measurement
+            for measurement in buffer
+            if measurement.observed_at >= cutoff
+        ]
+
+    if (
+        filtering.window_samples is not None
+        and len(buffer) > filtering.window_samples
+    ):
+        buffer = buffer[-filtering.window_samples :]
+
+    return buffer
 
 
 def _decimal_places(values: list[float]) -> int:
@@ -663,6 +836,18 @@ def _int_value(data: Mapping[str, Any], key: str, default: int) -> int:
     return value
 
 
+def _optional_int_value(data: Mapping[str, Any], key: str) -> int | None:
+    value = data.get(key)
+
+    if value is None:
+        return None
+
+    if not isinstance(value, int):
+        raise ValueError(f"{key} must be an integer")
+
+    return value
+
+
 def _bool_value(data: Mapping[str, Any], key: str, default: bool) -> bool:
     value = data.get(key, default)
 
@@ -670,6 +855,18 @@ def _bool_value(data: Mapping[str, Any], key: str, default: bool) -> bool:
         raise ValueError(f"{key} must be true or false")
 
     return value
+
+
+def _optional_float_value(data: Mapping[str, Any], key: str) -> float | None:
+    value = data.get(key)
+
+    if value is None:
+        return None
+
+    if not isinstance(value, int | float):
+        raise ValueError(f"{key} must be a number")
+
+    return float(value)
 
 
 def _string_list_value(data: Mapping[str, Any], key: str) -> list[str]:
@@ -706,3 +903,16 @@ def _reducer_value(data: Mapping[str, Any], key: str, default: Reducer) -> Reduc
         raise ValueError(f"{key} must be a reducer string")
 
     return Reducer(value)
+
+
+def _filter_type_value(
+    data: Mapping[str, Any],
+    key: str,
+    default: FilterType,
+) -> FilterType:
+    value = data.get(key, default.value)
+
+    if not isinstance(value, str):
+        raise ValueError(f"{key} must be a filter type string")
+
+    return FilterType(value)

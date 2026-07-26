@@ -41,6 +41,7 @@ from poolctl.services.measurement_logging import MeasurementLoggingConfig
 from poolctl.services.notifications import NotificationsConfig
 from poolctl.services.pump_timer import PumpTimerConfig, PumpTimerOverride
 from poolctl.services.safety import SafetyConfig
+from poolctl.services.weather import WeatherPollResult
 from poolctl.web.live import (
     EXTRA_HISTORY_IDS,
     build_history_payload,
@@ -91,9 +92,13 @@ class AsyncRuntime:
         )
         self._app_lock: asyncio.Lock | None = None
         self._tick_future: concurrent.futures.Future[Any] | None = None
+        self._weather_future: concurrent.futures.Future[Any] | None = None
         self._state_lock = threading.Lock()
         self._latest_live_payload: dict[str, Any] | None = None
         self._last_tick_error: str | None = None
+        self._last_weather_result: dict[str, Any] | None = None
+        self._last_weather_error: str | None = None
+        self._last_tick_started_s: float | None = None
         self._thread.start()
 
     def _run_loop(self) -> None:
@@ -125,6 +130,23 @@ class AsyncRuntime:
             self._loop,
         )
 
+    def start_weather_loop(
+        self,
+        app: PoolControllerApp,
+        *,
+        check_interval_s: float = 60.0,
+    ) -> None:
+        if check_interval_s <= 0:
+            return
+        if app.weather_service is None:
+            return
+        if self._weather_future is not None:
+            return
+        self._weather_future = asyncio.run_coroutine_threadsafe(
+            self._weather_worker(app=app, check_interval_s=check_interval_s),
+            self._loop,
+        )
+
     def latest_live_payload(self) -> dict[str, Any] | None:
         with self._state_lock:
             return dict(self._latest_live_payload) if self._latest_live_payload is not None else None
@@ -132,8 +154,19 @@ class AsyncRuntime:
     async def _tick_worker(self, *, app: PoolControllerApp, interval_s: float) -> None:
         while True:
             started = self._loop.time()
+            previous_started = self._last_tick_started_s
+            self._last_tick_started_s = started
             try:
                 payload = await self._run_serial(build_live_snapshot(app))
+                elapsed = self._loop.time() - started
+                payload["loop"] = _loop_timing_payload(
+                    target_interval_s=interval_s,
+                    started_s=started,
+                    previous_started_s=previous_started,
+                    elapsed_s=elapsed,
+                    tick_payload=payload.get("tick", {}),
+                )
+                self._merge_weather_status(payload)
                 with self._state_lock:
                     self._latest_live_payload = payload
                     self._last_tick_error = None
@@ -145,7 +178,50 @@ class AsyncRuntime:
             elapsed = self._loop.time() - started
             await asyncio.sleep(max(0.0, interval_s - elapsed))
 
+    async def _weather_worker(
+        self,
+        *,
+        app: PoolControllerApp,
+        check_interval_s: float,
+    ) -> None:
+        while True:
+            try:
+                result = await asyncio.to_thread(app.poll_weather_due)
+                with self._state_lock:
+                    self._last_weather_result = _weather_poll_payload(result)
+                    self._last_weather_error = result.error
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                with self._state_lock:
+                    self._last_weather_error = str(error)
+            await app.clock.sleep(check_interval_s)
+
+    def _merge_weather_status(self, payload: dict[str, Any]) -> None:
+        with self._state_lock:
+            weather_result = (
+                dict(self._last_weather_result)
+                if self._last_weather_result is not None
+                else None
+            )
+            weather_error = self._last_weather_error
+
+        if weather_result is not None:
+            payload["weather_poll"] = weather_result
+            tick = payload.setdefault("tick", {})
+            if weather_result.get("error"):
+                tick["weather_poll_error"] = weather_result["error"]
+        elif weather_error is not None:
+            tick = payload.setdefault("tick", {})
+            tick["weather_poll_error"] = weather_error
+
     def close(self) -> None:
+        if self._weather_future is not None:
+            self._weather_future.cancel()
+            try:
+                self._weather_future.result(timeout=2.0)
+            except Exception:
+                pass
         if self._tick_future is not None:
             self._tick_future.cancel()
             try:
@@ -154,6 +230,53 @@ class AsyncRuntime:
                 pass
         self._loop.call_soon_threadsafe(self._loop.stop)
         self._thread.join(timeout=2.0)
+
+
+def _loop_timing_payload(
+    *,
+    target_interval_s: float,
+    started_s: float,
+    previous_started_s: float | None,
+    elapsed_s: float,
+    tick_payload: Any,
+) -> dict[str, Any]:
+    interval_since_previous_start_s = (
+        None if previous_started_s is None else started_s - previous_started_s
+    )
+    interval_error_s = (
+        None
+        if interval_since_previous_start_s is None
+        else interval_since_previous_start_s - target_interval_s
+    )
+    control_duration_s = (
+        tick_payload.get("control_duration_s")
+        if isinstance(tick_payload, dict)
+        else None
+    )
+
+    return {
+        "target_interval_s": target_interval_s,
+        "tick_duration_s": elapsed_s,
+        "control_duration_s": control_duration_s,
+        "interval_since_previous_start_s": interval_since_previous_start_s,
+        "interval_error_s": interval_error_s,
+        "start_jitter_s": (
+            None if interval_error_s is None else max(0.0, interval_error_s)
+        ),
+        "overrun_s": max(0.0, elapsed_s - target_interval_s),
+    }
+
+
+def _weather_poll_payload(result: WeatherPollResult) -> dict[str, Any]:
+    return {
+        "attempted": result.attempted,
+        "updated": result.updated,
+        "logged_count": result.logged_count,
+        "error": result.error,
+        "observed_at": (
+            result.observed_at.isoformat() if result.observed_at is not None else None
+        ),
+    }
 
 
 class PoolCtlWebHandler(BaseHTTPRequestHandler):
@@ -945,12 +1068,13 @@ def create_server(
     host: str,
     port: int,
     sim_speedup: float | None = None,
-    tick_interval_s: float = 1.0,
+    tick_interval_s: float = 0.25,
 ) -> ThreadingHTTPServer:
     clock = simulation_clock(config_path, speedup=sim_speedup)
     app = build_app_from_config(config_path, clock=clock)
     async_runtime = AsyncRuntime()
     async_runtime.start_tick_loop(app, interval_s=tick_interval_s)
+    async_runtime.start_weather_loop(app)
 
     class BoundPoolCtlWebHandler(PoolCtlWebHandler):
         pass
@@ -1847,6 +1971,12 @@ def serialize_acquisition_config(app: PoolControllerApp) -> dict[str, Any]:
                     "sample_interval_s": group.oversampling.sample_interval_s,
                     "reducer": group.oversampling.reducer.value,
                 },
+                "filter": {
+                    "type": group.filtering.filter_type.value,
+                    "window_samples": group.filtering.window_samples,
+                    "window_seconds": group.filtering.window_seconds,
+                    "min_samples": group.filtering.min_samples,
+                },
             }
             for group in app.acquisition_config.groups
         },
@@ -2209,7 +2339,7 @@ def main() -> None:
     parser.add_argument(
         "--tick-interval-s",
         type=float,
-        default=1.0,
+        default=0.25,
         help="Dedicated runtime loop period in seconds. Set <=0 to disable background loop.",
     )
     args = parser.parse_args()

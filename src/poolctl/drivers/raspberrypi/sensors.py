@@ -99,6 +99,7 @@ class DFRobotPhSensor:
     """
 
     name = "dfrobot_sen0708_ph"
+    sensor_ids = (SensorId.RAW_PH, SensorId.PH_TEMP)
 
     def __init__(
         self,
@@ -227,6 +228,7 @@ class DFRobotOrpSensor:
     """
 
     name = "dfrobot_sen0709_orp"
+    sensor_ids = (SensorId.RAW_ORP, SensorId.ORP_TEMP)
 
     def __init__(
         self,

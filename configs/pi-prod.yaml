@@ -222,9 +222,14 @@ acquisition:
       min_pump_on_seconds: 0
       required_pump_speed: null
       oversample:
-        sample_count: 5
-        sample_interval_s: 0.1
-        reducer: median
+        sample_count: 1
+        sample_interval_s: 0
+        reducer: last
+      filter:
+        type: boxcar
+        window_samples: 2
+        window_seconds: null
+        min_samples: 1
     chemistry_loop:
       sensor_ids:
       - raw_orp
@@ -235,9 +240,14 @@ acquisition:
       min_pump_on_seconds: 300
       required_pump_speed: null
       oversample:
-        sample_count: 30
-        sample_interval_s: 0.1
-        reducer: median
+        sample_count: 1
+        sample_interval_s: 0
+        reducer: last
+      filter:
+        type: boxcar
+        window_samples: null
+        window_seconds: 60
+        min_samples: 1
   chemistry_sampling_refresh:
     enabled: true
     max_pump_off_s: 3000

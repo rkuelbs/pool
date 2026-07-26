@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
@@ -103,6 +104,8 @@ class AppTickResult:
     weather_result: WeatherPollResult = field(default_factory=WeatherPollResult)
     fc_demand_status: FcDemandStatus | None = None
     logged_chlorine_delivery_count: int = 0
+    duration_s: float = 0.0
+    control_duration_s: float = 0.0
 
     @property
     def measurements(self) -> tuple[Measurement, ...]:
@@ -196,7 +199,28 @@ class PoolControllerApp:
     dosing_prime_delivery_exclude_until: datetime | None = None
 
     async def tick(self, *, force_acquisition: bool = False) -> AppTickResult:
-        await self.router.refresh_states()
+        tick_started_s = time.perf_counter()
+
+        await self.router.ensure_states_loaded()
+        self._update_sampling_override()
+        timer_results = await self._run_pump_timer()
+        control_measurements_source = (
+            tuple(self.acquisition_service.latest_measurements.values())
+            if self.acquisition_service is not None
+            else ()
+        )
+        fc_demand_plan = self.fc_demand_plan(now=self.clock.now())
+        (
+            chlorination_results,
+            chlorination_status,
+            logged_chlorine_delivery_count,
+        ) = await self._run_chlorination(
+            measurements=control_measurements_source,
+            plan_adjustment=(
+                fc_demand_plan.adjustment if fc_demand_plan is not None else None
+            ),
+        )
+        control_duration_s = time.perf_counter() - tick_started_s
 
         acquisition = await self._poll_acquisition(force=force_acquisition)
         latest_measurements = (
@@ -238,30 +262,11 @@ class PoolControllerApp:
         if should_log_csi and csi_measurement is not None:
             loggable_measurements = tuple(loggable_measurements) + (csi_measurement,)
         mqtt_results, logged_lab_test_count = await self._process_mqtt_inputs(acquisition.measurements)
-        weather_result = self._poll_weather()
         logged_measurement_count = self._log_measurements(loggable_measurements)
         daily_summary_measurements = self._daily_environment_measurements(
             observed_at=self.clock.now()
         )
         logged_measurement_count += self._log_measurements(daily_summary_measurements)
-        self._update_sampling_override()
-        timer_results = await self._run_pump_timer()
-        chlorination_measurements = (
-            acquisition.measurements
-            if acquisition.measurements
-            else tuple(latest_measurements.values())
-        )
-        fc_demand_plan = self.fc_demand_plan(now=self.clock.now())
-        (
-            chlorination_results,
-            chlorination_status,
-            logged_chlorine_delivery_count,
-        ) = await self._run_chlorination(
-            measurements=chlorination_measurements,
-            plan_adjustment=(
-                fc_demand_plan.adjustment if fc_demand_plan is not None else None
-            ),
-        )
         control_measurements = self._chlorination_control_measurements(
             chlorination_status=chlorination_status,
             fc_demand_status=(
@@ -307,13 +312,14 @@ class PoolControllerApp:
             logged_lab_test_count=logged_lab_test_count,
             flow_estimates=flow_estimates,
             csi_measurement=csi_measurement,
-            weather_result=weather_result,
             chlorination_results=chlorination_results,
             chlorination_status=chlorination_status,
             fc_demand_status=(
                 fc_demand_plan.status if fc_demand_plan is not None else None
             ),
             logged_chlorine_delivery_count=logged_chlorine_delivery_count,
+            duration_s=time.perf_counter() - tick_started_s,
+            control_duration_s=control_duration_s,
         )
 
     def apply_pump_timer_config(self, config: PumpTimerConfig) -> None:
@@ -1061,7 +1067,7 @@ class PoolControllerApp:
 
         return tuple(measurements)
 
-    def _poll_weather(self) -> WeatherPollResult:
+    def poll_weather_due(self) -> WeatherPollResult:
         if self.weather_service is None:
             return WeatherPollResult()
         return self.weather_service.poll_due(
@@ -1072,6 +1078,9 @@ class PoolControllerApp:
                 else None
             ),
         )
+
+    def _poll_weather(self) -> WeatherPollResult:
+        return self.poll_weather_due()
 
     def _update_sampling_override(self) -> None:
         if not self.chemistry_sampling_refresh.enabled:

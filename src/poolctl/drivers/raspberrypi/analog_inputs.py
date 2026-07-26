@@ -152,6 +152,13 @@ class WaveshareAnalogInput8ChDriver:
         self._config = config
         self._startup_mode_applied = False
 
+    @property
+    def sensor_ids(self) -> tuple[SensorId, ...]:
+        sensor_ids = [sensor.sensor_id for sensor in self._config.sensors]
+        if SensorId.RAW_PH in sensor_ids:
+            sensor_ids.append(SensorId.RAW_PH_VOLTAGE)
+        return tuple(sensor_ids)
+
     async def read_all(self) -> list[Measurement]:
         await self._apply_startup_channel_mode()
         registers = await self._transport.read_input_registers(

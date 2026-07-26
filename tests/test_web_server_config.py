@@ -323,6 +323,12 @@ def test_acquisition_and_logging_updates_write_yaml(tmp_path: Path) -> None:
                         "sample_interval_s": 0.0,
                         "reducer": "last",
                     },
+                    "filter": {
+                        "type": "boxcar",
+                        "window_samples": 2,
+                        "window_seconds": None,
+                        "min_samples": 1,
+                    },
                 }
             }
         },
@@ -340,6 +346,8 @@ def test_acquisition_and_logging_updates_write_yaml(tmp_path: Path) -> None:
 
     saved = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert str(saved["logging"]["database_path"]).endswith("new.sqlite3")
+    assert saved["acquisition"]["groups"]["pressures"]["filter"]["type"] == "boxcar"
+    assert saved["acquisition"]["groups"]["pressures"]["filter"]["window_samples"] == 2
 
 
 def test_notifications_update_applies_live_and_persists(tmp_path: Path) -> None:

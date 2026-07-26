@@ -138,6 +138,7 @@ const LIVE_SENSOR_ORDER = [...SENSOR_ORDER, "calcium_saturation_index"];
 const DEFAULT_HISTORY_SENSOR_IDS = new Set(["pump_output_psi", "raw_orp"]);
 
 const ACQ_REDUCERS = ["last", "mean", "median", "trimmed_mean"];
+const ACQ_FILTER_TYPES = ["none", "boxcar"];
 const ANALOG_SENSOR_OPTIONS = [
   "pump_output_psi",
   "filter_output_psi",
@@ -576,6 +577,7 @@ function renderTopStatus(payload) {
   renderCpuTempBadge(payload.runtime, payload.sensors || {});
   renderCpuLoadLine(payload.runtime, payload.sensors || {});
   renderCpuFanLine(payload.runtime, payload.sensors || {});
+  renderLoopTimingLine(payload.loop || payload.tick || null);
 }
 
 async function refreshTopStatus(force) {
@@ -691,6 +693,50 @@ function renderCpuLoadLine(runtime, sensors) {
   const cpuLoad = sensors ? sensors.cpu_load_percent : null;
   line.classList.remove("hidden");
   line.textContent = `CPU Load: ${cpuLoad && cpuLoad.display ? cpuLoad.display : "--"}`;
+}
+
+function renderLoopTimingLine(loop) {
+  const line = document.getElementById("loopTimingLine");
+  if (!line) {
+    return;
+  }
+
+  if (!loop) {
+    line.textContent = "Loop: --";
+    line.classList.remove("warning");
+    return;
+  }
+
+  const tickDuration = numberOrNull(loop.tick_duration_s ?? loop.duration_s);
+  const controlDuration = numberOrNull(loop.control_duration_s);
+  const targetInterval = numberOrNull(loop.target_interval_s);
+  const startJitter = numberOrNull(loop.start_jitter_s);
+  const overrun = numberOrNull(loop.overrun_s);
+  const parts = [];
+  if (tickDuration !== null) {
+    parts.push(`${formatMilliseconds(tickDuration)} tick`);
+  }
+  if (controlDuration !== null) {
+    parts.push(`${formatMilliseconds(controlDuration)} control`);
+  }
+  if (targetInterval !== null) {
+    parts.push(`${formatMilliseconds(targetInterval)} target`);
+  }
+  if (startJitter !== null && startJitter >= 0.05) {
+    parts.push(`${formatMilliseconds(startJitter)} late`);
+  } else if (overrun !== null && overrun >= 0.05) {
+    parts.push(`${formatMilliseconds(overrun)} over`);
+  }
+
+  line.textContent = `Loop: ${parts.length ? parts.join(" / ") : "--"}`;
+  line.classList.toggle(
+    "warning",
+    (startJitter !== null && startJitter >= 0.5) || (overrun !== null && overrun >= 0.5),
+  );
+}
+
+function formatMilliseconds(seconds) {
+  return `${Math.round(seconds * 1000)}ms`;
 }
 
 function renderTimerOverride(override) {
@@ -2064,6 +2110,30 @@ function intValue(root, field) {
   return value;
 }
 
+function optionalNumberValue(root, field) {
+  const rawValue = String(fieldNode(root, field).value || "").trim();
+  if (!rawValue) {
+    return null;
+  }
+  const value = Number(rawValue);
+  if (!Number.isFinite(value)) {
+    throw new Error(`Invalid number for ${field}`);
+  }
+  return value;
+}
+
+function optionalIntValue(root, field) {
+  const rawValue = String(fieldNode(root, field).value || "").trim();
+  if (!rawValue) {
+    return null;
+  }
+  const value = Number(rawValue);
+  if (!Number.isInteger(value)) {
+    throw new Error(`Invalid integer for ${field}`);
+  }
+  return value;
+}
+
 function initializeHistoryControls() {
   const checklist = document.getElementById("historySensorChecklist");
   HISTORY_SENSOR_ORDER.forEach((sensorId) => {
@@ -2762,6 +2832,35 @@ function acquisitionGroupRow(name = "", group = {}) {
       ACQ_REDUCERS.map((item) => ({ value: item, label: item })),
       group.oversample?.reducer || "last",
     ),
+    labeledSelect(
+      "Filter",
+      "acq-filter-type",
+      ACQ_FILTER_TYPES.map((item) => ({ value: item, label: item })),
+      group.filter?.type || "none",
+    ),
+    labeledInput(
+      "Filter Samples",
+      "acq-filter-samples",
+      "number",
+      group.filter?.window_samples ?? "",
+      "1",
+      "1",
+    ),
+    labeledInput(
+      "Filter Window (s)",
+      "acq-filter-seconds",
+      "number",
+      group.filter?.window_seconds ?? "",
+      "0.1",
+    ),
+    labeledInput(
+      "Filter Min Samples",
+      "acq-filter-min-samples",
+      "number",
+      group.filter?.min_samples ?? 1,
+      "1",
+      "1",
+    ),
   );
 
   const sensorsBlock = document.createElement("div");
@@ -2815,6 +2914,12 @@ function collectAcquisitionGroups() {
         sample_count: intValue(card, "acq-sample-count"),
         sample_interval_s: numberValue(card, "acq-sample-interval"),
         reducer: stringValue(card, "acq-reducer") || "last",
+      },
+      filter: {
+        type: stringValue(card, "acq-filter-type") || "none",
+        window_samples: optionalIntValue(card, "acq-filter-samples"),
+        window_seconds: optionalNumberValue(card, "acq-filter-seconds"),
+        min_samples: intValue(card, "acq-filter-min-samples"),
       },
     };
   });

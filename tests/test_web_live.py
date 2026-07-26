@@ -169,6 +169,8 @@ async def test_build_live_snapshot_includes_runtime_sensors_and_actuators() -> N
     assert snapshot["flows"]["booster_flow_gpm"]["value"] == 0.0
     assert snapshot["flows"]["filter_restriction_metric"]["display"] == "-- R"
     assert snapshot["flows"]["filter_restriction_percent"]["display"] == "--%"
+    assert snapshot["tick"]["duration_s"] >= 0.0
+    assert snapshot["tick"]["control_duration_s"] >= 0.0
 
 
 @pytest.mark.asyncio

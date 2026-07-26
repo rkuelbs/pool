@@ -26,7 +26,8 @@ The project is intentionally layered:
   delivery/additions. ORP and pH are not used by this estimator.
 - Safety enforcement layer with configurable pressure gates and lockouts.
 - Freeze protection with hysteresis and minimum runtime.
-- Sensor acquisition with per-group read/log rates and oversampling.
+- Sensor acquisition with per-group read/log rates, optional burst
+  oversampling, and rolling boxcar filters.
 - SQLite logging for measurements, weather, test results, and chemical additions.
 - Live web GUI, mobile-friendly live list view, config forms, schedule editor,
   test result entry, chemical addition entry, and history charts.
@@ -83,7 +84,7 @@ Start the dashboard with the simulated hardware profile:
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
-python -m poolctl.web.server --config configs/windows-dev.yaml --host 127.0.0.1 --port 8000 --sim-speedup 60 --tick-interval-s 1.0
+python -m poolctl.web.server --config configs/windows-dev.yaml --host 127.0.0.1 --port 8000 --sim-speedup 60 --tick-interval-s 0.25
 ```
 
 Open:
@@ -96,9 +97,11 @@ Notes:
 
 - `--sim-speedup 60` means one real second advances the simulated clock by
   about one simulated minute.
-- `--tick-interval-s 1.0` runs the runtime loop once per real second.
-- The runtime loop keeps acquisition, timers, dosing, logging, weather, and
-  safety moving even when the browser is closed.
+- `--tick-interval-s 0.25` runs the runtime control loop four times per real
+  second.
+- The runtime loop keeps acquisition, timers, dosing, logging, and safety moving
+  even when the browser is closed. Weather polling runs in a separate background
+  worker so slow HTTP requests cannot delay relay decisions.
 - Stop the process with `Ctrl+C`.
 
 After installing the editable package, the console entry point is also valid:
@@ -145,7 +148,7 @@ Important sections:
 - `fc_demand`: optional free-chlorine demand estimator settings.
 - `safety`: pressure interlocks, lockout thresholds, freeze protection.
 - `acquisition`: sensor groups, read intervals, log intervals, validation rules,
-  oversampling, chemistry refresh runs.
+  optional burst oversampling, rolling filters, chemistry refresh runs.
 - `logging`: SQLite database path.
 - `modbus_relay`: relay board serial settings, Modbus slave ID, relay mapping.
 - `modbus_analog_input`: analog board serial settings, channel mappings, 2-point
@@ -189,6 +192,47 @@ For the Pi dumb-timer phase, `pi-prod.yaml` can run without
 `safety_enforcement`. That allows pump and booster operation before pressure
 sensors are installed. Add safety only after the required pressure readings are
 wired, calibrated, and verified.
+
+## Acquisition and Filtering
+
+Each acquisition group has independent read and log timing. The controller can
+read safety-critical sensors frequently while logging them less often:
+
+```yaml
+acquisition:
+  groups:
+    pressures:
+      read_interval_s: 1
+      log_interval_s: 60
+```
+
+`oversample` is still supported, but it is intended only for short immediate
+bursts. Long bursts block the runtime loop, so the normal configs use one raw
+read per acquisition cycle:
+
+```yaml
+      oversample:
+        sample_count: 1
+        sample_interval_s: 0
+        reducer: last
+```
+
+Rolling `filter` settings smooth values across normal acquisition polls without
+holding up actuator timing:
+
+```yaml
+      filter:
+        type: boxcar
+        window_samples: 2
+        window_seconds: null
+        min_samples: 1
+```
+
+The Pi pressure group uses a 2-sample boxcar so overpressure safety still reacts
+in about two seconds or less. The chemistry group reads less often and uses a
+60-second boxcar. Pump-flow-qualified chemistry readings that are invalid
+because the pump is off or not yet stirred are not logged and do not enter the
+rolling filter.
 
 ## Dashboard Pages
 
@@ -694,7 +738,7 @@ python -m poolctl.web.server \
   --host 0.0.0.0 \
   --port 8000 \
   --sim-speedup 60 \
-  --tick-interval-s 1.0
+  --tick-interval-s 0.25
 ```
 
 Do not run this on the same port while `poolctl.service` is active.

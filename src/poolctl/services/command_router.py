@@ -143,6 +143,10 @@ class CommandRouter:
 
         return dict(self._state_samples)
 
+    async def ensure_states_loaded(self) -> dict[ActuatorId, ActuatorStateSample]:
+        await self._ensure_state_loaded()
+        return dict(self._state_samples)
+
     def clear_safety_fault(self) -> None:
         self._safety_gate.clear_fault()
 

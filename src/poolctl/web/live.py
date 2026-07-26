@@ -206,6 +206,8 @@ async def build_live_snapshot(app: PoolControllerApp) -> dict[str, Any]:
             "logged_weather_count": tick.weather_result.logged_count,
             "weather_poll_error": tick.weather_result.error,
             "mqtt_result_count": len(tick.mqtt_results),
+            "duration_s": tick.duration_s,
+            "control_duration_s": tick.control_duration_s,
             "chlorination_results": [
                 {
                     "command_id": result.command_id,

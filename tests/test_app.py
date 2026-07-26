@@ -617,8 +617,7 @@ def test_raspberry_pi_profile_can_use_injected_drivers() -> None:
     assert app.acquisition_service is None
 
 
-@pytest.mark.asyncio
-async def test_tick_fetches_weather_and_logs_hourly_observation(
+def test_poll_weather_due_fetches_weather_and_logs_hourly_observation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -664,10 +663,10 @@ async def test_tick_fetches_weather_and_logs_hourly_observation(
     app = build_app_from_mapping(config, clock=clock)
     assert app.measurement_logger is not None
 
-    tick = await app.tick(force_acquisition=True)
+    weather_result = app.poll_weather_due()
 
-    assert tick.weather_result.updated is True
-    assert tick.weather_result.logged_count == 1
+    assert weather_result.updated is True
+    assert weather_result.logged_count == 1
     assert app.weather_service is not None
     assert app.weather_service.latest_forecast is not None
 

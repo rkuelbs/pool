@@ -144,6 +144,11 @@ h2 {
   font-size: 12px;
 }
 
+.timestamp.warning {
+  color: #8a5f00;
+  font-weight: 700;
+}
+
 .layout {
   display: grid;
   gap: 14px;
