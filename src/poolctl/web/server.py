@@ -32,7 +32,10 @@ from poolctl.domain.models import (
 )
 from poolctl.drivers.modbus.registers import ModbusRegisterDeviceConfig
 from poolctl.drivers.raspberrypi.analog_inputs import WaveshareAnalogInputConfig
-from poolctl.drivers.raspberrypi.sensors import calibrate_dfrobot_ph_sensor
+from poolctl.drivers.raspberrypi.sensors import (
+    DFRobotSensorCircuitBreakerConfig,
+    calibrate_dfrobot_ph_sensor,
+)
 from poolctl.services.acquisition import AcquisitionConfig
 from poolctl.services.chlorination import ChlorinationConfig
 from poolctl.services.clock import AcceleratedClock, Clock
@@ -2180,11 +2183,15 @@ def apply_analog_input_config_update(
 def serialize_ph_sensor_config(config_path: Path) -> dict[str, Any]:
     data = _load_config_mapping(config_path)
     enabled = _bool_config_value(data, "enable_modbus_ph_sensor", False)
+    raw_sensor_data = data.get("modbus_ph_sensor", {})
+    if not isinstance(raw_sensor_data, dict):
+        raise ValueError("modbus_ph_sensor must be a mapping in config")
     config = ModbusRegisterDeviceConfig.from_mapping(
         data,
         "modbus_ph_sensor",
         default_slave_id=4,
     )
+    breaker = _dfrobot_circuit_breaker_config(raw_sensor_data)
 
     return {
         "enabled": enabled,
@@ -2193,6 +2200,7 @@ def serialize_ph_sensor_config(config_path: Path) -> dict[str, Any]:
             "slave_id": config.slave_id,
             "baudrate": config.baudrate,
             "timeout_s": config.timeout_s,
+            "circuit_breaker": _dfrobot_circuit_breaker_payload(breaker),
         },
         "calibration": {
             "low_default_ph": 4.01,
@@ -2212,19 +2220,30 @@ def apply_ph_sensor_config_update(
     if not isinstance(sensor_data, dict):
         raise ValueError("modbus_ph_sensor must be a mapping")
 
+    config_data = _load_config_mapping(config_path)
+    existing_sensor_data = config_data.get("modbus_ph_sensor", {})
+    if not isinstance(existing_sensor_data, dict):
+        existing_sensor_data = {}
+    if "circuit_breaker" not in sensor_data and "circuit_breaker" in existing_sensor_data:
+        sensor_data = {
+            **sensor_data,
+            "circuit_breaker": existing_sensor_data["circuit_breaker"],
+        }
+
     proposed = ModbusRegisterDeviceConfig.from_mapping(
         {"modbus_ph_sensor": sensor_data},
         "modbus_ph_sensor",
         default_slave_id=4,
     )
+    breaker = _dfrobot_circuit_breaker_config(sensor_data)
 
-    config_data = _load_config_mapping(config_path)
     config_data["enable_modbus_ph_sensor"] = enabled
     config_data["modbus_ph_sensor"] = {
         "port": proposed.port,
         "slave_id": proposed.slave_id,
         "baudrate": proposed.baudrate,
         "timeout_s": proposed.timeout_s,
+        "circuit_breaker": _dfrobot_circuit_breaker_payload(breaker),
     }
 
     runtime = config_data.get("runtime", {})
@@ -2240,6 +2259,25 @@ def apply_ph_sensor_config_update(
             "pH sensor config updated on disk. Restart is required to rebuild hardware drivers."
         ),
         **serialize_ph_sensor_config(config_path),
+    }
+
+
+def _dfrobot_circuit_breaker_config(
+    sensor_data: dict[str, Any],
+) -> DFRobotSensorCircuitBreakerConfig:
+    breaker_data = sensor_data.get("circuit_breaker", {})
+    if not isinstance(breaker_data, dict):
+        raise ValueError("circuit_breaker must be a mapping")
+    return DFRobotSensorCircuitBreakerConfig.from_mapping(breaker_data)
+
+
+def _dfrobot_circuit_breaker_payload(
+    config: DFRobotSensorCircuitBreakerConfig,
+) -> dict[str, Any]:
+    return {
+        "enabled": config.enabled,
+        "failure_threshold": config.failure_threshold,
+        "cooldown_s": config.cooldown_s,
     }
 
 

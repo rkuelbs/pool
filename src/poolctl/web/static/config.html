@@ -398,6 +398,9 @@
           <label>Slave ID <input id="phSensorSlaveId" type="number" step="1" min="1" max="254"></label>
           <label>Baudrate <input id="phSensorBaudrate" type="number" step="1" min="1"></label>
           <label>Timeout (s) <input id="phSensorTimeout" type="number" step="0.1" min="0.1"></label>
+          <label><span>Circuit breaker</span><input id="phBreakerEnabled" type="checkbox"></label>
+          <label>Breaker failures <input id="phBreakerFailures" type="number" step="1" min="1"></label>
+          <label>Breaker cooldown (s) <input id="phBreakerCooldown" type="number" step="1" min="1"></label>
         </div>
         <div class="timer-actions">
           <button id="phSensorSave" type="button">Save pH Sensor Config</button>

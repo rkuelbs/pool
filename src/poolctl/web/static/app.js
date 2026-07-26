@@ -3422,11 +3422,15 @@ async function savePhSensorConfig() {
 
 function renderPhSensorConfig(payload) {
   const config = payload.modbus_ph_sensor || {};
+  const breaker = config.circuit_breaker || {};
   document.getElementById("phSensorEnabled").checked = payload.enabled === true;
   document.getElementById("phSensorPort").value = config.port || "/dev/ttyUSB0";
   document.getElementById("phSensorSlaveId").value = String(config.slave_id ?? 4);
   document.getElementById("phSensorBaudrate").value = String(config.baudrate ?? 4800);
   document.getElementById("phSensorTimeout").value = String(config.timeout_s ?? 1.0);
+  document.getElementById("phBreakerEnabled").checked = breaker.enabled !== false;
+  document.getElementById("phBreakerFailures").value = String(breaker.failure_threshold ?? 2);
+  document.getElementById("phBreakerCooldown").value = String(breaker.cooldown_s ?? 60);
   document.getElementById("phCalLowValue").value = String(payload.calibration?.low_default_ph ?? 4.01);
   document.getElementById("phCalHighValue").value = String(payload.calibration?.high_default_ph ?? 9.18);
 }
@@ -3439,6 +3443,11 @@ function collectPhSensorConfig() {
       slave_id: Number(document.getElementById("phSensorSlaveId").value),
       baudrate: Number(document.getElementById("phSensorBaudrate").value),
       timeout_s: Number(document.getElementById("phSensorTimeout").value),
+      circuit_breaker: {
+        enabled: document.getElementById("phBreakerEnabled").checked,
+        failure_threshold: Number(document.getElementById("phBreakerFailures").value),
+        cooldown_s: Number(document.getElementById("phBreakerCooldown").value),
+      },
     },
   };
 }

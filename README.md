@@ -646,6 +646,24 @@ The pH sensor produces:
 - `ph_temp`: probe temperature from register `0x0001`, converted from C to F
   before display and logging.
 
+The DFRobot ORP and pH drivers have a small circuit breaker so a missing or
+failing chemistry probe does not repeatedly block the control loop with Modbus
+timeouts. By default, two consecutive read failures open the breaker for 60
+seconds. While open, acquisition records a fast failure and skips the Modbus
+request for that probe. Pressure and analog input reads are not affected.
+
+```yaml
+modbus_orp_sensor:
+  port: /dev/ttyUSB0
+  slave_id: 1
+  baudrate: 4800
+  timeout_s: 1.0
+  circuit_breaker:
+    enabled: true
+    failure_threshold: 2
+    cooldown_s: 60
+```
+
 `pi-prod.yaml` keeps the pH sensor disabled until the probe is installed:
 
 ```yaml
@@ -655,6 +673,10 @@ modbus_ph_sensor:
   slave_id: 4
   baudrate: 4800
   timeout_s: 1.0
+  circuit_breaker:
+    enabled: true
+    failure_threshold: 2
+    cooldown_s: 60
 ```
 
 The Config page has a `pH Sensor Config` section. Turning the sensor on or off

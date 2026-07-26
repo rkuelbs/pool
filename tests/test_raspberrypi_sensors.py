@@ -6,9 +6,10 @@ from pathlib import Path
 import pytest
 
 from poolctl.domain.models import MeasurementKind, Quality, SensorId
-from poolctl.drivers.base import MultiSensorDriver
+from poolctl.drivers.base import MultiSensorDriver, SensorReadError
 from poolctl.drivers.raspberrypi.sensors import (
     DFRobotOrpSensor,
+    DFRobotSensorCircuitBreakerConfig,
     calibrate_dfrobot_ph_sensor,
     DFRobotPhSensor,
     RaspberryPiCpuFanRpmSensor,
@@ -35,6 +36,20 @@ class FakeRegisterTransport:
     ) -> tuple[int, ...]:
         self.reads.append((start_address, count))
         return self.registers[:count]
+
+
+class FailingRegisterTransport:
+    def __init__(self) -> None:
+        self.read_count = 0
+
+    async def read_holding_registers(
+        self,
+        *,
+        start_address: int,
+        count: int,
+    ) -> tuple[int, ...]:
+        self.read_count += 1
+        raise RuntimeError(f"read failed at {start_address}:{count}")
 
 
 class FakeModbusBus:
@@ -156,6 +171,37 @@ async def test_dfrobot_orp_sensor_converts_signed_negative_orp() -> None:
     assert measurements[1].value == 77.0
 
 
+@pytest.mark.asyncio
+async def test_dfrobot_orp_sensor_circuit_breaker_skips_after_failures() -> None:
+    clock = make_clock()
+    transport = FailingRegisterTransport()
+    sensor = DFRobotOrpSensor(
+        transport=transport,
+        clock=clock,
+        slave_id=1,
+        circuit_breaker=DFRobotSensorCircuitBreakerConfig(
+            enabled=True,
+            failure_threshold=2,
+            cooldown_s=60.0,
+        ),
+    )
+
+    with pytest.raises(RuntimeError):
+        await sensor.read_all()
+    with pytest.raises(RuntimeError):
+        await sensor.read_all()
+    with pytest.raises(SensorReadError, match="circuit breaker open"):
+        await sensor.read_all()
+
+    assert transport.read_count == 2
+
+    await clock.advance(61.0)
+    with pytest.raises(RuntimeError):
+        await sensor.read_all()
+
+    assert transport.read_count == 3
+
+
 def test_dfrobot_water_quality_sensor_config_uses_configurable_addresses() -> None:
     config = DFRobotWaterQualitySensorConfig.from_mapping(
         {
@@ -164,12 +210,22 @@ def test_dfrobot_water_quality_sensor_config_uses_configurable_addresses() -> No
                 "slave_id": 8,
                 "baudrate": 4800,
                 "timeout_s": 0.5,
+                "circuit_breaker": {
+                    "enabled": True,
+                    "failure_threshold": 3,
+                    "cooldown_s": 45.0,
+                },
             },
             "modbus_orp_sensor": {
                 "port": "/dev/ttyUSB2",
                 "slave_id": 9,
                 "baudrate": 19200,
                 "timeout_s": 0.75,
+                "circuit_breaker": {
+                    "enabled": False,
+                    "failure_threshold": 4,
+                    "cooldown_s": 90.0,
+                },
             },
         }
     )
@@ -183,6 +239,11 @@ def test_dfrobot_water_quality_sensor_config_uses_configurable_addresses() -> No
     assert config.orp.slave_id == 9
     assert config.orp.baudrate == 19200
     assert config.orp.timeout_s == 0.75
+    assert config.ph_circuit_breaker.failure_threshold == 3
+    assert config.ph_circuit_breaker.cooldown_s == 45.0
+    assert config.orp_circuit_breaker.enabled is False
+    assert config.orp_circuit_breaker.failure_threshold == 4
+    assert config.orp_circuit_breaker.cooldown_s == 90.0
 
 
 def test_dfrobot_water_quality_sensor_config_defaults_to_non_conflicting_ph_address() -> None:

@@ -60,12 +60,20 @@ modbus_orp_sensor:
   slave_id: 1
   baudrate: 4800
   timeout_s: 1.0
+  circuit_breaker:
+    enabled: true
+    failure_threshold: 2
+    cooldown_s: 60
 enable_modbus_ph_sensor: false
 modbus_ph_sensor:
   port: /dev/ttyUSB0
   slave_id: 4
   baudrate: 4800
   timeout_s: 1.0
+  circuit_breaker:
+    enabled: true
+    failure_threshold: 2
+    cooldown_s: 60
 modbus_analog_input:
   port: /dev/ttyUSB0
   slave_id: 2

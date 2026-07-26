@@ -502,6 +502,11 @@ def test_ph_sensor_update_disables_driver_and_removes_acquisition_ids(tmp_path: 
         "slave_id": 4,
         "baudrate": 4800,
         "timeout_s": 1.0,
+        "circuit_breaker": {
+            "enabled": True,
+            "failure_threshold": 3,
+            "cooldown_s": 45.0,
+        },
     }
     config["acquisition"] = {
         "groups": {
@@ -543,8 +548,11 @@ def test_ph_sensor_update_disables_driver_and_removes_acquisition_ids(tmp_path: 
         "raw_orp",
         "orp_temp",
     ]
+    assert saved["modbus_ph_sensor"]["circuit_breaker"]["failure_threshold"] == 3
+    assert saved["modbus_ph_sensor"]["circuit_breaker"]["cooldown_s"] == 45.0
     serialized = serialize_ph_sensor_config(path)
     assert serialized["modbus_ph_sensor"]["slave_id"] == 4
+    assert serialized["modbus_ph_sensor"]["circuit_breaker"]["failure_threshold"] == 3
 
 
 def test_ph_sensor_update_enables_driver_and_adds_acquisition_ids(tmp_path: Path) -> None:
@@ -580,6 +588,11 @@ def test_ph_sensor_update_enables_driver_and_adds_acquisition_ids(tmp_path: Path
                 "slave_id": 4,
                 "baudrate": 4800,
                 "timeout_s": 1.0,
+                "circuit_breaker": {
+                    "enabled": True,
+                    "failure_threshold": 4,
+                    "cooldown_s": 90.0,
+                },
             },
         },
     )
@@ -592,6 +605,8 @@ def test_ph_sensor_update_enables_driver_and_adds_acquisition_ids(tmp_path: Path
         "raw_ph",
         "ph_temp",
     ]
+    assert saved["modbus_ph_sensor"]["circuit_breaker"]["failure_threshold"] == 4
+    assert saved["modbus_ph_sensor"]["circuit_breaker"]["cooldown_s"] == 90.0
 
 
 def test_health_payload_includes_status_fields() -> None:

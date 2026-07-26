@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from glob import glob
 from pathlib import Path
 from typing import Any, Literal
@@ -13,7 +14,7 @@ from poolctl.domain.models import (
     Quality,
     SensorId,
 )
-from poolctl.drivers.base import MultiSensorDriver, SensorDriver
+from poolctl.drivers.base import MultiSensorDriver, SensorDriver, SensorReadError
 from poolctl.drivers.modbus.registers import (
     ModbusRegisterDeviceConfig,
     ModbusRegisterTransport,
@@ -32,6 +33,89 @@ from poolctl.services.clock import Clock
 
 
 @dataclass(frozen=True)
+class DFRobotSensorCircuitBreakerConfig:
+    """
+    Failure backoff for optional DFRobot RS485 chemistry probes.
+
+    Once a probe has repeated Modbus failures, the driver temporarily skips
+    reads so a missing ORP or pH sensor cannot delay the rest of the control
+    loop on every acquisition cycle.
+    """
+
+    enabled: bool = True
+    failure_threshold: int = 2
+    cooldown_s: float = 60.0
+
+    def __post_init__(self) -> None:
+        if self.failure_threshold < 1:
+            raise ValueError("failure_threshold must be at least 1")
+        if self.cooldown_s <= 0:
+            raise ValueError("cooldown_s must be greater than zero")
+
+    @classmethod
+    def from_mapping(
+        cls,
+        data: Mapping[str, Any],
+    ) -> DFRobotSensorCircuitBreakerConfig:
+        return cls(
+            enabled=_bool_value(data, "enabled", True),
+            failure_threshold=_int_value(data, "failure_threshold", 2),
+            cooldown_s=_float_value(data, "cooldown_s", 60.0),
+        )
+
+
+class DFRobotSensorCircuitBreaker:
+    """
+    Mutable runtime state for one chemistry probe circuit breaker.
+    """
+
+    def __init__(
+        self,
+        *,
+        config: DFRobotSensorCircuitBreakerConfig,
+        clock: Clock,
+        sensor_name: str,
+    ) -> None:
+        self._config = config
+        self._clock = clock
+        self._sensor_name = sensor_name
+        self._consecutive_failures = 0
+        self._open_until: datetime | None = None
+
+    def assert_can_attempt(self) -> None:
+        if not self._config.enabled:
+            return
+
+        now = self._clock.now()
+        if self._open_until is None:
+            return
+
+        if now >= self._open_until:
+            self._open_until = None
+            return
+
+        raise SensorReadError(
+            f"{self._sensor_name} circuit breaker open until "
+            f"{self._open_until.isoformat()} after "
+            f"{self._consecutive_failures} consecutive failures"
+        )
+
+    def record_success(self) -> None:
+        self._consecutive_failures = 0
+        self._open_until = None
+
+    def record_failure(self) -> None:
+        if not self._config.enabled:
+            return
+
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= self._config.failure_threshold:
+            self._open_until = self._clock.now() + timedelta(
+                seconds=self._config.cooldown_s
+            )
+
+
+@dataclass(frozen=True)
 class DFRobotWaterQualitySensorConfig:
     """
     Config for the DFRobot RS485 water-quality sensors.
@@ -39,12 +123,20 @@ class DFRobotWaterQualitySensorConfig:
 
     ph: ModbusRegisterDeviceConfig
     orp: ModbusRegisterDeviceConfig
+    ph_circuit_breaker: DFRobotSensorCircuitBreakerConfig = field(
+        default_factory=DFRobotSensorCircuitBreakerConfig
+    )
+    orp_circuit_breaker: DFRobotSensorCircuitBreakerConfig = field(
+        default_factory=DFRobotSensorCircuitBreakerConfig
+    )
 
     @classmethod
     def from_mapping(
         cls,
         data: Mapping[str, Any],
     ) -> DFRobotWaterQualitySensorConfig:
+        ph_section = _mapping_value(data, "modbus_ph_sensor", default={})
+        orp_section = _mapping_value(data, "modbus_orp_sensor", default={})
         return cls(
             ph=ModbusRegisterDeviceConfig.from_mapping(
                 data,
@@ -55,6 +147,12 @@ class DFRobotWaterQualitySensorConfig:
                 data,
                 "modbus_orp_sensor",
                 default_slave_id=3,
+            ),
+            ph_circuit_breaker=DFRobotSensorCircuitBreakerConfig.from_mapping(
+                _mapping_value(ph_section, "circuit_breaker", default={})
+            ),
+            orp_circuit_breaker=DFRobotSensorCircuitBreakerConfig.from_mapping(
+                _mapping_value(orp_section, "circuit_breaker", default={})
             ),
         )
 
@@ -107,16 +205,32 @@ class DFRobotPhSensor:
         transport: ModbusRegisterTransport,
         clock: Clock,
         slave_id: int,
+        circuit_breaker: DFRobotSensorCircuitBreakerConfig | None = None,
     ) -> None:
         self._transport = transport
         self._clock = clock
         self._slave_id = slave_id
+        self._circuit_breaker = DFRobotSensorCircuitBreaker(
+            config=(
+                circuit_breaker
+                if circuit_breaker is not None
+                else DFRobotSensorCircuitBreakerConfig()
+            ),
+            clock=clock,
+            sensor_name=self.name,
+        )
 
     async def read_all(self) -> list[Measurement]:
-        ph_register, temp_register = await self._transport.read_holding_registers(
-            start_address=0x0000,
-            count=2,
-        )
+        self._circuit_breaker.assert_can_attempt()
+        try:
+            ph_register, temp_register = await self._transport.read_holding_registers(
+                start_address=0x0000,
+                count=2,
+            )
+        except Exception:
+            self._circuit_breaker.record_failure()
+            raise
+        self._circuit_breaker.record_success()
         observed_at = self._clock.now()
         raw_ph = ph_register / 100.0
         temp_c = signed_16(temp_register) / 10.0
@@ -236,16 +350,32 @@ class DFRobotOrpSensor:
         transport: ModbusRegisterTransport,
         clock: Clock,
         slave_id: int,
+        circuit_breaker: DFRobotSensorCircuitBreakerConfig | None = None,
     ) -> None:
         self._transport = transport
         self._clock = clock
         self._slave_id = slave_id
+        self._circuit_breaker = DFRobotSensorCircuitBreaker(
+            config=(
+                circuit_breaker
+                if circuit_breaker is not None
+                else DFRobotSensorCircuitBreakerConfig()
+            ),
+            clock=clock,
+            sensor_name=self.name,
+        )
 
     async def read_all(self) -> list[Measurement]:
-        orp_register, temp_register = await self._transport.read_holding_registers(
-            start_address=0x0000,
-            count=2,
-        )
+        self._circuit_breaker.assert_can_attempt()
+        try:
+            orp_register, temp_register = await self._transport.read_holding_registers(
+                start_address=0x0000,
+                count=2,
+            )
+        except Exception:
+            self._circuit_breaker.record_failure()
+            raise
+        self._circuit_breaker.record_success()
         observed_at = self._clock.now()
         raw_orp_mv = signed_16(orp_register)
         temp_c = signed_16(temp_register) / 10.0
@@ -462,6 +592,7 @@ def build_raspberrypi_sensors_from_mapping(
                 transport=PymodbusRtuRegisterTransport(config.ph, bus=ph_bus),
                 clock=clock,
                 slave_id=config.ph.slave_id,
+                circuit_breaker=config.ph_circuit_breaker,
             )
         )
 
@@ -470,6 +601,7 @@ def build_raspberrypi_sensors_from_mapping(
             transport=PymodbusRtuRegisterTransport(config.orp, bus=orp_bus),
             clock=clock,
             slave_id=config.orp.slave_id,
+            circuit_breaker=config.orp_circuit_breaker,
         )
     )
 
@@ -489,6 +621,20 @@ def _bool_value(data: Mapping[str, Any], key: str, default: bool) -> bool:
     if not isinstance(value, bool):
         raise ValueError(f"{key} must be true or false")
     return value
+
+
+def _int_value(data: Mapping[str, Any], key: str, default: int) -> int:
+    value = data.get(key, default)
+    if not isinstance(value, int):
+        raise ValueError(f"{key} must be an integer")
+    return value
+
+
+def _float_value(data: Mapping[str, Any], key: str, default: float) -> float:
+    value = data.get(key, default)
+    if not isinstance(value, int | float):
+        raise ValueError(f"{key} must be a number")
+    return float(value)
 
 
 def _optional_analog_device_config(
