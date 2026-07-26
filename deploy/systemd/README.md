@@ -47,6 +47,17 @@ The current deployment convention is:
 The defaults are based on the user running the installer, but the explicit
 `pool` values below avoid surprises.
 
+## Runtime Environment File
+
+`poolctl.service` reads `/etc/poolctl/poolctl.env` if it exists. The installer
+creates this file with commented Pushover placeholders on first install and
+does not overwrite it later. Put runtime secrets there, not in tracked YAML:
+
+```bash
+PUSHOVER_APP_TOKEN=your_app_token_here
+PUSHOVER_USER_KEY=your_user_key_here
+```
+
 ## First Install
 
 From the repo root on the Pi:

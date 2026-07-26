@@ -31,10 +31,13 @@ The project is intentionally layered:
 - SQLite logging for measurements, weather, test results, and chemical additions.
 - Live web GUI, mobile-friendly live list view, config forms, schedule editor,
   test result entry, chemical addition entry, and history charts.
+- Raspberry Pi CPU temperature, CPU load, and CPU fan RPM live display and
+  logging.
 - Hourly Open-Meteo weather observation logging plus a 48-hour in-memory forecast.
 - MQTT telemetry and selected input support when enabled.
 - Optional Pushover notification provider with a dashboard test button.
 - Systemd deployment with automatic restart and SQLite backup timer.
+- Repo-level `AGENTS.md` guidance for future Codex agents.
 
 ## Repository Layout
 
@@ -238,16 +241,36 @@ rolling filter.
 
 - Live: schematic or mobile list view, current sensor/actuator state, quick
   pump controls, chlorination dose target, FC-demand status, safety status, CPU
-  status on Pi.
+  temperature/load/fan status on Pi, and runtime loop timing.
 - History: measurement/weather/test-result/chemical-addition charts with
-  selectable series and auto-scaled axes.
+  selectable series, hover readouts, automatic rollup resolution, CSV export,
+  water-test and chemical-addition entry, and single-axis or multi-axis scaling
+  depending on selected signal ranges.
 - Schedule: pump timer schedule editor.
 - Config: forms for runtime layers, safety, chlorination, FC demand,
-  acquisition, logging, analog input calibration, and diagnostic dosing-pump
+  acquisition, logging, analog input calibration/raw voltage display, pH sensor
+  enable/calibration, notifications, and diagnostic dosing-pump
   prime/calibration tests.
 
 Some config changes apply live. Others write YAML and require restart because
 drivers or long-lived services must be rebuilt.
+
+## History and Rollups
+
+The logger stores raw measurement rows and maintains 1-minute, 1-hour, and
+1-day rollups for continuous measurements. The History page currently requests
+`auto` resolution:
+
+- Up to 48 hours: raw logged points.
+- More than 48 hours through 14 days: 1-minute rollups.
+- More than 14 days through 90 days: 1-hour rollups.
+- More than 90 days: 1-day rollups.
+
+Selecting `Raw + validated` disables rollups and shows raw logged rows for the
+selected range. The chart uses one y-axis when selected traces have similar
+ranges and centers; otherwise it gives traces separate color-matched axes.
+Lab tests and chemical additions are plotted as point/event series rather than
+continuous sensor streams.
 
 ## Open-loop Chlorination
 
@@ -493,8 +516,12 @@ APP_GROUP=pool \
 PROJECT_DIR=/home/pool/projects/pool \
 VENV_DIR=/home/pool/projects/pool/venv \
 CONFIG_PATH=/home/pool/projects/pool/configs/pi-prod.yaml \
+WEB_HOST=0.0.0.0 \
+WEB_PORT=8000 \
+TICK_INTERVAL_S=0.25 \
 BACKUP_DB_PATH=/home/pool/projects/pool/data/pi-prod.sqlite3 \
 BACKUP_DIR=/var/backups/poolctl \
+BACKUP_KEEP_COUNT=720 \
 ./deploy/systemd/install-pi-services.sh
 ```
 
@@ -529,8 +556,12 @@ APP_GROUP=pool \
 PROJECT_DIR=/home/pool/projects/pool \
 VENV_DIR=/home/pool/projects/pool/venv \
 CONFIG_PATH=/home/pool/projects/pool/configs/pi-prod.yaml \
+WEB_HOST=0.0.0.0 \
+WEB_PORT=8000 \
+TICK_INTERVAL_S=0.25 \
 BACKUP_DB_PATH=/home/pool/projects/pool/data/pi-prod.sqlite3 \
 BACKUP_DIR=/var/backups/poolctl \
+BACKUP_KEEP_COUNT=720 \
 ./deploy/systemd/install-pi-services.sh
 ```
 
@@ -739,6 +770,19 @@ python -m poolctl.tools.modbus_bringup \
   --baudrate 4800 \
   --analog-slave-id 0x02 \
   --raw-to-volts-scale 0.001
+```
+
+The Waveshare analog input driver reads all 8 contiguous input registers in one
+Modbus request, then maps configured channels to logical sensors locally. The
+DFRobot pH and ORP drivers each read their two contiguous holding registers
+with one request per probe.
+
+Installed console entry points are also available after `pip install -e`:
+
+```bash
+poolctl-modbus-bringup --port /dev/ttyUSB0 --baudrate 4800 --scan
+poolctl-modbus-device-config --port /dev/ttyUSB0 --current-id 0x01 --current-baudrate 9600 --new-id 0x03 --new-baudrate 4800
+poolctl-dfrobot-device-config --port /dev/ttyUSB0 --current-id 0x01 --current-baudrate 4800 --new-id 0x04 --new-baudrate 4800
 ```
 
 Restart the service after bring-up:
