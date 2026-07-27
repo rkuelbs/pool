@@ -146,7 +146,8 @@ Important sections:
 
 - `runtime`: stage, driver profile, enabled feature layers, enabled actuators,
   enabled sensor groups.
-- `pump_timer`: local timezone and daily pump/booster schedule windows.
+- `pump_timer`: local timezone, daily pump/booster schedule windows, and whether
+  each window is eligible for chlorine dosing.
 - `chlorination`: open-loop liquid chlorine dose settings.
 - `fc_demand`: optional free-chlorine demand estimator settings.
 - `safety`: pressure interlocks, lockout thresholds, freeze protection.
@@ -176,7 +177,12 @@ pump_timer:
     end: '12:00'
     pump_speed: low
     booster: 'off'
+    allow_dosing: true
 ```
+
+`allow_dosing` defaults to `true` for older config files. Set it to `false` on
+night, vacuum, or skimming-only windows where the pump should run but chlorine
+should not be injected.
 
 ## Feature Layers
 
@@ -246,7 +252,8 @@ rolling filter.
   selectable series, hover readouts, automatic rollup resolution, CSV export,
   water-test and chemical-addition entry, and single-axis or multi-axis scaling
   depending on selected signal ranges.
-- Schedule: pump timer schedule editor.
+- Schedule: pump timer schedule editor, including a per-window dosing checkbox
+  for excluding cleaning/night runs from liquid chlorine dosing.
 - Config: forms for runtime layers, safety, chlorination, FC demand,
   acquisition, logging, analog input calibration/raw voltage display, pH sensor
   enable/calibration, notifications, and diagnostic dosing-pump
@@ -279,14 +286,19 @@ Pi hardware, the chlorine dosing pump is mapped to relay 7 by default.
 
 The controller:
 
-1. Merges overlapping or adjacent pump timer windows.
-2. Removes the final `no_dose_last_minutes` from each continuous pump run.
-3. Computes total valid daily dosing minutes.
-4. Converts `daily_dose_oz` to dosing pump minutes using
+1. Uses only pump timer schedules with `allow_dosing: true`.
+2. Merges overlapping or adjacent dosing-allowed pump timer windows.
+3. Removes the final `no_dose_last_minutes` from each continuous allowed run.
+4. Computes total valid daily dosing minutes.
+5. Converts `daily_dose_oz` to dosing pump minutes using
    `pump_output_oz_per_min`.
-5. Computes duty cycle as requested minutes divided by available minutes.
-6. Caps duty cycle at `max_duty_cycle`.
-7. Runs fixed `cycle_on_seconds` ON intervals with calculated OFF time.
+6. Computes duty cycle as requested minutes divided by available minutes.
+7. Caps duty cycle at `max_duty_cycle`.
+8. Runs fixed `cycle_on_seconds` ON intervals with calculated OFF time.
+
+This allows the same pump timer to run the pool at night for skimming or
+vacuuming while keeping the day's chlorine dose in morning and daytime windows
+before evening FC tests.
 
 Changing `daily_dose_oz` from the dashboard applies the new duty cycle going
 forward. The controller does not try to make up for earlier parts of the day.

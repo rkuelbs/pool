@@ -91,6 +91,7 @@ def test_serialize_pump_timer_config() -> None:
             "end": "12:00",
             "pump_speed": "high",
             "booster": "off",
+            "allow_dosing": True,
         }
     ]
 
@@ -112,6 +113,7 @@ def test_apply_pump_timer_update_updates_running_app_and_yaml(tmp_path: Path) ->
                     "end": "21:00",
                     "pump_speed": "low",
                     "booster": "on",
+                    "allow_dosing": False,
                 }
             ]
         },
@@ -124,14 +126,17 @@ def test_apply_pump_timer_update_updates_running_app_and_yaml(tmp_path: Path) ->
             "end": "21:00",
             "pump_speed": "low",
             "booster": "on",
+            "allow_dosing": False,
         }
     ]
     assert result["timezone"] == "UTC"
     assert app.pump_timer_config.schedules[0].name == "evening_filter"
+    assert app.pump_timer_config.schedules[0].allow_dosing is False
     assert app.pump_timer_config.timezone == "UTC"
 
     saved = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert saved["pump_timer"]["schedules"][0]["name"] == "evening_filter"
+    assert saved["pump_timer"]["schedules"][0]["allow_dosing"] is False
     assert saved["pump_timer"]["timezone"] == "UTC"
 
 

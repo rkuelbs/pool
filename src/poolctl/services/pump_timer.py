@@ -36,6 +36,7 @@ class PumpTimerSchedule:
     window: DailyTimeWindow
     pump_speed: ActuatorState = ActuatorState.LOW
     booster_state: ActuatorState = ActuatorState.OFF
+    allow_dosing: bool = True
 
     def __post_init__(self) -> None:
         if self.pump_speed not in (ActuatorState.LOW, ActuatorState.HIGH):
@@ -43,6 +44,9 @@ class PumpTimerSchedule:
 
         if self.booster_state not in (ActuatorState.ON, ActuatorState.OFF):
             raise ValueError("booster_state must be on or off")
+
+        if not isinstance(self.allow_dosing, bool):
+            raise ValueError("allow_dosing must be true or false")
 
     def is_active(self, now: datetime) -> bool:
         return self.window.contains(now)
@@ -356,6 +360,7 @@ def _schedule_from_mapping(data: object) -> PumpTimerSchedule:
         window=DailyTimeWindow(name=name, start=start, end=end),
         pump_speed=_pump_speed_value(data.get("pump_speed", ActuatorState.LOW.value)),
         booster_state=_booster_state_value(data.get("booster", ActuatorState.OFF.value)),
+        allow_dosing=_bool_value(data.get("allow_dosing", True), "allow_dosing"),
     )
 
 
@@ -386,6 +391,12 @@ def _string_with_default(data: Mapping[str, Any], key: str, default: str) -> str
     value = data.get(key, default)
     if not isinstance(value, str):
         raise ValueError(f"{key} must be a string")
+    return value
+
+
+def _bool_value(value: object, key: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{key} must be true or false")
     return value
 
 

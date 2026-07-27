@@ -794,7 +794,7 @@ h2 {
   align-items: center;
   column-gap: 8px;
   display: grid;
-  grid-template-columns: 2fr 1fr 1fr 1fr 1fr 72px;
+  grid-template-columns: 2fr 1fr 1fr 1fr 1fr 0.9fr 72px;
 }
 
 .timer-grid-head {
@@ -826,6 +826,29 @@ h2 {
   color: #8e2a20;
   cursor: pointer;
   font-weight: 700;
+}
+
+.timer-checkbox {
+  align-items: center;
+  border: 1px solid #b8c4cf;
+  border-radius: 6px;
+  color: var(--ink);
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 700;
+  gap: 6px;
+  min-height: 30px;
+  padding: 4px 6px;
+}
+
+.timer-row .timer-checkbox input {
+  border: 0;
+  border-radius: 0;
+  height: 14px;
+  margin: 0;
+  min-height: auto;
+  padding: 0;
+  width: 14px;
 }
 
 .timer-actions {

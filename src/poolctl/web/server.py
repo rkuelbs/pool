@@ -1746,6 +1746,7 @@ def serialize_pump_timer_config(app: PoolControllerApp) -> dict[str, Any]:
                 "end": _format_time(schedule.window.end.hour, schedule.window.end.minute),
                 "pump_speed": schedule.pump_speed.value,
                 "booster": schedule.booster_state.value,
+                "allow_dosing": schedule.allow_dosing,
             }
             for schedule in app.pump_timer_config.schedules
         ],

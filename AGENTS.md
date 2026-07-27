@@ -90,6 +90,9 @@ Rules for chlorination changes:
   chlorine upward.
 - Diagnostic prime/calibration pump runs are not normal dosing and must remain
   excluded from daily chlorine totals and FC-demand calculations.
+- Pump timer schedules with `allow_dosing: false` still run equipment but must
+  remain excluded from valid dosing windows, daily available dosing minutes, and
+  FC-demand high-FC delay calculations.
 - The open-loop dosing controller should maintain predictable ON/OFF timing and
   duty cycle across the valid dosing window.
 - If a change affects tick frequency, asyncio scheduling, Modbus retries,
@@ -177,4 +180,3 @@ needs:
 - `python -m pip install -e ".[raspberrypi,mqtt]"`
 - rerunning `deploy/systemd/install-pi-services.sh`
 - `sudo systemctl restart poolctl.service`
-

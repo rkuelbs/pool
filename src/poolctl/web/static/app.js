@@ -2228,6 +2228,7 @@ function timerRowElement(schedule = {}) {
   row.appendChild(timerInput("end", schedule.end || "12:00", "time"));
   row.appendChild(timerSelect("pump_speed", ["low", "high"], schedule.pump_speed || "low"));
   row.appendChild(timerSelect("booster", ["off", "on"], schedule.booster || "off"));
+  row.appendChild(timerCheckbox("allow_dosing", schedule.allow_dosing !== false));
 
   const removeButton = document.createElement("button");
   removeButton.type = "button";
@@ -2267,6 +2268,26 @@ function timerSelect(field, options, value) {
   return select;
 }
 
+function timerCheckbox(field, checked) {
+  const label = document.createElement("label");
+  label.className = "timer-checkbox";
+
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.checked = checked;
+  input.dataset.field = field;
+
+  const span = document.createElement("span");
+  span.textContent = checked ? "Yes" : "No";
+  input.addEventListener("change", () => {
+    span.textContent = input.checked ? "Yes" : "No";
+  });
+
+  label.appendChild(input);
+  label.appendChild(span);
+  return label;
+}
+
 function collectTimerSchedules() {
   const rows = [...document.querySelectorAll(".timer-row")];
   const schedules = rows.map((row, index) => {
@@ -2275,6 +2296,7 @@ function collectTimerSchedules() {
     const end = row.querySelector('[data-field="end"]').value;
     const pumpSpeed = row.querySelector('[data-field="pump_speed"]').value;
     const booster = row.querySelector('[data-field="booster"]').value;
+    const allowDosing = row.querySelector('[data-field="allow_dosing"]').checked;
 
     return {
       name: name || `schedule_${index + 1}`,
@@ -2282,6 +2304,7 @@ function collectTimerSchedules() {
       end,
       pump_speed: pumpSpeed,
       booster,
+      allow_dosing: allowDosing,
     };
   });
 

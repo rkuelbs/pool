@@ -30,6 +30,7 @@ def schedule(
     start: str = "08:00",
     end: str = "10:00",
     pump_speed: ActuatorState = ActuatorState.LOW,
+    allow_dosing: bool = True,
 ) -> PumpTimerSchedule:
     return PumpTimerSchedule(
         name=name,
@@ -39,6 +40,7 @@ def schedule(
             end=TimeOfDay.parse(end),
         ),
         pump_speed=pump_speed,
+        allow_dosing=allow_dosing,
     )
 
 
@@ -62,6 +64,38 @@ def test_valid_dosing_windows_trim_last_minutes_of_merged_run() -> None:
     assert windows[0].start == at(8)
     assert windows[0].end == at(11, 50)
     assert windows[0].duration_seconds == 230.0 * 60.0
+
+
+def test_valid_dosing_windows_ignore_schedules_that_disallow_dosing() -> None:
+    config = timer_config(
+        schedule(name="night_clean", start="20:00", end="23:00", allow_dosing=False),
+    )
+
+    windows = valid_dosing_windows_for_day(
+        config,
+        at(0).date(),
+        no_dose_last_minutes=10.0,
+    )
+
+    assert windows == ()
+
+
+def test_non_dosing_overlap_does_not_extend_allowed_dosing_window() -> None:
+    config = timer_config(
+        schedule(name="day_filter", start="08:00", end="10:00", allow_dosing=True),
+        schedule(name="cleaner", start="09:00", end="12:00", allow_dosing=False),
+    )
+
+    windows = valid_dosing_windows_for_day(
+        config,
+        at(0).date(),
+        no_dose_last_minutes=10.0,
+    )
+
+    assert len(windows) == 1
+    assert windows[0].start == at(8)
+    assert windows[0].end == at(9, 50)
+    assert windows[0].duration_seconds == 110.0 * 60.0
 
 
 def test_valid_dosing_windows_handle_overnight_schedules_without_midnight_trim() -> None:

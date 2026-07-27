@@ -420,6 +420,11 @@ def _raw_schedule_intervals(
     for day_offset in (-1, 0, 1):
         schedule_day = day + timedelta(days=day_offset)
         for schedule in config.schedules:
+            # Some pump runs are for skimming, vacuuming, freeze protection, or
+            # post-test circulation only. Those still run the pump timer, but
+            # they are intentionally excluded from liquid chlorine dosing.
+            if not schedule.allow_dosing:
+                continue
             start = _datetime_for_time_of_day(schedule_day, schedule.window.start, timezone)
             if schedule.window.start == schedule.window.end:
                 end = start + timedelta(days=1)

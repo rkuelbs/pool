@@ -31,6 +31,7 @@ def schedule(
     end: str = "12:00",
     pump_speed: ActuatorState = ActuatorState.HIGH,
     booster_state: ActuatorState = ActuatorState.OFF,
+    allow_dosing: bool = True,
 ) -> PumpTimerSchedule:
     return PumpTimerSchedule(
         name=name,
@@ -41,6 +42,7 @@ def schedule(
         ),
         pump_speed=pump_speed,
         booster_state=booster_state,
+        allow_dosing=allow_dosing,
     )
 
 
@@ -221,6 +223,7 @@ pump_timer:
       end: "12:00"
       pump_speed: high
       booster: off
+      allow_dosing: false
 """,
         encoding="utf-8",
     )
@@ -232,6 +235,51 @@ pump_timer:
     assert config.schedules[0].name == "morning_filter"
     assert config.schedules[0].pump_speed == ActuatorState.HIGH
     assert config.schedules[0].booster_state == ActuatorState.OFF
+    assert config.schedules[0].allow_dosing is False
+
+
+def test_pump_timer_schedule_defaults_to_allowing_dosing() -> None:
+    config = PumpTimerConfig.from_mapping(
+        {
+            "pump_timer": {
+                "timezone": "UTC",
+                "schedules": [
+                    {
+                        "name": "day_filter",
+                        "start": "08:00",
+                        "end": "12:00",
+                        "pump_speed": "low",
+                        "booster": "off",
+                    }
+                ],
+            }
+        }
+    )
+
+    assert config.schedules[0].allow_dosing is True
+
+
+def test_pump_timer_rejects_non_boolean_allow_dosing() -> None:
+    try:
+        PumpTimerConfig.from_mapping(
+            {
+                "pump_timer": {
+                    "timezone": "UTC",
+                    "schedules": [
+                        {
+                            "name": "day_filter",
+                            "start": "08:00",
+                            "end": "12:00",
+                            "allow_dosing": "yes",
+                        }
+                    ],
+                }
+            }
+        )
+    except ValueError as error:
+        assert str(error) == "allow_dosing must be true or false"
+    else:
+        raise AssertionError("non-boolean allow_dosing should be rejected")
 
 
 def test_timer_uses_configured_timezone() -> None:
