@@ -13,6 +13,8 @@ from datetime import datetime
 from typing import Any
 
 from poolctl.domain.models import (
+    ACTUATOR_AUTO_OFF_AT_METADATA,
+    ACTUATOR_ON_PULSE_SECONDS_METADATA,
     ActuatorCommand,
     ActuatorCommandResult,
     ActuatorId,
@@ -65,12 +67,19 @@ class CommandRouter:
 
     @property
     def actuator_states(self) -> dict[ActuatorId, ActuatorState]:
+        self._expire_auto_off_states()
         return {
             actuator_id: sample.state for actuator_id, sample in self._state_samples.items()
         }
 
     @property
+    def actuator_state_samples(self) -> dict[ActuatorId, ActuatorStateSample]:
+        self._expire_auto_off_states()
+        return dict(self._state_samples)
+
+    @property
     def state_started_at(self) -> dict[ActuatorId, datetime]:
+        self._expire_auto_off_states()
         return dict(self._state_started_at)
 
     async def route(
@@ -153,6 +162,7 @@ class CommandRouter:
         return results
 
     async def refresh_states(self) -> dict[ActuatorId, ActuatorStateSample]:
+        self._expire_auto_off_states()
         for driver in self._drivers.values():
             self._record_state(await driver.read_state())
 
@@ -166,6 +176,7 @@ class CommandRouter:
         self._safety_gate.clear_fault()
 
     async def _ensure_state_loaded(self) -> None:
+        self._expire_auto_off_states()
         for actuator_id, driver in self._drivers.items():
             if actuator_id in self._state_samples:
                 continue
@@ -173,6 +184,8 @@ class CommandRouter:
             # Lazy-load hardware state the first time it is needed. This avoids
             # assuming relay defaults before the Pi reads the board.
             self._record_state(await driver.read_state())
+
+        self._expire_auto_off_states()
 
     def _snapshot(
         self,
@@ -241,6 +254,20 @@ class CommandRouter:
         # Update local state only after the driver reports success. If Modbus
         # fails, the router keeps its prior state view and returns applied=False.
         self._record_state(sample)
+        result_metadata.update(
+            {
+                key: sample.metadata[key]
+                for key in (
+                    "timed_flash_on",
+                    ACTUATOR_AUTO_OFF_AT_METADATA,
+                    ACTUATOR_ON_PULSE_SECONDS_METADATA,
+                    "requested_pulse_seconds",
+                    "pulse_ticks_100ms",
+                    "flash_address",
+                )
+                if key in sample.metadata
+            }
+        )
 
         return self._result(
             command,
@@ -258,6 +285,32 @@ class CommandRouter:
             # Track when each state began; safety rules use these timestamps for
             # booster low-pressure grace periods and pump prime timeouts.
             self._state_started_at[sample.actuator_id] = sample.observed_at
+
+    def _expire_auto_off_states(self) -> None:
+        now = self._clock.now()
+        for actuator_id, sample in list(self._state_samples.items()):
+            if sample.state != ActuatorState.ON:
+                continue
+
+            auto_off_at = _metadata_datetime(
+                sample.metadata.get(ACTUATOR_AUTO_OFF_AT_METADATA)
+            )
+            if auto_off_at is None or auto_off_at > now:
+                continue
+
+            self._record_state(
+                ActuatorStateSample(
+                    actuator_id=actuator_id,
+                    observed_at=auto_off_at,
+                    state=ActuatorState.OFF,
+                    source_command_id=sample.source_command_id,
+                    metadata={
+                        **sample.metadata,
+                        "auto_off_expired": True,
+                        "auto_off_previous_state": sample.state.value,
+                    },
+                )
+            )
 
     def _result(
         self,
@@ -283,3 +336,19 @@ class CommandRouter:
             rejection_reason=rejection_reason,
             metadata=clean_metadata,
         )
+
+
+def _metadata_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+
+    if isinstance(value, datetime):
+        return value
+
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
+
+    return None

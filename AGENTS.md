@@ -88,6 +88,11 @@ Rules for chlorination changes:
   other nonessential work cause the dosing pump to turn off late.
 - Be careful with command routing changes. Late `OFF` commands skew delivered
   chlorine upward.
+- On Raspberry Pi hardware, normal dosing ON segments use the Waveshare relay
+  module's timed flash command by default. Preserve this behavior unless there
+  is a deliberate hardware compatibility reason to disable it, because it limits
+  a Pi/process crash during dosing to the active pulse instead of a latched ON
+  relay.
 - Diagnostic prime/calibration pump runs are not normal dosing and must remain
   excluded from daily chlorine totals and FC-demand calculations.
 - Pump timer schedules with `allow_dosing: false` still run equipment but must

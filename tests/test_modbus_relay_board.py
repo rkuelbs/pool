@@ -20,12 +20,16 @@ class FakeRelayTransport:
     def __init__(self, coils: dict[int, bool] | None = None) -> None:
         self.coils = coils if coils is not None else {}
         self.writes: list[tuple[int, bool]] = []
+        self.raw_writes: list[tuple[int, int]] = []
         self.reads: list[tuple[int, int]] = []
         self.read_count_override: int | None = None
 
     async def write_single_coil(self, *, coil_address: int, value: bool) -> None:
         self.coils[coil_address] = value
         self.writes.append((coil_address, value))
+
+    async def write_single_coil_raw_value(self, *, coil_address: int, value: int) -> None:
+        self.raw_writes.append((coil_address, value))
 
     async def read_coils(self, *, start_address: int, count: int) -> tuple[bool, ...]:
         self.reads.append((start_address, count))
@@ -46,6 +50,31 @@ async def test_set_relay_maps_one_based_relay_to_zero_based_coil() -> None:
 
     assert transport.writes == [(0, True), (3, False)]
     assert transport.coils == {0: True, 3: False}
+
+
+@pytest.mark.asyncio
+async def test_flash_relay_on_uses_waveshare_flash_address_and_100ms_ticks() -> None:
+    transport = FakeRelayTransport()
+    board = ModbusRelayBoard(name="test_board", transport=transport)
+
+    pulse = await board.flash_relay_on(7, 30.04)
+
+    assert transport.raw_writes == [(0x0206, 300)]
+    assert pulse.relay_number == 7
+    assert pulse.address == 0x0206
+    assert pulse.ticks_100ms == 300
+    assert pulse.duration_s == 30.0
+
+
+@pytest.mark.asyncio
+async def test_flash_relay_on_rejects_out_of_range_duration() -> None:
+    board = ModbusRelayBoard(name="test_board", transport=FakeRelayTransport())
+
+    with pytest.raises(ValueError):
+        await board.flash_relay_on(1, 0.0)
+
+    with pytest.raises(ValueError):
+        await board.flash_relay_on(1, 3276.8)
 
 
 @pytest.mark.asyncio

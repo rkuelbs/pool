@@ -15,6 +15,8 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from poolctl.domain.models import (
+    ACTUATOR_AUTO_OFF_AT_METADATA,
+    ACTUATOR_ON_PULSE_SECONDS_METADATA,
     ActuatorCommand,
     ActuatorId,
     ActuatorState,
@@ -329,6 +331,7 @@ class ChlorinationController:
             else None
         )
         duty_cycle_window_active = False
+        on_pulse_seconds: float | None = None
 
         if not layer_enabled:
             reason = "chlorination layer disabled"
@@ -372,6 +375,10 @@ class ChlorinationController:
                 ):
                     desired_state = ActuatorState.ON
                     reason = "open-loop chlorination duty cycle on interval"
+                    on_pulse_seconds = min(
+                        cycle_timing.on_seconds - cycle_position,
+                        (current_window.end - local_now).total_seconds(),
+                    )
                 else:
                     reason = "open-loop chlorination duty cycle off interval"
 
@@ -474,6 +481,17 @@ class ChlorinationController:
                         "dose_adjustment_source": dose_adjustment_source,
                         "dose_adjustment_reason": dose_adjustment_reason,
                         "delay_eligible_seconds": delay_eligible_seconds,
+                        ACTUATOR_ON_PULSE_SECONDS_METADATA: (
+                            on_pulse_seconds
+                            if desired_state == ActuatorState.ON
+                            else None
+                        ),
+                        ACTUATOR_AUTO_OFF_AT_METADATA: (
+                            (now + timedelta(seconds=on_pulse_seconds)).isoformat()
+                            if desired_state == ActuatorState.ON
+                            and on_pulse_seconds is not None
+                            else None
+                        ),
                     },
                 ),
             )

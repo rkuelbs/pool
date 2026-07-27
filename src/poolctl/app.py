@@ -21,10 +21,13 @@ import yaml  # type: ignore[import-untyped]
 
 from poolctl.config import DriverProfile, FeatureLayer, LiveViewConfig, RuntimeConfig
 from poolctl.domain.models import (
+    ACTUATOR_AUTO_OFF_AT_METADATA,
+    ACTUATOR_ON_PULSE_SECONDS_METADATA,
     ActuatorCommandResult,
     ActuatorCommand,
     ActuatorId,
     ActuatorState,
+    ActuatorStateSample,
     ChemicalType,
     CommandSource,
     LabTest,
@@ -573,6 +576,29 @@ class PoolControllerApp:
             else ActuatorState.OFF
         )
 
+    def _dosing_pump_diagnostic_on_pulse_seconds(self, now: datetime) -> float | None:
+        started_at = self.dosing_prime_started_at
+        until = self.dosing_prime_until
+        if started_at is None or until is None or now >= until:
+            return None
+
+        remaining_s = max(0.0, (until - now).total_seconds())
+        if remaining_s <= 0:
+            return None
+
+        duty_cycle = max(0.0, min(1.0, self.dosing_prime_duty_cycle))
+        if duty_cycle >= 1.0:
+            return remaining_s
+
+        cycle_period_s = max(0.001, self.dosing_prime_cycle_period_s)
+        on_seconds = cycle_period_s * duty_cycle
+        elapsed_s = max(0.0, (now - started_at).total_seconds())
+        cycle_position = elapsed_s % cycle_period_s
+        if cycle_position >= on_seconds:
+            return None
+
+        return min(remaining_s, on_seconds - cycle_position)
+
     def notification_status(self) -> dict[str, Any]:
         if self.notification_service is not None:
             return self.notification_service.status_payload()
@@ -718,6 +744,11 @@ class PoolControllerApp:
                 duty_cycle_window_active=False,
             )
             if current_state != desired_state:
+                pulse_seconds = (
+                    self._dosing_pump_diagnostic_on_pulse_seconds(now)
+                    if desired_state == ActuatorState.ON
+                    else None
+                )
                 command = ActuatorCommand(
                     actuator_id=ActuatorId.CHLORINE_DOSING_PUMP,
                     created_at=now,
@@ -736,6 +767,12 @@ class PoolControllerApp:
                             ).total_seconds()
                             if self.dosing_prime_until is not None
                             else 0.0,
+                        ),
+                        ACTUATOR_ON_PULSE_SECONDS_METADATA: pulse_seconds,
+                        ACTUATOR_AUTO_OFF_AT_METADATA: (
+                            (now + timedelta(seconds=pulse_seconds)).isoformat()
+                            if pulse_seconds is not None
+                            else None
                         ),
                     },
                 )
@@ -760,18 +797,23 @@ class PoolControllerApp:
             return 0
         if self.measurement_logger is None:
             return 0
-        if self.router.actuator_states.get(ActuatorId.CHLORINE_DOSING_PUMP) != ActuatorState.ON:
+        sample = self.router.actuator_state_samples.get(ActuatorId.CHLORINE_DOSING_PUMP)
+        runtime_end = _chlorine_runtime_end_from_sample(sample, previous=previous, now=now)
+        if runtime_end is None:
             return 0
-        if self._dosing_prime_delivery_exclusion_overlaps(previous, now):
+        if self._dosing_prime_delivery_exclusion_overlaps(previous, runtime_end):
             return 0
 
         # The dosing pump is treated as a fixed-output pump. Runtime seconds are
         # converted to fluid ounces using the configured pump calibration; the
         # FC estimator later converts ounces to ppm using pool volume/strength.
-        runtime_seconds = max(0.0, (now - previous).total_seconds())
+        runtime_seconds = max(0.0, (runtime_end - previous).total_seconds())
+        if runtime_seconds <= 0:
+            return 0
+
         delivered_oz = runtime_seconds / 60.0 * self.chlorination_config.pump_output_oz_per_min
         return self.measurement_logger.log_chlorine_delivery(
-            observed_at=now,
+            observed_at=runtime_end,
             runtime_seconds=runtime_seconds,
             delivered_oz=delivered_oz,
             metadata={
@@ -1808,6 +1850,48 @@ def _previous_base_fc_demand(
     if not records:
         return None
     return records[-1].value
+
+
+def _chlorine_runtime_end_from_sample(
+    sample: ActuatorStateSample | None,
+    *,
+    previous: datetime,
+    now: datetime,
+) -> datetime | None:
+    if sample is None:
+        return None
+
+    auto_off_at = _metadata_datetime(sample.metadata.get(ACTUATOR_AUTO_OFF_AT_METADATA))
+    if sample.state == ActuatorState.ON:
+        runtime_end = min(now, auto_off_at) if auto_off_at is not None else now
+        return runtime_end if runtime_end > previous else None
+
+    if (
+        sample.state == ActuatorState.OFF
+        and sample.metadata.get("auto_off_expired") is True
+        and sample.metadata.get("auto_off_previous_state") == ActuatorState.ON.value
+        and auto_off_at is not None
+        and previous < auto_off_at <= now
+    ):
+        return auto_off_at
+
+    return None
+
+
+def _metadata_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+
+    if isinstance(value, datetime):
+        return value
+
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
+
+    return None
 
 
 def _command_result_payload(result: ActuatorCommandResult) -> dict[str, Any]:

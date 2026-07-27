@@ -27,6 +27,12 @@ class ModbusRelayTransport(Protocol):
         """
         ...
 
+    async def write_single_coil_raw_value(self, *, coil_address: int, value: int) -> None:
+        """
+        Write one Modbus coil with a raw 16-bit data field.
+        """
+        ...
+
     async def read_coils(self, *, start_address: int, count: int) -> tuple[bool, ...]:
         """
         Read one or more Modbus coils.
@@ -57,6 +63,21 @@ class ModbusRelayBoardConfig:
         )
 
 
+@dataclass(frozen=True)
+class RelayFlashPulse:
+    """
+    A timed Waveshare relay flash command that was sent to the board.
+    """
+
+    relay_number: int
+    address: int
+    ticks_100ms: int
+
+    @property
+    def duration_s(self) -> float:
+        return self.ticks_100ms / 10.0
+
+
 class ModbusRelayBoard:
     """
     Waveshare Modbus RTU relay board abstraction.
@@ -84,6 +105,28 @@ class ModbusRelayBoard:
         await self._transport.write_single_coil(
             coil_address=relay_number - 1,
             value=on,
+        )
+
+    async def flash_relay_on(self, relay_number: int, duration_s: float) -> RelayFlashPulse:
+        """
+        Turn a relay ON for a board-timed duration.
+
+        Waveshare's relay module uses function 05 addresses 0x0200-0x0207 for
+        flash-on commands. The data value is a duration in 100 ms increments.
+        This is used for dosing so relay turn-off is handled by the module even
+        if the Pi process dies during a pulse.
+        """
+        self._validate_relay_number(relay_number)
+        ticks_100ms = _duration_s_to_100ms_ticks(duration_s)
+        address = 0x0200 + relay_number - 1
+        await self._transport.write_single_coil_raw_value(
+            coil_address=address,
+            value=ticks_100ms,
+        )
+        return RelayFlashPulse(
+            relay_number=relay_number,
+            address=address,
+            ticks_100ms=ticks_100ms,
         )
 
     async def read_relay(self, relay_number: int) -> bool:
@@ -127,6 +170,16 @@ class PymodbusRtuRelayTransport:
     async def write_single_coil(self, *, coil_address: int, value: bool) -> None:
         try:
             await self._shared_bus().write_coil(
+                slave_id=self._config.slave_id,
+                coil_address=coil_address,
+                value=value,
+            )
+        except Exception as error:
+            raise ActuatorError(str(error)) from error
+
+    async def write_single_coil_raw_value(self, *, coil_address: int, value: int) -> None:
+        try:
+            await self._shared_bus().write_coil_raw_value(
                 slave_id=self._config.slave_id,
                 coil_address=coil_address,
                 value=value,
@@ -210,3 +263,15 @@ def _float_value(data: Mapping[str, Any], key: str, default: float) -> float:
         raise ValueError(f"{key} must be a number")
 
     return float(value)
+
+
+def _duration_s_to_100ms_ticks(duration_s: float) -> int:
+    if duration_s <= 0:
+        raise ValueError("flash relay duration must be greater than zero")
+
+    ticks = int(round(duration_s * 10.0))
+    ticks = max(1, ticks)
+    if ticks > 0x7FFF:
+        raise ValueError("flash relay duration cannot exceed 3276.7 seconds")
+
+    return ticks

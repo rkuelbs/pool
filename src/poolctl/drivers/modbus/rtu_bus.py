@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import struct
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -70,6 +71,36 @@ class SharedModbusRtuBus:
 
         response = await self._request("write_coil", _call)
         _raise_for_modbus_error(response, "write coil")
+
+    async def write_coil_raw_value(
+        self,
+        *,
+        slave_id: int,
+        coil_address: int,
+        value: int,
+    ) -> None:
+        """
+        Send Modbus function 05 with a raw 16-bit value.
+
+        Standard Modbus single-coil writes only use 0xFF00 and 0x0000. The
+        Waveshare relay module extends function 05 for timed flash commands,
+        where the data field is a 100 ms count. Pymodbus' normal write_coil()
+        helper intentionally hides that raw value, so this uses a tiny custom
+        request PDU while keeping the same shared bus lock and retry behavior.
+        """
+        if not 0 <= value <= 0xFFFF:
+            raise ValueError("raw coil value must fit in 16 bits")
+
+        async def _call(client: Any) -> Any:
+            request = _raw_write_single_coil_request(
+                slave_id=slave_id,
+                coil_address=coil_address,
+                value=value,
+            )
+            return await _execute_custom_request(client, request)
+
+        response = await self._request("write_coil_raw_value", _call)
+        _raise_for_modbus_error(response, "write raw coil value")
 
     async def read_coils(
         self,
@@ -361,3 +392,72 @@ def _raise_for_modbus_error(response: Any, operation: str) -> None:
     is_error = getattr(response, "isError", None)
     if callable(is_error) and is_error():
         raise RuntimeError(f"Modbus error during {operation}: {response}")
+
+
+def _raw_write_single_coil_request(
+    *,
+    slave_id: int,
+    coil_address: int,
+    value: int,
+) -> Any:
+    try:
+        from pymodbus.pdu import ModbusPDU  # type: ignore[import-not-found]
+
+        base_class: Any = ModbusPDU
+    except ImportError:
+        try:
+            from pymodbus.pdu import ModbusRequest  # type: ignore[import-not-found]
+
+            base_class = ModbusRequest
+        except ImportError as error:
+            raise RuntimeError("pymodbus is required for raw Modbus relay writes") from error
+
+    class RawWriteSingleCoilRequest(base_class):  # type: ignore[misc, valid-type]
+        function_code = 0x05
+        rtu_frame_size = 8
+
+        def __init__(self) -> None:
+            try:
+                super().__init__(dev_id=slave_id)
+            except TypeError:
+                try:
+                    super().__init__(slave=slave_id)
+                except TypeError:
+                    super().__init__()
+
+            self.address = coil_address
+            self.value = value
+
+            # Pymodbus has renamed the unit/slave/device id attribute across
+            # major versions. Setting all common spellings keeps the custom PDU
+            # usable with the same version range as the rest of poolctl.
+            for attribute in ("dev_id", "slave_id", "unit_id", "slave"):
+                try:
+                    setattr(self, attribute, slave_id)
+                except Exception:
+                    pass
+
+        def encode(self) -> bytes:
+            return struct.pack(">HH", self.address, self.value)
+
+        def decode(self, data: bytes) -> None:
+            self.address, self.value = struct.unpack(">HH", data[:4])
+
+        def get_response_pdu_size(self) -> int:
+            return 5
+
+    return RawWriteSingleCoilRequest()
+
+
+async def _execute_custom_request(client: Any, request: Any) -> Any:
+    execute = getattr(client, "execute", None)
+    if execute is None:
+        raise RuntimeError("pymodbus client does not support custom execute()")
+
+    try:
+        return await execute(False, request)
+    except TypeError as first_error:
+        try:
+            return await execute(request)
+        except TypeError:
+            raise first_error

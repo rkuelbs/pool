@@ -20,8 +20,9 @@ The project is intentionally layered:
 - Raspberry Pi Modbus analog input support for pressure channels.
 - DFRobot Modbus ORP and pH sensor support, including probe temperatures.
 - Pump timer scheduling with manual dashboard overrides.
-- Open-loop chlorine dosing on relay 7, with dashboard prime and calibration
-  test buttons.
+- Open-loop chlorine dosing on relay 7. On Raspberry Pi hardware, dosing ON
+  pulses use the Waveshare relay module's timed flash command by default so the
+  module turns the relay off even if the Pi process dies mid-pulse.
 - Optional FC-demand estimator based on manual FC tests and logged chlorine
   delivery/additions. ORP and pH are not used by this estimator.
 - Safety enforcement layer with configurable pressure gates and lockouts.
@@ -155,6 +156,8 @@ Important sections:
   optional burst oversampling, rolling filters, chemistry refresh runs.
 - `logging`: SQLite database path.
 - `modbus_relay`: relay board serial settings, Modbus slave ID, relay mapping.
+  `dosing_uses_flash` defaults to `true` so chlorine dosing ON commands are
+  sent as Waveshare timed flash pulses instead of latched relay ON writes.
 - `modbus_analog_input`: analog board serial settings, channel mappings, 2-point
   calibration.
 - `modbus_orp_sensor`: ORP sensor serial settings.
@@ -284,6 +287,20 @@ continuous sensor streams.
 Liquid chlorine dosing is implemented as the `chlorination` layer. On Raspberry
 Pi hardware, the chlorine dosing pump is mapped to relay 7 by default.
 
+On the Waveshare Modbus relay module, normal pump and booster outputs use
+latched relay writes. The chlorine dosing relay uses the module's flash-on
+command by default. Each normal or diagnostic dosing ON segment is sent with the
+remaining intended ON time in 100 ms relay-module units. The module then turns
+the relay off by itself. Software still sends a normal OFF command when dosing is
+cancelled early by safety, the dashboard stop button, or another explicit state
+change.
+
+This is a safety improvement over a latched dosing ON write: if the Pi process
+crashes during a 30-60 second dosing pulse, the relay module should finish that
+pulse and release the relay rather than leaving the pump on indefinitely. It is
+not a substitute for a hardware watchdog, flow switch, or upstream fail-open
+enable relay because relay contacts or firmware can still fail.
+
 The controller:
 
 1. Uses only pump timer schedules with `allow_dosing: true`.
@@ -365,6 +382,7 @@ runtime:
   - chlorination
 
 modbus_relay:
+  dosing_uses_flash: true
   relays:
     chlorine_dosing_pump: 7
 

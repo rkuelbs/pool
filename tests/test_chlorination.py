@@ -9,7 +9,13 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from poolctl.domain.models import ActuatorId, ActuatorState, CommandSource
+from poolctl.domain.models import (
+    ACTUATOR_AUTO_OFF_AT_METADATA,
+    ACTUATOR_ON_PULSE_SECONDS_METADATA,
+    ActuatorId,
+    ActuatorState,
+    CommandSource,
+)
 from poolctl.services.chlorination import (
     ChlorinationConfig,
     ChlorinationController,
@@ -142,6 +148,10 @@ def test_controller_turns_dosing_on_for_first_minute_of_duty_cycle() -> None:
     assert evaluation.commands[0].actuator_id == ActuatorId.CHLORINE_DOSING_PUMP
     assert evaluation.commands[0].state == ActuatorState.ON
     assert evaluation.commands[0].requested_by == CommandSource.CONTROLLER
+    assert evaluation.commands[0].metadata[ACTUATOR_ON_PULSE_SECONDS_METADATA] == 60.0
+    assert evaluation.commands[0].metadata[ACTUATOR_AUTO_OFF_AT_METADATA] == (
+        at(8, 1).isoformat()
+    )
 
 
 def test_controller_turns_dosing_off_after_one_minute_on_interval() -> None:

@@ -7,11 +7,13 @@ Waveshare relay coil states.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from poolctl.domain.models import (
+    ACTUATOR_AUTO_OFF_AT_METADATA,
+    ACTUATOR_ON_PULSE_SECONDS_METADATA,
     ActuatorCommand,
     ActuatorId,
     ActuatorState,
@@ -24,16 +26,22 @@ from poolctl.drivers.raspberrypi.actuators import (
     build_modbus_relay_actuators,
 )
 from poolctl.services.clock import SimulatedClock
+from poolctl.services.command_router import CommandRouter
+from poolctl.services.safety import SafetyGate
 
 
 class FakeRelayTransport:
     def __init__(self) -> None:
         self.coils: dict[int, bool] = {}
         self.writes: list[tuple[int, bool]] = []
+        self.raw_writes: list[tuple[int, int]] = []
 
     async def write_single_coil(self, *, coil_address: int, value: bool) -> None:
         self.coils[coil_address] = value
         self.writes.append((coil_address, value))
+
+    async def write_single_coil_raw_value(self, *, coil_address: int, value: int) -> None:
+        self.raw_writes.append((coil_address, value))
 
     async def read_coils(self, *, start_address: int, count: int) -> tuple[bool, ...]:
         return tuple(self.coils.get(start_address + offset, False) for offset in range(count))
@@ -86,6 +94,8 @@ def command(
     clock: SimulatedClock,
     actuator_id: ActuatorId,
     state: ActuatorState,
+    *,
+    metadata: dict[str, object] | None = None,
 ) -> ActuatorCommand:
     return ActuatorCommand(
         actuator_id=actuator_id,
@@ -93,6 +103,7 @@ def command(
         state=state,
         requested_by=CommandSource.MANUAL,
         reason="unit test",
+        metadata=metadata or {},
     )
 
 
@@ -112,6 +123,7 @@ def test_default_relay_mapping_uses_relay_6_for_dosing_pump() -> None:
     config = RelayActuatorConfig.from_mapping({})
 
     assert config.relays[ActuatorId.CHLORINE_DOSING_PUMP] == 6
+    assert config.dosing_uses_flash is True
 
 
 @pytest.mark.asyncio
@@ -144,6 +156,88 @@ async def test_pump_speed_uses_configured_off_high_on_low_polarity() -> None:
     assert transport.writes == [(1, False), (1, True)]
     assert high_sample.metadata["relay_on"] is False
     assert low_sample.metadata["relay_on"] is True
+
+
+@pytest.mark.asyncio
+async def test_dosing_pump_on_uses_timed_flash_relay_command() -> None:
+    transport, drivers, clock = make_drivers()
+    driver = driver_by_id(drivers, ActuatorId.CHLORINE_DOSING_PUMP)
+    auto_off_at = clock.now() + timedelta(seconds=30.0)
+
+    sample = await driver.apply(
+        command(
+            clock,
+            ActuatorId.CHLORINE_DOSING_PUMP,
+            ActuatorState.ON,
+            metadata={
+                ACTUATOR_ON_PULSE_SECONDS_METADATA: 30.0,
+                ACTUATOR_AUTO_OFF_AT_METADATA: auto_off_at.isoformat(),
+            },
+        )
+    )
+
+    assert transport.writes == []
+    assert transport.raw_writes == [(0x0203, 300)]
+    assert sample.state == ActuatorState.ON
+    assert sample.metadata["timed_flash_on"] is True
+    assert sample.metadata["pulse_ticks_100ms"] == 300
+    assert sample.metadata[ACTUATOR_AUTO_OFF_AT_METADATA] == auto_off_at.isoformat()
+
+
+@pytest.mark.asyncio
+async def test_dosing_pump_flash_mode_rejects_on_without_pulse_seconds() -> None:
+    _, drivers, clock = make_drivers()
+    driver = driver_by_id(drivers, ActuatorId.CHLORINE_DOSING_PUMP)
+
+    with pytest.raises(ActuatorError):
+        await driver.apply(
+            command(clock, ActuatorId.CHLORINE_DOSING_PUMP, ActuatorState.ON)
+        )
+
+
+@pytest.mark.asyncio
+async def test_dosing_pump_off_still_sends_normal_off_command() -> None:
+    transport, drivers, clock = make_drivers()
+    driver = driver_by_id(drivers, ActuatorId.CHLORINE_DOSING_PUMP)
+
+    sample = await driver.apply(
+        command(clock, ActuatorId.CHLORINE_DOSING_PUMP, ActuatorState.OFF)
+    )
+
+    assert transport.raw_writes == []
+    assert transport.writes == [(3, False)]
+    assert sample.state == ActuatorState.OFF
+
+
+@pytest.mark.asyncio
+async def test_command_router_expires_flash_dosing_state_without_off_write() -> None:
+    transport, drivers, clock = make_drivers()
+    router = CommandRouter(
+        drivers=drivers,
+        safety_gate=SafetyGate(),
+        clock=clock,
+        safety_enabled=False,
+    )
+    auto_off_at = clock.now() + timedelta(seconds=30.0)
+
+    result = await router.route(
+        command(
+            clock,
+            ActuatorId.CHLORINE_DOSING_PUMP,
+            ActuatorState.ON,
+            metadata={
+                ACTUATOR_ON_PULSE_SECONDS_METADATA: 30.0,
+                ACTUATOR_AUTO_OFF_AT_METADATA: auto_off_at.isoformat(),
+            },
+        )
+    )
+    await clock.advance(30.1)
+
+    assert result.applied is True
+    assert result.metadata["timed_flash_on"] is True
+    assert router.actuator_states[ActuatorId.CHLORINE_DOSING_PUMP] == ActuatorState.OFF
+    assert transport.raw_writes == [(0x0203, 300)]
+    assert transport.writes == []
 
 
 @pytest.mark.asyncio

@@ -16,6 +16,10 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 
 
+ACTUATOR_ON_PULSE_SECONDS_METADATA = "on_pulse_seconds"
+ACTUATOR_AUTO_OFF_AT_METADATA = "auto_off_at"
+
+
 def utc_now() -> datetime:
     """
     Return the current time in UTC.

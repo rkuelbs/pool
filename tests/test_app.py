@@ -12,12 +12,14 @@ from pathlib import Path
 
 import pytest
 
-from poolctl.app import build_app_from_mapping
+from poolctl.app import _chlorine_runtime_end_from_sample, build_app_from_mapping
 from poolctl.config import DriverProfile, FeatureLayer, RuntimeStage
 from poolctl.domain.models import (
+    ACTUATOR_AUTO_OFF_AT_METADATA,
     ActuatorCommand,
     ActuatorId,
     ActuatorState,
+    ActuatorStateSample,
     CommandSource,
     LabTest,
     Measurement,
@@ -307,6 +309,30 @@ async def test_tick_logs_chlorine_delivery_while_dosing_pump_is_on(tmp_path: Pat
     assert cumulative_records[0].value == 0.0
     assert round(cumulative_records[-1].value, 3) == 0.5
     assert cumulative_records[-1].unit == "fl oz"
+
+
+def test_chlorine_delivery_accounting_stops_at_auto_off_time() -> None:
+    previous = datetime(2026, 5, 21, 12, 0, tzinfo=timezone.utc)
+    auto_off_at = previous + timedelta(seconds=30)
+    now = previous + timedelta(seconds=45)
+    sample = ActuatorStateSample(
+        actuator_id=ActuatorId.CHLORINE_DOSING_PUMP,
+        observed_at=auto_off_at,
+        state=ActuatorState.OFF,
+        metadata={
+            ACTUATOR_AUTO_OFF_AT_METADATA: auto_off_at.isoformat(),
+            "auto_off_expired": True,
+            "auto_off_previous_state": ActuatorState.ON.value,
+        },
+    )
+
+    runtime_end = _chlorine_runtime_end_from_sample(
+        sample,
+        previous=previous,
+        now=now,
+    )
+
+    assert runtime_end == auto_off_at
 
 
 @pytest.mark.asyncio

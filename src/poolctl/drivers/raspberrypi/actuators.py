@@ -10,9 +10,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Any
 
 from poolctl.domain.models import (
+    ACTUATOR_AUTO_OFF_AT_METADATA,
+    ACTUATOR_ON_PULSE_SECONDS_METADATA,
     ActuatorCommand,
     ActuatorId,
     ActuatorState,
@@ -37,6 +40,7 @@ class RelayActuatorConfig:
 
     relays: Mapping[ActuatorId, int]
     pump_speed_low_relay_on: bool = True
+    dosing_uses_flash: bool = True
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> RelayActuatorConfig:
@@ -68,6 +72,7 @@ class RelayActuatorConfig:
                 ),
             },
             pump_speed_low_relay_on=_pump_speed_low_relay_on(speed_data),
+            dosing_uses_flash=_bool_value(modbus_data, "dosing_uses_flash", True),
         )
 
 
@@ -87,6 +92,7 @@ class ModbusRelayActuator:
         relay_on_to_state: Mapping[bool, ActuatorState],
         clock: Clock,
         stop_state: ActuatorState,
+        timed_flash_on: bool = False,
     ) -> None:
         if stop_state not in state_to_relay_on:
             raise ValueError("stop_state must be valid for this actuator")
@@ -99,6 +105,7 @@ class ModbusRelayActuator:
         self._relay_on_to_state = dict(relay_on_to_state)
         self._clock = clock
         self._stop_state = stop_state
+        self._timed_flash_on = timed_flash_on
 
     async def apply(self, command: ActuatorCommand) -> ActuatorStateSample:
         # Drivers are intentionally narrow: one driver controls one domain
@@ -124,6 +131,32 @@ class ModbusRelayActuator:
         # Domain states are ON/OFF/LOW/HIGH. The mapping decides whether that
         # means the physical relay coil is energized for this wiring setup.
         relay_on = self._state_to_relay_on[command.state]
+        if self._timed_flash_on and command.state == ActuatorState.ON:
+            if not relay_on:
+                raise ActuatorError(f"{self.name} cannot flash ON with inverted ON relay state")
+
+            pulse_seconds = _required_pulse_seconds(command.metadata, self.name)
+            flash = await self._board.flash_relay_on(self._relay_number, pulse_seconds)
+            observed_at = self._clock.now()
+            auto_off_at = _metadata_datetime(command.metadata.get(ACTUATOR_AUTO_OFF_AT_METADATA))
+            if auto_off_at is None:
+                auto_off_at = observed_at + timedelta(seconds=flash.duration_s)
+
+            return self._state_sample(
+                state=command.state,
+                source_command_id=command.id,
+                relay_on=relay_on,
+                observed_at=observed_at,
+                metadata={
+                    "timed_flash_on": True,
+                    ACTUATOR_ON_PULSE_SECONDS_METADATA: flash.duration_s,
+                    "requested_pulse_seconds": pulse_seconds,
+                    "pulse_ticks_100ms": flash.ticks_100ms,
+                    "flash_address": f"0x{flash.address:04X}",
+                    ACTUATOR_AUTO_OFF_AT_METADATA: auto_off_at.isoformat(),
+                },
+            )
+
         await self._board.set_relay(self._relay_number, relay_on)
 
         return self._state_sample(
@@ -161,16 +194,19 @@ class ModbusRelayActuator:
         state: ActuatorState,
         source_command_id: str | None,
         relay_on: bool,
+        observed_at: datetime | None = None,
+        metadata: Mapping[str, Any] | None = None,
     ) -> ActuatorStateSample:
         return ActuatorStateSample(
             actuator_id=self.actuator_id,
-            observed_at=self._clock.now(),
+            observed_at=observed_at if observed_at is not None else self._clock.now(),
             state=state,
             source_command_id=source_command_id,
             metadata={
                 "driver": self.name,
                 "relay_number": self._relay_number,
                 "relay_on": relay_on,
+                **(dict(metadata) if metadata is not None else {}),
             },
         )
 
@@ -243,6 +279,7 @@ def build_modbus_relay_actuators(
             relay_on_to_state=on_off_reverse,
             clock=clock,
             stop_state=ActuatorState.OFF,
+            timed_flash_on=config.dosing_uses_flash,
         ),
     ]
 
@@ -336,3 +373,43 @@ def _relay_state_value(data: Mapping[str, Any], key: str, default: str) -> bool:
         return False
 
     raise ValueError(f"{key} must be on or off")
+
+
+def _bool_value(data: Mapping[str, Any], key: str, default: bool) -> bool:
+    value = data.get(key, default)
+
+    if not isinstance(value, bool):
+        raise ValueError(f"{key} must be true or false")
+
+    return value
+
+
+def _required_pulse_seconds(metadata: Mapping[str, Any], driver_name: str) -> float:
+    value = metadata.get(ACTUATOR_ON_PULSE_SECONDS_METADATA)
+    if not isinstance(value, int | float):
+        raise ActuatorError(
+            f"{driver_name} uses timed flash ON and requires "
+            f"{ACTUATOR_ON_PULSE_SECONDS_METADATA} command metadata"
+        )
+
+    pulse_seconds = float(value)
+    if pulse_seconds <= 0:
+        raise ActuatorError(f"{ACTUATOR_ON_PULSE_SECONDS_METADATA} must be > 0")
+
+    return pulse_seconds
+
+
+def _metadata_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+
+    if isinstance(value, datetime):
+        return value
+
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError as error:
+            raise ActuatorError(f"{ACTUATOR_AUTO_OFF_AT_METADATA} must be an ISO timestamp") from error
+
+    raise ActuatorError(f"{ACTUATOR_AUTO_OFF_AT_METADATA} must be an ISO timestamp")
