@@ -85,6 +85,7 @@ from poolctl.services.notifications import (
 )
 from poolctl.services.pump_timer import PumpTimer, PumpTimerConfig
 from poolctl.services.pump_timer import PumpTimerOverride
+from poolctl.services.pulse_timing import quantize_relay_flash_seconds
 from poolctl.services.saturation_index import (
     CalciumSaturationIndexConfig,
     estimate_calcium_saturation_index,
@@ -108,6 +109,8 @@ class AppTickResult:
     chlorination_results: tuple[ActuatorCommandResult, ...]
     chlorination_status: ChlorinationStatus | None
     safety_results: tuple[ActuatorCommandResult, ...]
+    startup_safe_off_results: tuple[ActuatorCommandResult, ...] = ()
+    relay_reconciliation_results: tuple[ActuatorCommandResult, ...] = ()
     mqtt_results: tuple[ActuatorCommandResult, ...] = ()
     logged_measurement_count: int = 0
     logged_lab_test_count: int = 0
@@ -164,6 +167,45 @@ class ChemistrySamplingRefreshConfig:
 
 
 @dataclass(frozen=True)
+class RelaySafetyConfig:
+    """
+    Runtime safety behavior for latching relay outputs.
+    """
+
+    startup_safe_off: bool = False
+    reconciliation_interval_s: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.reconciliation_interval_s < 0:
+            raise ValueError("reconciliation_interval_s cannot be negative")
+
+    @classmethod
+    def from_mapping(
+        cls,
+        data: Mapping[str, Any],
+        *,
+        driver_profile: DriverProfile,
+    ) -> RelaySafetyConfig:
+        defaults_enabled = driver_profile == DriverProfile.RASPBERRY_PI
+        relay_data = data.get("modbus_relay", {})
+        if not isinstance(relay_data, Mapping):
+            raise ValueError("modbus_relay must be a mapping")
+
+        return cls(
+            startup_safe_off=_bool_value(
+                relay_data,
+                "startup_safe_off",
+                defaults_enabled,
+            ),
+            reconciliation_interval_s=_float_value(
+                relay_data,
+                "reconciliation_interval_s",
+                30.0 if defaults_enabled else 0.0,
+            ),
+        )
+
+
+@dataclass(frozen=True)
 class PoolControllerApp:
     """
     Composed runtime object for one pool controller deployment.
@@ -200,6 +242,9 @@ class PoolControllerApp:
     weather_service: WeatherService | None = None
     notifications_config: NotificationsConfig = field(default_factory=NotificationsConfig)
     notification_service: NotificationService | None = None
+    relay_safety_config: RelaySafetyConfig = RelaySafetyConfig()
+    relay_startup_safe_off_done: bool = False
+    relay_last_reconciled_at: datetime | None = None
     chlorine_delivery_checkpoint_at: datetime | None = None
     dosing_prime_until: datetime | None = None
     dosing_prime_started_at: datetime | None = None
@@ -220,6 +265,7 @@ class PoolControllerApp:
         # this lets the app begin with the board's actual state instead of only
         # trusting in-memory defaults.
         await self.router.ensure_states_loaded()
+        startup_safe_off_results = tuple(await self._run_startup_safe_off())
         self._update_sampling_override()
 
         # The pump timer and manual overrides are evaluated first because other
@@ -345,6 +391,8 @@ class PoolControllerApp:
                 )
             )
 
+        relay_reconciliation_results = tuple(await self._run_relay_reconciliation())
+
         publish_measurements = acquisition.measurements
         if csi_measurement is not None:
             publish_measurements = publish_measurements + (csi_measurement,)
@@ -356,6 +404,8 @@ class PoolControllerApp:
             acquisition=acquisition,
             timer_results=timer_results,
             safety_results=safety_results,
+            startup_safe_off_results=startup_safe_off_results,
+            relay_reconciliation_results=relay_reconciliation_results,
             mqtt_results=mqtt_results,
             logged_measurement_count=logged_measurement_count,
             logged_lab_test_count=logged_lab_test_count,
@@ -588,7 +638,7 @@ class PoolControllerApp:
 
         duty_cycle = max(0.0, min(1.0, self.dosing_prime_duty_cycle))
         if duty_cycle >= 1.0:
-            return remaining_s
+            return quantize_relay_flash_seconds(remaining_s)
 
         cycle_period_s = max(0.001, self.dosing_prime_cycle_period_s)
         on_seconds = cycle_period_s * duty_cycle
@@ -597,7 +647,7 @@ class PoolControllerApp:
         if cycle_position >= on_seconds:
             return None
 
-        return min(remaining_s, on_seconds - cycle_position)
+        return quantize_relay_flash_seconds(min(remaining_s, on_seconds - cycle_position))
 
     def notification_status(self) -> dict[str, Any]:
         if self.notification_service is not None:
@@ -656,6 +706,35 @@ class PoolControllerApp:
             return None
 
         return self.pump_timer.next_transition_after(self.clock.now())
+
+    async def _run_startup_safe_off(self) -> tuple[ActuatorCommandResult, ...]:
+        if self.relay_startup_safe_off_done:
+            return ()
+
+        object.__setattr__(self, "relay_startup_safe_off_done", True)
+        if not self.relay_safety_config.startup_safe_off:
+            return ()
+
+        results = tuple(
+            await self.router.stop_all(reason="startup relay safe-off")
+        )
+        object.__setattr__(self, "relay_last_reconciled_at", self.clock.now())
+        return results
+
+    async def _run_relay_reconciliation(self) -> tuple[ActuatorCommandResult, ...]:
+        interval_s = self.relay_safety_config.reconciliation_interval_s
+        if interval_s <= 0:
+            return ()
+
+        now = self.clock.now()
+        last = self.relay_last_reconciled_at
+        if last is not None and (now - last).total_seconds() < interval_s:
+            return ()
+
+        object.__setattr__(self, "relay_last_reconciled_at", now)
+        return tuple(
+            await self.router.reconcile_states(reason="periodic relay reconciliation")
+        )
 
     async def _poll_acquisition(self, *, force: bool) -> AcquisitionResult:
         if self.acquisition_service is None:
@@ -783,12 +862,53 @@ class PoolControllerApp:
                         bypass_safety=bool(prime_status["safety_bypass"]),
                     )
                 )
+            if not results and desired_state == ActuatorState.OFF:
+                confirmation = await self._confirm_expired_dosing_flash_off(now)
+                if confirmation is not None:
+                    results.append(confirmation)
+
             return tuple(results), status, logged_delivery_count
 
         for command in evaluation.commands:
             results.append(await self.router.route(command, measurements=measurements))
 
+        if not results and evaluation.status.desired_state == ActuatorState.OFF:
+            confirmation = await self._confirm_expired_dosing_flash_off(now)
+            if confirmation is not None:
+                results.append(confirmation)
+
         return tuple(results), evaluation.status, logged_delivery_count
+
+    async def _confirm_expired_dosing_flash_off(
+        self,
+        now: datetime,
+    ) -> ActuatorCommandResult | None:
+        sample = self.router.actuator_state_samples.get(ActuatorId.CHLORINE_DOSING_PUMP)
+        if sample is None:
+            return None
+
+        if sample.state != ActuatorState.OFF:
+            return None
+
+        if sample.metadata.get("auto_off_expired") is not True:
+            return None
+
+        return await self.router.route(
+            ActuatorCommand(
+                actuator_id=ActuatorId.CHLORINE_DOSING_PUMP,
+                created_at=now,
+                state=ActuatorState.OFF,
+                requested_by=CommandSource.SYSTEM,
+                reason="confirm dosing relay off after timed flash",
+                metadata={
+                    "controller": "dosing_flash_off_confirmation",
+                    "source_command_id": sample.source_command_id,
+                    ACTUATOR_AUTO_OFF_AT_METADATA: sample.metadata.get(
+                        ACTUATOR_AUTO_OFF_AT_METADATA
+                    ),
+                },
+            )
+        )
 
     def _log_chlorine_delivery_since_last_tick(self, now: datetime) -> int:
         previous = self.chlorine_delivery_checkpoint_at
@@ -1400,6 +1520,10 @@ def build_app_from_mapping(
     fc_demand_config = FcDemandConfig.from_mapping(data)
     live_view_config = LiveViewConfig.from_mapping(data)
     measurement_logging_config = MeasurementLoggingConfig.from_mapping(data)
+    relay_safety_config = RelaySafetyConfig.from_mapping(
+        data,
+        driver_profile=runtime_config.driver_profile,
+    )
     flow_estimation_config = FlowEstimationConfig.from_mapping(data)
     calcium_saturation_index_config = CalciumSaturationIndexConfig.from_mapping(data)
     chemistry_sampling_refresh = ChemistrySamplingRefreshConfig(
@@ -1524,6 +1648,7 @@ def build_app_from_mapping(
         weather_service=weather_service,
         notifications_config=notifications_config,
         notification_service=notification_service,
+        relay_safety_config=relay_safety_config,
     )
 
 
@@ -1621,6 +1746,20 @@ def _chemistry_sampling_refresh_values(data: Mapping[str, Any]) -> dict[str, Any
         "run_duration_s": float(run_duration_s),
         "pump_speed": state,
     }
+
+
+def _bool_value(data: Mapping[str, Any], key: str, default: bool) -> bool:
+    value = data.get(key, default)
+    if not isinstance(value, bool):
+        raise ValueError(f"{key} must be true or false")
+    return value
+
+
+def _float_value(data: Mapping[str, Any], key: str, default: float) -> float:
+    value = data.get(key, default)
+    if not isinstance(value, int | float):
+        raise ValueError(f"{key} must be a number")
+    return float(value)
 
 
 def _mqtt_command_payload(payload: dict[str, Any], *, now: datetime) -> ActuatorCommand | None:

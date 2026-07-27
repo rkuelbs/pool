@@ -14,6 +14,7 @@ from typing import Any, Protocol
 
 from poolctl.drivers.base import ActuatorError
 from poolctl.drivers.modbus.rtu_bus import SharedModbusRtuBus
+from poolctl.services.pulse_timing import relay_flash_ticks
 
 
 class ModbusRelayTransport(Protocol):
@@ -266,12 +267,4 @@ def _float_value(data: Mapping[str, Any], key: str, default: float) -> float:
 
 
 def _duration_s_to_100ms_ticks(duration_s: float) -> int:
-    if duration_s <= 0:
-        raise ValueError("flash relay duration must be greater than zero")
-
-    ticks = int(round(duration_s * 10.0))
-    ticks = max(1, ticks)
-    if ticks > 0x7FFF:
-        raise ValueError("flash relay duration cannot exceed 3276.7 seconds")
-
-    return ticks
+    return relay_flash_ticks(duration_s)

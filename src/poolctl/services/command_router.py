@@ -20,6 +20,7 @@ from poolctl.domain.models import (
     ActuatorId,
     ActuatorState,
     ActuatorStateSample,
+    CommandSource,
     Measurement,
 )
 from poolctl.drivers.base import ActuatorDriver, ActuatorError
@@ -167,6 +168,97 @@ class CommandRouter:
             self._record_state(await driver.read_state())
 
         return dict(self._state_samples)
+
+    async def stop_all(self, *, reason: str) -> list[ActuatorCommandResult]:
+        await self._ensure_state_loaded()
+        results: list[ActuatorCommandResult] = []
+        for actuator_id in _safe_stop_order(self._drivers):
+            state = _safe_stop_state(actuator_id)
+            if state is None:
+                continue
+
+            results.append(
+                await self._apply_driver_command(
+                    ActuatorCommand(
+                        actuator_id=actuator_id,
+                        created_at=self._clock.now(),
+                        state=state,
+                        requested_by=CommandSource.SYSTEM,
+                        reason=reason,
+                        metadata={"controller": "safe_stop_all"},
+                    ),
+                    decided_at=self._clock.now(),
+                    metadata={"safe_stop": True},
+                )
+            )
+
+        return results
+
+    async def reconcile_states(self, *, reason: str) -> list[ActuatorCommandResult]:
+        await self._ensure_state_loaded()
+        desired_samples = self.actuator_state_samples
+        results: list[ActuatorCommandResult] = []
+
+        for actuator_id, driver in self._drivers.items():
+            desired_sample = desired_samples.get(actuator_id)
+            if desired_sample is None:
+                continue
+
+            try:
+                actual_sample = await driver.read_state()
+            except ActuatorError as error:
+                results.append(
+                    self._result(
+                        ActuatorCommand(
+                            actuator_id=actuator_id,
+                            created_at=self._clock.now(),
+                            state=desired_sample.state,
+                            requested_by=CommandSource.SYSTEM,
+                            reason=reason,
+                            metadata={"controller": "relay_reconciliation"},
+                        ),
+                        accepted=True,
+                        applied=False,
+                        decided_at=self._clock.now(),
+                        rejection_reason=f"state reconciliation read failed: {error}",
+                        metadata={
+                            "relay_reconciliation": True,
+                            "desired_state": desired_sample.state.value,
+                        },
+                    )
+                )
+                continue
+
+            if actual_sample.state == desired_sample.state:
+                continue
+
+            metadata = _reconciliation_command_metadata(
+                desired_sample,
+                now=self._clock.now(),
+            )
+            if metadata is None:
+                continue
+
+            results.append(
+                await self._apply_driver_command(
+                    ActuatorCommand(
+                        actuator_id=actuator_id,
+                        created_at=self._clock.now(),
+                        state=desired_sample.state,
+                        requested_by=CommandSource.SYSTEM,
+                        reason=reason,
+                        metadata=metadata,
+                    ),
+                    decided_at=self._clock.now(),
+                    metadata={
+                        "relay_reconciliation": True,
+                        "actual_state": actual_sample.state.value,
+                        "desired_state": desired_sample.state.value,
+                    },
+                )
+            )
+
+        return results
 
     async def ensure_states_loaded(self) -> dict[ActuatorId, ActuatorStateSample]:
         await self._ensure_state_loaded()
@@ -352,3 +444,55 @@ def _metadata_datetime(value: Any) -> datetime | None:
             return None
 
     return None
+
+
+def _safe_stop_order(drivers: dict[ActuatorId, ActuatorDriver]) -> tuple[ActuatorId, ...]:
+    preferred_order = (
+        ActuatorId.CHLORINE_DOSING_PUMP,
+        ActuatorId.BOOSTER_PUMP,
+        ActuatorId.PUMP_MOTOR,
+        ActuatorId.PUMP_MOTOR_SPEED,
+    )
+    return tuple(actuator_id for actuator_id in preferred_order if actuator_id in drivers)
+
+
+def _safe_stop_state(actuator_id: ActuatorId) -> ActuatorState | None:
+    if actuator_id == ActuatorId.PUMP_MOTOR_SPEED:
+        return ActuatorState.LOW
+
+    if actuator_id in (
+        ActuatorId.PUMP_MOTOR,
+        ActuatorId.BOOSTER_PUMP,
+        ActuatorId.CHLORINE_DOSING_PUMP,
+    ):
+        return ActuatorState.OFF
+
+    return None
+
+
+def _reconciliation_command_metadata(
+    desired_sample: ActuatorStateSample,
+    *,
+    now: datetime,
+) -> dict[str, Any] | None:
+    metadata: dict[str, Any] = {
+        "controller": "relay_reconciliation",
+        "source_command_id": desired_sample.source_command_id,
+    }
+
+    auto_off_at = _metadata_datetime(
+        desired_sample.metadata.get(ACTUATOR_AUTO_OFF_AT_METADATA)
+    )
+    if desired_sample.actuator_id == ActuatorId.CHLORINE_DOSING_PUMP:
+        if desired_sample.state == ActuatorState.OFF:
+            return metadata
+
+        if auto_off_at is None or auto_off_at <= now:
+            return None
+
+        metadata[ACTUATOR_AUTO_OFF_AT_METADATA] = auto_off_at.isoformat()
+        metadata[ACTUATOR_ON_PULSE_SECONDS_METADATA] = (
+            auto_off_at - now
+        ).total_seconds()
+
+    return metadata

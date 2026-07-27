@@ -16,6 +16,7 @@ from poolctl.app import _chlorine_runtime_end_from_sample, build_app_from_mappin
 from poolctl.config import DriverProfile, FeatureLayer, RuntimeStage
 from poolctl.domain.models import (
     ACTUATOR_AUTO_OFF_AT_METADATA,
+    ACTUATOR_ON_PULSE_SECONDS_METADATA,
     ActuatorCommand,
     ActuatorId,
     ActuatorState,
@@ -30,6 +31,53 @@ from poolctl.drivers.simulated.actuators import build_default_simulated_actuator
 from poolctl.drivers.simulated.plant import SimulatedPlant
 from poolctl.services.clock import SimulatedClock
 import poolctl.services.weather as weather_service_module
+
+
+class PulseAwareDosingActuator:
+    name = "pulse_aware_dosing"
+    actuator_id = ActuatorId.CHLORINE_DOSING_PUMP
+
+    def __init__(self, clock: SimulatedClock) -> None:
+        self._clock = clock
+        self.state = ActuatorState.OFF
+        self.commands: list[ActuatorCommand] = []
+        self.last_metadata: dict[str, object] = {}
+
+    async def apply(self, command: ActuatorCommand) -> ActuatorStateSample:
+        self.commands.append(command)
+        self.state = command.state
+        self.last_metadata = {}
+        if command.state == ActuatorState.ON:
+            auto_off_at = command.metadata.get(ACTUATOR_AUTO_OFF_AT_METADATA)
+            self.last_metadata = {
+                ACTUATOR_AUTO_OFF_AT_METADATA: auto_off_at,
+            }
+
+        return ActuatorStateSample(
+            actuator_id=self.actuator_id,
+            observed_at=self._clock.now(),
+            state=self.state,
+            source_command_id=command.id,
+            metadata={
+                "driver": self.name,
+                **self.last_metadata,
+            },
+        )
+
+    async def read_state(self) -> ActuatorStateSample:
+        return ActuatorStateSample(
+            actuator_id=self.actuator_id,
+            observed_at=self._clock.now(),
+            state=self.state,
+            metadata={
+                "driver": self.name,
+                **self.last_metadata,
+            },
+        )
+
+    async def stop(self) -> ActuatorStateSample:
+        self.state = ActuatorState.OFF
+        return await self.read_state()
 
 
 class FixedSensor:
@@ -239,6 +287,65 @@ async def test_tick_runs_open_loop_chlorination_after_pump_timer() -> None:
     assert result.chlorination_status.active is True
     assert len(result.chlorination_results) == 1
     assert result.chlorination_results[0].applied is True
+
+
+@pytest.mark.asyncio
+async def test_tick_confirms_dosing_flash_off_after_auto_off_expires() -> None:
+    clock = make_clock()
+    plant = SimulatedPlant(clock=clock)
+    dosing_driver = PulseAwareDosingActuator(clock)
+    config = {
+        "runtime": {
+            "stage": "open_loop_timer",
+            "driver_profile": "simulated",
+            "enabled_layers": ["pump_timer", "chlorination"],
+            "enabled_actuators": [
+                "pump_motor",
+                "pump_motor_speed",
+                "chlorine_dosing_pump",
+            ],
+            "enabled_sensor_groups": [],
+        },
+        "pump_timer": {
+            "timezone": "UTC",
+            "schedules": [
+                {
+                    "name": "midday_filter",
+                    "start": "12:00",
+                    "end": "14:00",
+                    "pump_speed": "low",
+                    "booster": "off",
+                }
+            ],
+        },
+        "chlorination": {
+            "enabled": True,
+            "daily_dose_oz": 4.0,
+            "pump_output_oz_per_min": 1.0,
+            "no_dose_last_minutes": 10.0,
+            "max_duty_cycle": 0.5,
+            "cycle_on_seconds": 60.0,
+        },
+    }
+    actuator_drivers = [
+        driver
+        for driver in build_default_simulated_actuators(plant)
+        if driver.actuator_id != ActuatorId.CHLORINE_DOSING_PUMP
+    ]
+    actuator_drivers.append(dosing_driver)
+    app = build_app_from_mapping(config, clock=clock, actuator_drivers=actuator_drivers)
+
+    first = await app.tick()
+    await clock.advance(60.1)
+    second = await app.tick()
+
+    assert first.chlorination_results[0].metadata["driver"] == dosing_driver.name
+    assert dosing_driver.commands[0].state == ActuatorState.ON
+    assert dosing_driver.commands[0].metadata[ACTUATOR_ON_PULSE_SECONDS_METADATA] == 60.0
+    assert dosing_driver.commands[1].state == ActuatorState.OFF
+    assert dosing_driver.commands[1].reason == "confirm dosing relay off after timed flash"
+    assert len(second.chlorination_results) == 1
+    assert second.chlorination_results[0].applied is True
 
 
 @pytest.mark.asyncio
@@ -648,6 +755,41 @@ def test_raspberry_pi_profile_can_use_injected_drivers() -> None:
     assert app.runtime_config.driver_profile == DriverProfile.RASPBERRY_PI
     assert app.simulated_plant is None
     assert app.acquisition_service is None
+
+
+@pytest.mark.asyncio
+async def test_raspberry_pi_profile_safe_stops_outputs_on_first_tick() -> None:
+    clock = make_clock()
+    plant = SimulatedPlant(clock=clock)
+    config = {
+        "runtime": {
+            "stage": "open_loop_timer",
+            "driver_profile": "raspberry_pi",
+            "enabled_layers": ["pump_timer"],
+            "enabled_actuators": [
+                "pump_motor",
+                "pump_motor_speed",
+                "booster_pump",
+            ],
+            "enabled_sensor_groups": [],
+        },
+        **active_pump_timer_config(),
+    }
+    app = build_app_from_mapping(
+        config,
+        clock=clock,
+        actuator_drivers=build_default_simulated_actuators(plant),
+    )
+
+    result = await app.tick()
+    second = await app.tick()
+
+    assert len(result.startup_safe_off_results) == 3
+    assert all(command_result.applied for command_result in result.startup_safe_off_results)
+    assert len(result.timer_results) == 2
+    assert app.router.actuator_states[ActuatorId.PUMP_MOTOR] == ActuatorState.ON
+    assert app.router.actuator_states[ActuatorId.PUMP_MOTOR_SPEED] == ActuatorState.HIGH
+    assert second.startup_safe_off_results == ()
 
 
 def test_poll_weather_due_fetches_weather_and_logs_hourly_observation(

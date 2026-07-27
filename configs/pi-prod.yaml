@@ -35,6 +35,8 @@ modbus_relay:
   baudrate: 4800
   timeout_s: 1.0
   dosing_uses_flash: true
+  startup_safe_off: true
+  reconciliation_interval_s: 30.0
   relays:
     pump_motor: 1
     pump_motor_speed: 2

@@ -158,6 +158,9 @@ Important sections:
 - `modbus_relay`: relay board serial settings, Modbus slave ID, relay mapping.
   `dosing_uses_flash` defaults to `true` so chlorine dosing ON commands are
   sent as Waveshare timed flash pulses instead of latched relay ON writes.
+  `startup_safe_off` commands safe actuator states once at boot, and
+  `reconciliation_interval_s` periodically reads relay states and corrects
+  mismatches.
 - `modbus_analog_input`: analog board serial settings, channel mappings, 2-point
   calibration.
 - `modbus_orp_sensor`: ORP sensor serial settings.
@@ -293,7 +296,14 @@ command by default. Each normal or diagnostic dosing ON segment is sent with the
 remaining intended ON time in 100 ms relay-module units. The module then turns
 the relay off by itself. Software still sends a normal OFF command when dosing is
 cancelled early by safety, the dashboard stop button, or another explicit state
-change.
+change. Poolctl also sends a redundant OFF confirmation after an expected
+flash-pulse auto-off. That confirmation is not used for timing accuracy; it is a
+secondary check after the module-timed pulse should already be off.
+
+All dosing pulse commands are quantized to the relay module's 100 ms timing
+resolution before they are sent and before delivery accounting records runtime.
+This keeps duty-cycle math, expected auto-off timestamps, and logged chlorine
+delivery aligned with the hardware timer.
 
 This is a safety improvement over a latched dosing ON write: if the Pi process
 crashes during a 30-60 second dosing pulse, the relay module should finish that
@@ -383,6 +393,8 @@ runtime:
 
 modbus_relay:
   dosing_uses_flash: true
+  startup_safe_off: true
+  reconciliation_interval_s: 30.0
   relays:
     chlorine_dosing_pump: 7
 
@@ -414,6 +426,16 @@ safety:
   thresholds:
     chlorine_requires_high_speed: false
 ```
+
+On Raspberry Pi profiles, `startup_safe_off` defaults to `true` and
+`reconciliation_interval_s` defaults to `30.0`. Startup safe-off uses safe
+domain actuator states: dosing OFF, booster OFF, pump motor OFF, and pump speed
+LOW. With the current wiring, pump speed LOW energizes relay 2; this is safer
+than forcing every physical relay de-energized because an unexpected pump start
+would then be low speed instead of high speed. Periodic reconciliation runs
+after the time-critical control decisions in a tick. It reads relay state and
+sends corrective commands when the physical relay state does not match the
+controller's desired state.
 
 ## FC-Demand Estimator
 

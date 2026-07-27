@@ -226,6 +226,26 @@ async def build_live_snapshot(app: PoolControllerApp) -> dict[str, Any]:
                 }
                 for result in tick.chlorination_results
             ],
+            "startup_safe_off_results": [
+                {
+                    "command_id": result.command_id,
+                    "accepted": result.accepted,
+                    "applied": result.applied,
+                    "rejection_reason": result.rejection_reason,
+                    "metadata": result.metadata,
+                }
+                for result in tick.startup_safe_off_results
+            ],
+            "relay_reconciliation_results": [
+                {
+                    "command_id": result.command_id,
+                    "accepted": result.accepted,
+                    "applied": result.applied,
+                    "rejection_reason": result.rejection_reason,
+                    "metadata": result.metadata,
+                }
+                for result in tick.relay_reconciliation_results
+            ],
             "acquisition_failures": [
                 {
                     "driver": failure.driver_name,

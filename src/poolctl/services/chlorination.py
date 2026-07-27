@@ -23,6 +23,7 @@ from poolctl.domain.models import (
     CommandSource,
 )
 from poolctl.services.pump_timer import PumpTimerConfig
+from poolctl.services.pulse_timing import quantize_relay_flash_seconds
 from poolctl.services.schedule import TimeOfDay
 
 
@@ -375,9 +376,11 @@ class ChlorinationController:
                 ):
                     desired_state = ActuatorState.ON
                     reason = "open-loop chlorination duty cycle on interval"
-                    on_pulse_seconds = min(
-                        cycle_timing.on_seconds - cycle_position,
-                        (current_window.end - local_now).total_seconds(),
+                    on_pulse_seconds = quantize_relay_flash_seconds(
+                        min(
+                            cycle_timing.on_seconds - cycle_position,
+                            (current_window.end - local_now).total_seconds(),
+                        )
                     )
                 else:
                     reason = "open-loop chlorination duty cycle off interval"

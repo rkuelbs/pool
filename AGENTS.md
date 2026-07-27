@@ -93,6 +93,15 @@ Rules for chlorination changes:
   is a deliberate hardware compatibility reason to disable it, because it limits
   a Pi/process crash during dosing to the active pulse instead of a latched ON
   relay.
+- Dosing flash pulses are quantized to 100 ms before command and accounting.
+  Preserve that agreement between command metadata, driver writes, and chlorine
+  delivery logging.
+- Poolctl sends a redundant OFF confirmation after a timed flash pulse expires.
+  Do not remove it as "unnecessary"; it is a secondary safety check, while the
+  relay module flash timer remains the primary pulse-end mechanism.
+- Raspberry Pi relay deployments perform startup safe-stop and periodic relay
+  reconciliation. Keep those actions after or outside time-critical dosing
+  boundary decisions so slow readbacks cannot delay a dose transition.
 - Diagnostic prime/calibration pump runs are not normal dosing and must remain
   excluded from daily chlorine totals and FC-demand calculations.
 - Pump timer schedules with `allow_dosing: false` still run equipment but must

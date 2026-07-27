@@ -138,9 +138,7 @@ class ModbusRelayActuator:
             pulse_seconds = _required_pulse_seconds(command.metadata, self.name)
             flash = await self._board.flash_relay_on(self._relay_number, pulse_seconds)
             observed_at = self._clock.now()
-            auto_off_at = _metadata_datetime(command.metadata.get(ACTUATOR_AUTO_OFF_AT_METADATA))
-            if auto_off_at is None:
-                auto_off_at = observed_at + timedelta(seconds=flash.duration_s)
+            auto_off_at = observed_at + timedelta(seconds=flash.duration_s)
 
             return self._state_sample(
                 state=command.state,
@@ -398,18 +396,3 @@ def _required_pulse_seconds(metadata: Mapping[str, Any], driver_name: str) -> fl
 
     return pulse_seconds
 
-
-def _metadata_datetime(value: Any) -> datetime | None:
-    if value is None:
-        return None
-
-    if isinstance(value, datetime):
-        return value
-
-    if isinstance(value, str):
-        try:
-            return datetime.fromisoformat(value)
-        except ValueError as error:
-            raise ActuatorError(f"{ACTUATOR_AUTO_OFF_AT_METADATA} must be an ISO timestamp") from error
-
-    raise ActuatorError(f"{ACTUATOR_AUTO_OFF_AT_METADATA} must be an ISO timestamp")

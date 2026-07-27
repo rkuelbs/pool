@@ -241,6 +241,64 @@ async def test_command_router_expires_flash_dosing_state_without_off_write() -> 
 
 
 @pytest.mark.asyncio
+async def test_reconciliation_corrects_pump_relay_that_does_not_match_desired_state() -> None:
+    transport, drivers, clock = make_drivers()
+    router = CommandRouter(
+        drivers=drivers,
+        safety_gate=SafetyGate(),
+        clock=clock,
+        safety_enabled=False,
+    )
+
+    await router.route(command(clock, ActuatorId.PUMP_MOTOR, ActuatorState.ON))
+    transport.coils[0] = False
+
+    results = await router.reconcile_states(reason="unit test reconcile")
+
+    assert len(results) == 1
+    assert results[0].applied is True
+    assert results[0].metadata["relay_reconciliation"] is True
+    assert results[0].metadata["actual_state"] == ActuatorState.OFF.value
+    assert results[0].metadata["desired_state"] == ActuatorState.ON.value
+    assert transport.writes == [(0, True), (0, True)]
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_sends_off_when_dosing_relay_is_on_after_auto_off() -> None:
+    transport, drivers, clock = make_drivers()
+    router = CommandRouter(
+        drivers=drivers,
+        safety_gate=SafetyGate(),
+        clock=clock,
+        safety_enabled=False,
+    )
+    auto_off_at = clock.now() + timedelta(seconds=30.0)
+    await router.route(
+        command(
+            clock,
+            ActuatorId.CHLORINE_DOSING_PUMP,
+            ActuatorState.ON,
+            metadata={
+                ACTUATOR_ON_PULSE_SECONDS_METADATA: 30.0,
+                ACTUATOR_AUTO_OFF_AT_METADATA: auto_off_at.isoformat(),
+            },
+        )
+    )
+    await clock.advance(30.1)
+    assert router.actuator_states[ActuatorId.CHLORINE_DOSING_PUMP] == ActuatorState.OFF
+    transport.coils[3] = True
+
+    results = await router.reconcile_states(reason="unit test reconcile")
+
+    assert len(results) == 1
+    assert results[0].applied is True
+    assert results[0].metadata["relay_reconciliation"] is True
+    assert results[0].metadata["actual_state"] == ActuatorState.ON.value
+    assert results[0].metadata["desired_state"] == ActuatorState.OFF.value
+    assert transport.writes == [(3, False)]
+
+
+@pytest.mark.asyncio
 async def test_read_state_maps_relay_state_back_to_actuator_state() -> None:
     transport, drivers, _ = make_drivers()
     driver = driver_by_id(drivers, ActuatorId.PUMP_MOTOR_SPEED)
