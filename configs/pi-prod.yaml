@@ -18,7 +18,7 @@ pump_timer:
   timezone: America/Chicago
   schedules:
   - name: daytime_filter
-    start: '09:30'
+    start: 09:30
     end: '16:30'
     pump_speed: low
     booster: 'off'
@@ -140,7 +140,7 @@ chlorination:
 fc_demand:
   enabled: true
   mode: observe_only
-  pool_volume_gal: 17000.0
+  pool_volume_gal: 16000.0
   target_fc_ppm: 4.0
   chlorine_strength_percent: 12.0
   minimum_test_interval_hours: 12.0
