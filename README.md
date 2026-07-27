@@ -294,11 +294,27 @@ The controller:
    `pump_output_oz_per_min`.
 6. Computes duty cycle as requested minutes divided by available minutes.
 7. Caps duty cycle at `max_duty_cycle`.
-8. Runs fixed `cycle_on_seconds` ON intervals with calculated OFF time.
+8. Computes an effective ON/OFF pulse schedule for that duty cycle.
 
 This allows the same pump timer to run the pool at night for skimming or
 vacuuming while keeping the day's chlorine dose in morning and daytime windows
 before evening FC tests.
+
+Pulse timing is configured with three values:
+
+- `cycle_on_seconds`: nominal ON pulse used at normal duty cycles.
+- `max_cycle_period_seconds`: longest desired full ON+OFF cycle before the
+  controller starts shortening the ON pulse.
+- `min_cycle_on_seconds`: shortest reliable ON pulse. If the requested duty
+  cycle is so low that `duty_cycle * max_cycle_period_seconds` is below this
+  value, the controller keeps the minimum ON pulse and allows the cycle period
+  to grow again so total dose remains accurate.
+
+With the default `cycle_on_seconds: 60.0` and
+`max_cycle_period_seconds: 1800.0`, the controller uses 60-second ON pulses down
+to about 3.33% duty cycle. Below that, it uses a 30-minute cycle and reduces ON
+time. At extremely low duty cycle, it preserves the configured minimum ON time
+instead of commanding unreliable tiny pulses.
 
 Changing `daily_dose_oz` from the dashboard applies the new duty cycle going
 forward. The controller does not try to make up for earlier parts of the day.
@@ -359,6 +375,8 @@ chlorination:
   no_dose_last_minutes: 10.0
   max_duty_cycle: 0.5
   cycle_on_seconds: 60.0
+  max_cycle_period_seconds: 1800.0
+  min_cycle_on_seconds: 5.0
 
 fc_demand:
   enabled: true

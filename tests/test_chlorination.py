@@ -170,6 +170,93 @@ def test_controller_turns_dosing_off_after_one_minute_on_interval() -> None:
     assert evaluation.commands[0].state == ActuatorState.OFF
 
 
+def test_controller_shortens_on_time_when_low_duty_would_exceed_max_cycle() -> None:
+    controller = ChlorinationController(
+        ChlorinationConfig(
+            daily_dose_oz=2.0,
+            pump_output_oz_per_min=1.0,
+            cycle_on_seconds=60.0,
+            max_cycle_period_seconds=1800.0,
+            min_cycle_on_seconds=5.0,
+        )
+    )
+
+    on_evaluation = controller.evaluate(
+        now=at(8, 0, 32),
+        pump_timer_config=timer_config(schedule()),
+        actuator_states={
+            ActuatorId.PUMP_MOTOR: ActuatorState.ON,
+            ActuatorId.CHLORINE_DOSING_PUMP: ActuatorState.OFF,
+        },
+        layer_enabled=True,
+    )
+
+    assert round(on_evaluation.status.duty_cycle, 4) == 0.0182
+    assert round(on_evaluation.status.cycle_on_seconds, 1) == 32.7
+    assert on_evaluation.status.nominal_cycle_on_seconds == 60.0
+    assert on_evaluation.status.cycle_period_seconds == 1800.0
+    assert round(on_evaluation.status.cycle_off_seconds or 0.0, 1) == 1767.3
+    assert on_evaluation.status.cycle_on_seconds_reduced is True
+    assert on_evaluation.status.min_cycle_on_seconds_limited is False
+    assert on_evaluation.status.active is True
+
+    off_evaluation = controller.evaluate(
+        now=at(8, 0, 33),
+        pump_timer_config=timer_config(schedule()),
+        actuator_states={
+            ActuatorId.PUMP_MOTOR: ActuatorState.ON,
+            ActuatorId.CHLORINE_DOSING_PUMP: ActuatorState.ON,
+        },
+        layer_enabled=True,
+    )
+
+    assert off_evaluation.status.active is False
+    assert off_evaluation.commands[0].state == ActuatorState.OFF
+
+
+def test_controller_uses_minimum_on_time_for_extremely_low_duty_cycle() -> None:
+    controller = ChlorinationController(
+        ChlorinationConfig(
+            daily_dose_oz=0.22,
+            pump_output_oz_per_min=1.0,
+            cycle_on_seconds=60.0,
+            max_cycle_period_seconds=1800.0,
+            min_cycle_on_seconds=5.0,
+        )
+    )
+
+    on_evaluation = controller.evaluate(
+        now=at(8, 0, 4),
+        pump_timer_config=timer_config(schedule()),
+        actuator_states={
+            ActuatorId.PUMP_MOTOR: ActuatorState.ON,
+            ActuatorId.CHLORINE_DOSING_PUMP: ActuatorState.OFF,
+        },
+        layer_enabled=True,
+    )
+
+    assert round(on_evaluation.status.duty_cycle, 4) == 0.002
+    assert on_evaluation.status.cycle_on_seconds == 5.0
+    assert round(on_evaluation.status.cycle_period_seconds or 0.0, 1) == 2500.0
+    assert round(on_evaluation.status.cycle_off_seconds or 0.0, 1) == 2495.0
+    assert on_evaluation.status.cycle_on_seconds_reduced is True
+    assert on_evaluation.status.min_cycle_on_seconds_limited is True
+    assert on_evaluation.status.active is True
+
+    off_evaluation = controller.evaluate(
+        now=at(8, 0, 6),
+        pump_timer_config=timer_config(schedule()),
+        actuator_states={
+            ActuatorId.PUMP_MOTOR: ActuatorState.ON,
+            ActuatorId.CHLORINE_DOSING_PUMP: ActuatorState.ON,
+        },
+        layer_enabled=True,
+    )
+
+    assert off_evaluation.status.active is False
+    assert off_evaluation.commands[0].state == ActuatorState.OFF
+
+
 def test_controller_prohibits_dosing_during_final_no_dose_buffer() -> None:
     controller = ChlorinationController(
         ChlorinationConfig(daily_dose_oz=4.0, pump_output_oz_per_min=1.0)
@@ -208,6 +295,28 @@ def test_controller_caps_duty_cycle_and_reports_warning() -> None:
     assert evaluation.status.duty_cycle == 0.5
     assert evaluation.status.duty_cycle_limited is True
     assert evaluation.status.warning == "requested dose exceeds the configured maximum dosing duty cycle"
+
+
+def test_config_rejects_impossible_cycle_timing() -> None:
+    try:
+        ChlorinationConfig(
+            cycle_on_seconds=4.0,
+            min_cycle_on_seconds=5.0,
+        )
+    except ValueError as error:
+        assert str(error) == "chlorination.min_cycle_on_seconds must be <= cycle_on_seconds"
+    else:
+        raise AssertionError("minimum ON time above nominal ON time should be rejected")
+
+    try:
+        ChlorinationConfig(
+            cycle_on_seconds=60.0,
+            max_cycle_period_seconds=30.0,
+        )
+    except ValueError as error:
+        assert str(error) == "chlorination.cycle_on_seconds must be <= max_cycle_period_seconds"
+    else:
+        raise AssertionError("nominal ON time above max cycle period should be rejected")
 
 
 def test_controller_keeps_dosing_off_when_layer_disabled() -> None:

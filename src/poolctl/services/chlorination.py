@@ -40,6 +40,8 @@ class ChlorinationConfig:
     no_dose_last_minutes: float = 10.0
     max_duty_cycle: float = 0.5
     cycle_on_seconds: float = 60.0
+    max_cycle_period_seconds: float = 1800.0
+    min_cycle_on_seconds: float = 5.0
 
     def __post_init__(self) -> None:
         if self.daily_dose_oz < 0:
@@ -52,6 +54,18 @@ class ChlorinationConfig:
             raise ValueError("chlorination.max_duty_cycle must be > 0 and <= 1")
         if self.cycle_on_seconds <= 0:
             raise ValueError("chlorination.cycle_on_seconds must be > 0")
+        if self.max_cycle_period_seconds <= 0:
+            raise ValueError("chlorination.max_cycle_period_seconds must be > 0")
+        if self.min_cycle_on_seconds <= 0:
+            raise ValueError("chlorination.min_cycle_on_seconds must be > 0")
+        if self.min_cycle_on_seconds > self.cycle_on_seconds:
+            raise ValueError(
+                "chlorination.min_cycle_on_seconds must be <= cycle_on_seconds"
+            )
+        if self.cycle_on_seconds > self.max_cycle_period_seconds:
+            raise ValueError(
+                "chlorination.cycle_on_seconds must be <= max_cycle_period_seconds"
+            )
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> ChlorinationConfig:
@@ -78,6 +92,16 @@ class ChlorinationConfig:
                 config_data,
                 "cycle_on_seconds",
                 cls.cycle_on_seconds,
+            ),
+            max_cycle_period_seconds=_float_value(
+                config_data,
+                "max_cycle_period_seconds",
+                cls.max_cycle_period_seconds,
+            ),
+            min_cycle_on_seconds=_float_value(
+                config_data,
+                "min_cycle_on_seconds",
+                cls.min_cycle_on_seconds,
             ),
         )
 
@@ -119,7 +143,13 @@ class ChlorinationStatus:
     max_duty_cycle: float
     duty_cycle_limited: bool
     cycle_on_seconds: float
+    nominal_cycle_on_seconds: float
     cycle_period_seconds: float | None
+    cycle_off_seconds: float | None
+    max_cycle_period_seconds: float
+    min_cycle_on_seconds: float
+    cycle_on_seconds_reduced: bool
+    min_cycle_on_seconds_limited: bool
     no_dose_last_minutes: float
     eligible_window_active: bool
     duty_cycle_window_active: bool
@@ -147,7 +177,13 @@ class ChlorinationStatus:
             "max_duty_cycle": self.max_duty_cycle,
             "duty_cycle_limited": self.duty_cycle_limited,
             "cycle_on_seconds": self.cycle_on_seconds,
+            "nominal_cycle_on_seconds": self.nominal_cycle_on_seconds,
             "cycle_period_seconds": self.cycle_period_seconds,
+            "cycle_off_seconds": self.cycle_off_seconds,
+            "max_cycle_period_seconds": self.max_cycle_period_seconds,
+            "min_cycle_on_seconds": self.min_cycle_on_seconds,
+            "cycle_on_seconds_reduced": self.cycle_on_seconds_reduced,
+            "min_cycle_on_seconds_limited": self.min_cycle_on_seconds_limited,
             "no_dose_last_minutes": self.no_dose_last_minutes,
             "eligible_window_active": self.eligible_window_active,
             "duty_cycle_window_active": self.duty_cycle_window_active,
@@ -194,6 +230,22 @@ class ChlorinationPlanAdjustment:
 class ChlorinationEvaluation:
     status: ChlorinationStatus
     commands: tuple[ActuatorCommand, ...]
+
+
+@dataclass(frozen=True)
+class DosingCycleTiming:
+    """
+    Effective relay pulse timing for the current duty cycle.
+    """
+
+    on_seconds: float
+    period_seconds: float
+    on_seconds_reduced: bool = False
+    min_on_seconds_limited: bool = False
+
+    @property
+    def off_seconds(self) -> float:
+        return max(0.0, self.period_seconds - self.on_seconds)
 
 
 class ChlorinationController:
@@ -251,11 +303,16 @@ class ChlorinationController:
         duty_cycle_limited = raw_duty_cycle > self.config.max_duty_cycle
         duty_cycle = min(raw_duty_cycle, self.config.max_duty_cycle)
 
-        # Example: with a 60 s ON pulse and 25% duty cycle, the complete period
-        # is 240 s, which means 60 s ON followed by 180 s OFF.
+        # Example: with a 60 s nominal ON pulse and 25% duty cycle, the complete
+        # period is 240 s, which means 60 s ON followed by 180 s OFF. At very
+        # low duty cycle, the nominal ON pulse would create long OFF gaps. The
+        # timing helper shortens the ON pulse once the full cycle would exceed
+        # max_cycle_period_seconds, while preserving min_cycle_on_seconds as the
+        # shortest pulse we trust the pump to deliver repeatably.
+        cycle_timing = _dosing_cycle_timing(self.config, duty_cycle)
         cycle_period_seconds = (
-            self.config.cycle_on_seconds / duty_cycle
-            if duty_cycle > 0
+            cycle_timing.period_seconds
+            if cycle_timing is not None
             else None
         )
         current_window = _current_window(windows, local_now)
@@ -293,7 +350,10 @@ class ChlorinationController:
             # wall-clock time. If there are multiple pump windows in a day, the
             # ON/OFF pattern resumes where the previous valid window stopped.
             elapsed_eligible_seconds = _elapsed_eligible_seconds(windows, local_now)
-            if delay_eligible_seconds > 0 and elapsed_eligible_seconds < delay_eligible_seconds:
+            if (
+                delay_eligible_seconds > 0
+                and elapsed_eligible_seconds < delay_eligible_seconds
+            ):
                 delay_min = delay_eligible_seconds / 60.0
                 reason = f"dosing delayed by {delay_min:.1f} eligible min"
             else:
@@ -306,7 +366,10 @@ class ChlorinationController:
                 # The background runtime must tick faster than this boundary
                 # changes. A slow tick turns the relay off late and physically
                 # delivers more chlorine than the model records.
-                if cycle_position < self.config.cycle_on_seconds:
+                if (
+                    cycle_timing is not None
+                    and cycle_position < cycle_timing.on_seconds
+                ):
                     desired_state = ActuatorState.ON
                     reason = "open-loop chlorination duty cycle on interval"
                 else:
@@ -326,8 +389,30 @@ class ChlorinationController:
             duty_cycle=duty_cycle,
             max_duty_cycle=self.config.max_duty_cycle,
             duty_cycle_limited=duty_cycle_limited,
-            cycle_on_seconds=self.config.cycle_on_seconds,
+            cycle_on_seconds=(
+                cycle_timing.on_seconds
+                if cycle_timing is not None
+                else 0.0
+            ),
+            nominal_cycle_on_seconds=self.config.cycle_on_seconds,
             cycle_period_seconds=cycle_period_seconds,
+            cycle_off_seconds=(
+                cycle_timing.off_seconds
+                if cycle_timing is not None
+                else None
+            ),
+            max_cycle_period_seconds=self.config.max_cycle_period_seconds,
+            min_cycle_on_seconds=self.config.min_cycle_on_seconds,
+            cycle_on_seconds_reduced=(
+                cycle_timing.on_seconds_reduced
+                if cycle_timing is not None
+                else False
+            ),
+            min_cycle_on_seconds_limited=(
+                cycle_timing.min_on_seconds_limited
+                if cycle_timing is not None
+                else False
+            ),
             no_dose_last_minutes=self.config.no_dose_last_minutes,
             eligible_window_active=current_window is not None,
             duty_cycle_window_active=duty_cycle_window_active,
@@ -339,7 +424,10 @@ class ChlorinationController:
             current_window_end=current_window.end if current_window is not None else None,
         )
 
-        current_state = actuator_states.get(ActuatorId.CHLORINE_DOSING_PUMP, ActuatorState.OFF)
+        current_state = actuator_states.get(
+            ActuatorId.CHLORINE_DOSING_PUMP,
+            ActuatorState.OFF,
+        )
         commands: tuple[ActuatorCommand, ...] = ()
         if current_state != desired_state:
             # Only command actual relay transitions. Re-sending ON every tick is
@@ -361,6 +449,28 @@ class ChlorinationController:
                         "requested_runtime_min_per_day": requested_runtime_min,
                         "duty_cycle": duty_cycle,
                         "duty_cycle_limited": duty_cycle_limited,
+                        "cycle_on_seconds": (
+                            cycle_timing.on_seconds
+                            if cycle_timing is not None
+                            else None
+                        ),
+                        "cycle_period_seconds": cycle_period_seconds,
+                        "cycle_off_seconds": (
+                            cycle_timing.off_seconds
+                            if cycle_timing is not None
+                            else None
+                        ),
+                        "nominal_cycle_on_seconds": self.config.cycle_on_seconds,
+                        "cycle_on_seconds_reduced": (
+                            cycle_timing.on_seconds_reduced
+                            if cycle_timing is not None
+                            else False
+                        ),
+                        "min_cycle_on_seconds_limited": (
+                            cycle_timing.min_on_seconds_limited
+                            if cycle_timing is not None
+                            else False
+                        ),
                         "dose_adjustment_source": dose_adjustment_source,
                         "dose_adjustment_reason": dose_adjustment_reason,
                         "delay_eligible_seconds": delay_eligible_seconds,
@@ -369,6 +479,36 @@ class ChlorinationController:
             )
 
         return ChlorinationEvaluation(status=status, commands=commands)
+
+
+def _dosing_cycle_timing(
+    config: ChlorinationConfig,
+    duty_cycle: float,
+) -> DosingCycleTiming | None:
+    if duty_cycle <= 0:
+        return None
+
+    nominal_period = config.cycle_on_seconds / duty_cycle
+    if nominal_period <= config.max_cycle_period_seconds:
+        return DosingCycleTiming(
+            on_seconds=config.cycle_on_seconds,
+            period_seconds=nominal_period,
+        )
+
+    shortened_on_seconds = duty_cycle * config.max_cycle_period_seconds
+    if shortened_on_seconds >= config.min_cycle_on_seconds:
+        return DosingCycleTiming(
+            on_seconds=shortened_on_seconds,
+            period_seconds=config.max_cycle_period_seconds,
+            on_seconds_reduced=True,
+        )
+
+    return DosingCycleTiming(
+        on_seconds=config.min_cycle_on_seconds,
+        period_seconds=config.min_cycle_on_seconds / duty_cycle,
+        on_seconds_reduced=True,
+        min_on_seconds_limited=True,
+    )
 
 
 def valid_dosing_windows_for_day(

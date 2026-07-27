@@ -95,6 +95,10 @@ Rules for chlorination changes:
   FC-demand high-FC delay calculations.
 - The open-loop dosing controller should maintain predictable ON/OFF timing and
   duty cycle across the valid dosing window.
+- Low-duty-cycle dosing uses adaptive pulse timing. Preserve dose accuracy when
+  touching `cycle_on_seconds`, `max_cycle_period_seconds`, or
+  `min_cycle_on_seconds`; do not introduce tiny unreliable pulses or long late
+  OFF transitions.
 - If a change affects tick frequency, asyncio scheduling, Modbus retries,
   actuator command routing, or chlorination status logging, add focused tests
   around dosing timing and delivery accounting.

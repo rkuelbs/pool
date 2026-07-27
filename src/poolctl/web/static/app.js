@@ -329,6 +329,8 @@ async function saveQuickChlorinationDose(inputId) {
         no_dose_last_minutes: Number(current.no_dose_last_minutes || 10.0),
         max_duty_cycle: Number(current.max_duty_cycle || 0.5),
         cycle_on_seconds: Number(current.cycle_on_seconds || 60.0),
+        max_cycle_period_seconds: Number(current.max_cycle_period_seconds || 1800.0),
+        min_cycle_on_seconds: Number(current.min_cycle_on_seconds || 5.0),
       }),
     });
     const payload = await parseApiResponse(response, "chlorination dose save failed");
@@ -739,6 +741,16 @@ function formatMilliseconds(seconds) {
   return `${Math.round(seconds * 1000)}ms`;
 }
 
+function formatDurationShort(seconds) {
+  if (!Number.isFinite(seconds)) {
+    return "--";
+  }
+  if (Math.abs(seconds) < 90) {
+    return `${Math.round(seconds)}s`;
+  }
+  return `${(seconds / 60).toFixed(1)}m`;
+}
+
 function renderTimerOverride(override) {
   const statusNodes = [document.getElementById("timerOverrideStatus"), document.getElementById("mobileTimerOverrideStatus")].filter(Boolean);
   if (!statusNodes.length) {
@@ -805,9 +817,15 @@ function renderChlorinationStatus(chlorination) {
   const duty = Number(payload.duty_cycle_percent);
   const available = Number(payload.available_runtime_min_per_day);
   const requested = Number(payload.requested_runtime_min_per_day);
+  const onSeconds = Number(payload.cycle_on_seconds);
+  const offSeconds = Number(payload.cycle_off_seconds);
+  const cycleSuffix =
+    Number.isFinite(onSeconds) && Number.isFinite(offSeconds) && duty > 0
+      ? ` | ${onSeconds.toFixed(0)}s on / ${formatDurationShort(offSeconds)} off`
+      : "";
   const dutyText =
     Number.isFinite(duty) && Number.isFinite(available) && Number.isFinite(requested)
-      ? `Duty: ${duty.toFixed(1)}% | ${requested.toFixed(1)} / ${available.toFixed(0)} min`
+      ? `Duty: ${duty.toFixed(1)}% | ${requested.toFixed(1)} / ${available.toFixed(0)} min${cycleSuffix}`
       : "Duty: --";
   const stateText = payload.active ? "ON" : "OFF";
   const layerText = payload.layer_enabled === false ? "layer off" : String(payload.reason || "idle");
@@ -3171,6 +3189,12 @@ function renderChlorinationConfig(payload) {
   );
   document.getElementById("chlorinationMaxDutyCycle").value = String(payload.max_duty_cycle ?? 0.5);
   document.getElementById("chlorinationCycleOnSeconds").value = String(payload.cycle_on_seconds ?? 60.0);
+  document.getElementById("chlorinationMaxCyclePeriodSeconds").value = String(
+    payload.max_cycle_period_seconds ?? 1800.0,
+  );
+  document.getElementById("chlorinationMinCycleOnSeconds").value = String(
+    payload.min_cycle_on_seconds ?? 5.0,
+  );
 }
 
 function collectChlorinationConfig() {
@@ -3181,6 +3205,8 @@ function collectChlorinationConfig() {
     no_dose_last_minutes: Number(document.getElementById("chlorinationNoDoseLastMinutes").value),
     max_duty_cycle: Number(document.getElementById("chlorinationMaxDutyCycle").value),
     cycle_on_seconds: Number(document.getElementById("chlorinationCycleOnSeconds").value),
+    max_cycle_period_seconds: Number(document.getElementById("chlorinationMaxCyclePeriodSeconds").value),
+    min_cycle_on_seconds: Number(document.getElementById("chlorinationMinCycleOnSeconds").value),
   };
 }
 

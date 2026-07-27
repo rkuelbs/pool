@@ -44,6 +44,8 @@ chlorination:
   no_dose_last_minutes: 10.0
   max_duty_cycle: 0.5
   cycle_on_seconds: 60.0
+  max_cycle_period_seconds: 1800.0
+  min_cycle_on_seconds: 5.0
 fc_demand:
   enabled: true
   mode: observe_only

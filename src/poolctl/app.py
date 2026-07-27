@@ -1013,6 +1013,18 @@ class PoolControllerApp:
                             chlorination_status.requested_runtime_min_per_day
                         ),
                         "duty_cycle_limited": chlorination_status.duty_cycle_limited,
+                        "cycle_on_seconds": chlorination_status.cycle_on_seconds,
+                        "cycle_off_seconds": chlorination_status.cycle_off_seconds,
+                        "cycle_period_seconds": chlorination_status.cycle_period_seconds,
+                        "nominal_cycle_on_seconds": (
+                            chlorination_status.nominal_cycle_on_seconds
+                        ),
+                        "cycle_on_seconds_reduced": (
+                            chlorination_status.cycle_on_seconds_reduced
+                        ),
+                        "min_cycle_on_seconds_limited": (
+                            chlorination_status.min_cycle_on_seconds_limited
+                        ),
                         "dose_adjustment_source": (
                             chlorination_status.dose_adjustment_source
                         ),

@@ -1868,6 +1868,8 @@ def serialize_chlorination_config(app: PoolControllerApp) -> dict[str, Any]:
         "no_dose_last_minutes": config.no_dose_last_minutes,
         "max_duty_cycle": config.max_duty_cycle,
         "cycle_on_seconds": config.cycle_on_seconds,
+        "max_cycle_period_seconds": config.max_cycle_period_seconds,
+        "min_cycle_on_seconds": config.min_cycle_on_seconds,
         "applied_live": True,
     }
 
@@ -1888,6 +1890,8 @@ def apply_chlorination_config_update(
         "no_dose_last_minutes": proposed.no_dose_last_minutes,
         "max_duty_cycle": proposed.max_duty_cycle,
         "cycle_on_seconds": proposed.cycle_on_seconds,
+        "max_cycle_period_seconds": proposed.max_cycle_period_seconds,
+        "min_cycle_on_seconds": proposed.min_cycle_on_seconds,
     }
     _save_config_mapping(config_path, config_data)
 

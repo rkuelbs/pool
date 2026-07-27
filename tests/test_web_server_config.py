@@ -159,17 +159,24 @@ def test_chlorination_update_applies_live_and_persists(tmp_path: Path) -> None:
             "no_dose_last_minutes": 10.0,
             "max_duty_cycle": 0.5,
             "cycle_on_seconds": 60.0,
+            "max_cycle_period_seconds": 1800.0,
+            "min_cycle_on_seconds": 5.0,
         },
     )
 
     assert result["updated"] is True
     assert result["applied_live"] is True
     assert result["daily_dose_oz"] == 12.5
+    assert result["max_cycle_period_seconds"] == 1800.0
+    assert result["min_cycle_on_seconds"] == 5.0
     assert app.chlorination_config.daily_dose_oz == 12.5
+    assert app.chlorination_config.max_cycle_period_seconds == 1800.0
     assert serialize_chlorination_config(app)["layer_enabled"] is True
     saved = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert saved["chlorination"]["daily_dose_oz"] == 12.5
     assert saved["chlorination"]["pump_output_oz_per_min"] == 2.0
+    assert saved["chlorination"]["max_cycle_period_seconds"] == 1800.0
+    assert saved["chlorination"]["min_cycle_on_seconds"] == 5.0
 
 
 def test_fc_demand_update_applies_live_and_persists(tmp_path: Path) -> None:
