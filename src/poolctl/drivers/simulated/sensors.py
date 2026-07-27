@@ -1,3 +1,10 @@
+"""
+Sensor drivers that read from the simulated plant.
+
+The service layer receives normal Measurement objects, so it cannot tell whether
+these readings came from the simulator or from real Raspberry Pi hardware.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Callable

@@ -1,3 +1,10 @@
+"""
+Tests for the general Modbus bringup CLI helper.
+
+The bringup tool is used before full poolctl deployment, so these tests verify
+its scan/read/write/pulse command behavior without real hardware.
+"""
+
 from __future__ import annotations
 
 import pytest

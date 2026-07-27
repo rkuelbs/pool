@@ -1,3 +1,11 @@
+"""
+Register-level helpers for Modbus devices.
+
+This layer provides small typed wrappers around common register operations.
+Higher-level drivers use it so they can talk in terms of coils, holding
+registers, signed values, and device addresses instead of raw pymodbus calls.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Mapping

@@ -1,3 +1,10 @@
+"""
+Tests for SQLite measurement and event logging.
+
+This file verifies raw history, rollups, lab tests, chemical additions, weather,
+and chlorine delivery persistence.
+"""
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone

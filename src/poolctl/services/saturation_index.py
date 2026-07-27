@@ -1,3 +1,11 @@
+"""
+Calcium Saturation Index calculation.
+
+CSI combines live valid pH/temperature readings with the latest hand-entered
+alkalinity, calcium hardness, and TDS test values. It is only meaningful when
+the live chemistry readings are valid.
+"""
+
 from __future__ import annotations
 
 import math

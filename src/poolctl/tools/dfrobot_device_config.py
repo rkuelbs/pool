@@ -1,3 +1,10 @@
+"""
+CLI helper for configuring DFRobot RS485 chemistry probe address and baud.
+
+It talks directly to one probe on the Modbus bus, so the main poolctl service
+should be stopped before using it on a real Pi serial adapter.
+"""
+
 from __future__ import annotations
 
 import argparse

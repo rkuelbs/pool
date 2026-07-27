@@ -1,3 +1,11 @@
+"""
+Open-loop liquid chlorine dosing controller.
+
+The controller converts a target ounces-per-day value into a duty cycle inside
+the pump schedule. It deliberately treats diagnostic prime/calibration runs as
+separate from normal chlorination so FC estimates are not distorted by tests.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -207,12 +215,19 @@ class ChlorinationController:
     ) -> ChlorinationEvaluation:
         timezone = ZoneInfo(pump_timer_config.timezone)
         local_now = now.astimezone(timezone)
+
+        # Users schedule pool equipment by local clock time, so the controller
+        # converts once here and keeps all dosing-window math in local time.
         windows = valid_dosing_windows_for_day(
             pump_timer_config,
             local_now.date(),
             no_dose_last_minutes=self.config.no_dose_last_minutes,
         )
         available_runtime_min = sum(window.duration_seconds for window in windows) / 60.0
+
+        # Start with the configured open-loop daily dose. FC demand estimation
+        # may override today's effective dose or delay today's start, but those
+        # planner changes are not written back into the YAML setpoint.
         effective_daily_dose_oz = self.config.daily_dose_oz
         dose_adjustment_source = None
         dose_adjustment_reason = None
@@ -224,6 +239,9 @@ class ChlorinationController:
             if plan_adjustment.daily_dose_oz is not None:
                 effective_daily_dose_oz = plan_adjustment.daily_dose_oz
 
+        # Convert fluid ounces into dosing pump runtime, then divide that runtime
+        # by the available schedule minutes to get the fraction of eligible time
+        # where the relay should be ON.
         requested_runtime_min = effective_daily_dose_oz / self.config.pump_output_oz_per_min
         raw_duty_cycle = (
             requested_runtime_min / available_runtime_min
@@ -232,6 +250,9 @@ class ChlorinationController:
         )
         duty_cycle_limited = raw_duty_cycle > self.config.max_duty_cycle
         duty_cycle = min(raw_duty_cycle, self.config.max_duty_cycle)
+
+        # Example: with a 60 s ON pulse and 25% duty cycle, the complete period
+        # is 240 s, which means 60 s ON followed by 180 s OFF.
         cycle_period_seconds = (
             self.config.cycle_on_seconds / duty_cycle
             if duty_cycle > 0
@@ -268,6 +289,9 @@ class ChlorinationController:
         elif cycle_period_seconds is None:
             reason = "dosing duty cycle is zero"
         else:
+            # Duty-cycle position is measured in eligible dosing time, not raw
+            # wall-clock time. If there are multiple pump windows in a day, the
+            # ON/OFF pattern resumes where the previous valid window stopped.
             elapsed_eligible_seconds = _elapsed_eligible_seconds(windows, local_now)
             if delay_eligible_seconds > 0 and elapsed_eligible_seconds < delay_eligible_seconds:
                 delay_min = delay_eligible_seconds / 60.0
@@ -279,6 +303,9 @@ class ChlorinationController:
                 )
                 cycle_position = adjusted_elapsed_seconds % cycle_period_seconds
                 duty_cycle_window_active = True
+                # The background runtime must tick faster than this boundary
+                # changes. A slow tick turns the relay off late and physically
+                # delivers more chlorine than the model records.
                 if cycle_position < self.config.cycle_on_seconds:
                     desired_state = ActuatorState.ON
                     reason = "open-loop chlorination duty cycle on interval"
@@ -315,6 +342,9 @@ class ChlorinationController:
         current_state = actuator_states.get(ActuatorId.CHLORINE_DOSING_PUMP, ActuatorState.OFF)
         commands: tuple[ActuatorCommand, ...] = ()
         if current_state != desired_state:
+            # Only command actual relay transitions. Re-sending ON every tick is
+            # unnecessary Modbus traffic and can make timing harder to reason
+            # about when the bus is shared with sensors.
             commands = (
                 ActuatorCommand(
                     actuator_id=ActuatorId.CHLORINE_DOSING_PUMP,
@@ -364,6 +394,8 @@ def valid_dosing_windows_for_day(
     windows: list[DosingWindow] = []
 
     for raw_start, raw_end in merged_intervals:
+        # Remove the end of each pump run so the dosing pump stops while the
+        # filter pump still has time to circulate treated water.
         valid_end = raw_end - trim
         if valid_end <= raw_start:
             continue
@@ -382,6 +414,9 @@ def _raw_schedule_intervals(
     timezone = ZoneInfo(config.timezone)
     intervals: list[tuple[datetime, datetime]] = []
 
+    # Look at yesterday, today, and tomorrow because a pump window may cross
+    # midnight. A window that starts yesterday evening can still overlap today's
+    # dosing window after midnight.
     for day_offset in (-1, 0, 1):
         schedule_day = day + timedelta(days=day_offset)
         for schedule in config.schedules:
@@ -412,6 +447,9 @@ def _merge_intervals(
             continue
         previous_start, previous_end = merged[-1]
         if start <= previous_end:
+            # Overlapping or touching pump windows should produce one continuous
+            # dosing window; otherwise the duty cycle could reset in the middle
+            # of what is physically one pump run.
             merged[-1] = (previous_start, max(previous_end, end))
             continue
         merged.append((start, end))
@@ -470,6 +508,8 @@ def _elapsed_eligible_seconds(
     windows: tuple[DosingWindow, ...],
     local_now: datetime,
 ) -> float:
+    # Add all completed valid windows, plus the elapsed portion of the current
+    # one. The result is the dosing controller's local "clock" for the day.
     elapsed = 0.0
     for window in windows:
         if local_now >= window.end:

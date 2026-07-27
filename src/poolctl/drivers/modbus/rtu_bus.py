@@ -1,3 +1,11 @@
+"""
+Shared asynchronous Modbus RTU serial bus.
+
+Several devices can live on the same RS485 adapter, but only one Modbus request
+should use the port at a time. This module owns the serial client, serializes
+requests with an asyncio lock, and hides pymodbus version differences.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -36,6 +44,10 @@ class SharedModbusRtuBus:
     def __init__(self, config: ModbusRtuBusConfig) -> None:
         self._config = config
         self._client: Any | None = None
+
+        # RS485 is a shared half-duplex bus. This lock makes one complete
+        # Modbus transaction finish before another sensor or relay command uses
+        # the same USB adapter.
         self._lock = asyncio.Lock()
         self._stats = ModbusRtuBusStats()
 
@@ -206,6 +218,8 @@ class SharedModbusRtuBus:
             if key in parameter_names:
                 candidate_keys.append(key)
         if not candidate_keys:
+            # Some pymodbus wrappers hide their real signature. Try the known
+            # keyword names in order so the same code works across versions.
             candidate_keys = ["slave", "unit", "device_id"]
 
         last_type_error: TypeError | None = None
@@ -233,6 +247,8 @@ class SharedModbusRtuBus:
             max_attempts = max(1, self._config.retries + 1)
 
             for attempt in range(max_attempts):
+                # Count attempts, not just successful operations. These stats
+                # are shown in diagnostics when chasing bus timeouts.
                 self._stats = ModbusRtuBusStats(
                     request_count=self._stats.request_count + 1,
                     error_count=self._stats.error_count,
@@ -250,6 +266,9 @@ class SharedModbusRtuBus:
                         retry_count=self._stats.retry_count + (1 if attempt < max_attempts - 1 else 0),
                         last_error=f"{operation}: {error}",
                     )
+
+                    # A failed serial request can leave the pymodbus client in a
+                    # bad state, so close/recreate it before a retry.
                     await self._reset_client()
                     if attempt < max_attempts - 1:
                         await asyncio.sleep(self._config.retry_backoff_s * (attempt + 1))

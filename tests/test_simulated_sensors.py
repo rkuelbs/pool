@@ -1,3 +1,10 @@
+"""
+Tests for simulated sensor drivers.
+
+These tests ensure simulated sensors return normal Measurement models with the
+expected units, IDs, and plant-driven values.
+"""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone

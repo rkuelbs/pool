@@ -1,3 +1,10 @@
+"""
+Tests for Open-Meteo weather download and parsing.
+
+Weather observations are logged, while forecast rows are cached in memory for
+future predictive chemistry work.
+"""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone

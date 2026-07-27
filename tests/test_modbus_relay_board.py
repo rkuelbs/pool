@@ -1,3 +1,10 @@
+"""
+Tests for low-level Modbus relay board behavior.
+
+The relay board driver maps logical relay numbers to Modbus coils, so tests
+verify coil addressing and state reads/writes.
+"""
+
 from __future__ import annotations
 
 import pytest

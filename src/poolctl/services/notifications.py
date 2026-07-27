@@ -1,3 +1,11 @@
+"""
+Notification service for alerts such as pH or safety warnings.
+
+The first implementation targets Pushover, but the rest of the controller only
+uses NotificationMessage objects so other notification providers can be added
+without changing safety or chemistry logic.
+"""
+
 from __future__ import annotations
 
 import json

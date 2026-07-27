@@ -1,3 +1,10 @@
+"""
+Tests for notification configuration and dispatch behavior.
+
+Notifications are currently used for alerting integrations such as Pushover,
+and tests keep disabled/configured cases predictable.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Mapping

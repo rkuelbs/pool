@@ -1,3 +1,11 @@
+"""
+Shared domain objects used by the controller.
+
+The classes and enums in this file are intentionally hardware-neutral. Drivers,
+services, the logger, and the GUI all exchange these models so core logic does
+not need to know whether data came from a simulated plant or Raspberry Pi I/O.
+"""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone

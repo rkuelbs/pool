@@ -1,3 +1,10 @@
+"""
+Tests for open-loop chlorination schedule and duty-cycle behavior.
+
+These cases protect dosing-window trimming, max duty-cycle limiting, FC-demand
+adjustments, and ON/OFF relay timing decisions.
+"""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone

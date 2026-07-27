@@ -1,3 +1,11 @@
+"""
+Raspberry Pi actuator drivers backed by the Waveshare relay module.
+
+Each domain actuator command is translated into a small set of relay coil
+writes. The mapping is configurable because wiring can change without requiring
+changes to scheduler, safety, or chlorination logic.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -93,6 +101,8 @@ class ModbusRelayActuator:
         self._stop_state = stop_state
 
     async def apply(self, command: ActuatorCommand) -> ActuatorStateSample:
+        # Drivers are intentionally narrow: one driver controls one domain
+        # actuator. Rejecting other actuator IDs catches wiring/config mistakes.
         if command.actuator_id != self.actuator_id:
             raise ActuatorError(
                 f"{self.name} cannot apply command for {command.actuator_id.value}"
@@ -111,6 +121,8 @@ class ModbusRelayActuator:
                 f"allowed states: {allowed}"
             )
 
+        # Domain states are ON/OFF/LOW/HIGH. The mapping decides whether that
+        # means the physical relay coil is energized for this wiring setup.
         relay_on = self._state_to_relay_on[command.state]
         await self._board.set_relay(self._relay_number, relay_on)
 
@@ -122,6 +134,9 @@ class ModbusRelayActuator:
 
     async def read_state(self) -> ActuatorStateSample:
         relay_on = await self._board.read_relay(self._relay_number)
+
+        # Convert hardware coil state back into the domain state shown in the
+        # dashboard and used by safety logic.
         state = self._relay_on_to_state[relay_on]
 
         return self._state_sample(
@@ -179,6 +194,10 @@ def build_modbus_relay_actuators(
         ActuatorState.LOW: config.pump_speed_low_relay_on,
         ActuatorState.HIGH: not config.pump_speed_low_relay_on,
     }
+
+    # Your current wiring uses relay OFF = high speed and relay ON = low speed.
+    # Keeping this configurable lets the relay logic match real wiring without
+    # changing scheduler/safety code.
     speed_reverse = {
         config.pump_speed_low_relay_on: ActuatorState.LOW,
         not config.pump_speed_low_relay_on: ActuatorState.HIGH,

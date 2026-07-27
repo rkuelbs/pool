@@ -1,3 +1,10 @@
+"""
+Tests for sensor acquisition policies.
+
+These tests show how readings, logging cadence, pump-flow validity, oversampling,
+and rolling filters are expected to behave.
+"""
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone

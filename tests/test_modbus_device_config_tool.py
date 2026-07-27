@@ -1,3 +1,10 @@
+"""
+Tests for generic Waveshare Modbus device configuration.
+
+These cases protect address and baud-rate configuration logic used when putting
+relay and analog modules on one RS485 bus.
+"""
+
 from __future__ import annotations
 
 import pytest

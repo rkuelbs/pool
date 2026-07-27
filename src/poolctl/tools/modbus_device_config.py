@@ -1,3 +1,11 @@
+"""
+Generic Modbus device configuration helper for Waveshare modules.
+
+The analog input and relay boards often ship with the same address and baud
+rate. This utility changes those settings during bringup so all devices can
+share one RS485 bus without address collisions.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -220,4 +228,3 @@ async def _read_uart(bus: SharedModbusRtuBus, slave_id: int) -> DeviceUart:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

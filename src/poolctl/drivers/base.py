@@ -1,3 +1,11 @@
+"""
+Abstract driver interfaces for sensors and actuators.
+
+Services call these protocols instead of concrete hardware classes. That keeps
+controller logic testable on Windows and lets Raspberry Pi drivers be swapped in
+only at the edge of the application.
+"""
+
 from __future__ import annotations
 
 from typing import Protocol, runtime_checkable

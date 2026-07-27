@@ -1,3 +1,10 @@
+"""
+Tests for register-level Modbus helper classes.
+
+These tests exercise typed register reads/writes and value conversion helpers
+without needing an actual serial adapter.
+"""
+
 from __future__ import annotations
 
 from poolctl.drivers.modbus.registers import (

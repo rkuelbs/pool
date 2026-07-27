@@ -1,3 +1,12 @@
+"""
+Build and run the pool controller application.
+
+This module is the composition root for the project. It reads configuration,
+chooses simulated or Raspberry Pi drivers, wires the services together, and
+executes one controller "tick" at a time. A tick is one pass through timer
+control, chlorination, acquisition, safety, logging, MQTT, and notifications.
+"""
+
 from __future__ import annotations
 
 import time
@@ -199,16 +208,32 @@ class PoolControllerApp:
     dosing_prime_delivery_exclude_until: datetime | None = None
 
     async def tick(self, *, force_acquisition: bool = False) -> AppTickResult:
+        # Measure the tick with a monotonic clock. This is used for loop timing
+        # diagnostics and is separate from the controller Clock, which may be a
+        # simulated accelerated clock.
         tick_started_s = time.perf_counter()
 
+        # Load relay/actuator state before making decisions. On real hardware,
+        # this lets the app begin with the board's actual state instead of only
+        # trusting in-memory defaults.
         await self.router.ensure_states_loaded()
         self._update_sampling_override()
+
+        # The pump timer and manual overrides are evaluated first because other
+        # features, especially chlorination, depend on whether the pump is on.
         timer_results = await self._run_pump_timer()
+
+        # Chlorination intentionally uses the latest completed acquisition data.
+        # It should not wait for slow chemistry/Modbus reads before deciding
+        # whether to turn the dosing pump on or off for this tick.
         control_measurements_source = (
             tuple(self.acquisition_service.latest_measurements.values())
             if self.acquisition_service is not None
             else ()
         )
+
+        # The FC demand estimator may adjust today's dose or delay the start of
+        # dosing time, but it still feeds the open-loop chlorination controller.
         fc_demand_plan = self.fc_demand_plan(now=self.clock.now())
         (
             chlorination_results,
@@ -220,14 +245,25 @@ class PoolControllerApp:
                 fc_demand_plan.adjustment if fc_demand_plan is not None else None
             ),
         )
+
+        # `control_duration_s` ends before acquisition. That makes it easier to
+        # see whether the time-critical scheduler/dosing decisions are fast even
+        # when a sensor read later in the tick is slow.
         control_duration_s = time.perf_counter() - tick_started_s
 
+        # Acquisition runs after the output decisions. This ordering keeps
+        # sensor delays from stretching a dosing ON pulse past its intended
+        # boundary, which matters for accurate chlorine volume.
         acquisition = await self._poll_acquisition(force=force_acquisition)
         latest_measurements = (
             self.acquisition_service.latest_measurements
             if self.acquisition_service is not None
             else {}
         )
+
+        # Flow, filter restriction, and CSI are not directly read from sensors;
+        # they are derived from the latest measurements and then logged like
+        # normal measurements when their source readings are due to be logged.
         flow_estimates = estimate_flows(
             measurements=latest_measurements,
             actuator_states=self.router.actuator_states,
@@ -246,6 +282,9 @@ class PoolControllerApp:
             SensorId.BUBBLER_PSI,
             SensorId.BOOSTER_PSI,
         }
+        # Derived flow values are stored only when at least one pressure source
+        # was already due to be logged. That avoids filling the DB with derived
+        # duplicates on every fast control tick.
         should_log_flow_derived = bool(source_logged_sensor_ids & flow_source_sensor_ids)
         should_log_csi = (
             csi_measurement is not None
@@ -267,6 +306,10 @@ class PoolControllerApp:
             observed_at=self.clock.now()
         )
         logged_measurement_count += self._log_measurements(daily_summary_measurements)
+
+        # These are controller state signals rather than physical sensors. They
+        # are logged so history can show duty cycle, daily dose, and FC-demand
+        # estimates alongside ORP, temperature, and weather.
         control_measurements = self._chlorination_control_measurements(
             chlorination_status=chlorination_status,
             fc_demand_status=(
@@ -284,6 +327,9 @@ class PoolControllerApp:
                     self.acquisition_service.latest_measurements.values()
                 )
 
+            # Dosing diagnostic modes can run with the filter pump off, so the
+            # normal chlorine interlock would constantly fight the diagnostic.
+            # Hard lockouts such as overpressure are still honored.
             suppressed_reason_codes = (
                 ("chlorine_interlock_lost",)
                 if self.dosing_pump_diagnostic_active()
@@ -629,6 +675,9 @@ class PoolControllerApp:
             return (), None, self._log_chlorine_delivery_since_last_tick(self.clock.now())
 
         now = self.clock.now()
+        # Delivery is accounted for before issuing a new state command. The
+        # elapsed interval belongs to the previous actuator state, so this
+        # preserves accurate ounces even when a tick turns the pump off.
         logged_delivery_count = self._log_chlorine_delivery_since_last_tick(now)
         evaluation = self.chlorination_controller.evaluate(
             now=now,
@@ -641,6 +690,9 @@ class PoolControllerApp:
         results: list[ActuatorCommandResult] = []
         prime_status = self.dosing_prime_status()
         if prime_status["active"]:
+            # Prime/calibration is intentionally separated from normal dosing:
+            # it can bypass the pump-flow interlock, and its runtime is excluded
+            # from daily chlorine totals and FC demand math.
             safety_locked_out = self.router.safety_gate.locked_out
             desired_state = (
                 ActuatorState.OFF
@@ -713,6 +765,9 @@ class PoolControllerApp:
         if self._dosing_prime_delivery_exclusion_overlaps(previous, now):
             return 0
 
+        # The dosing pump is treated as a fixed-output pump. Runtime seconds are
+        # converted to fluid ounces using the configured pump calibration; the
+        # FC estimator later converts ounces to ppm using pool volume/strength.
         runtime_seconds = max(0.0, (now - previous).total_seconds())
         delivered_oz = runtime_seconds / 60.0 * self.chlorination_config.pump_output_oz_per_min
         return self.measurement_logger.log_chlorine_delivery(

@@ -1,3 +1,11 @@
+"""
+SQLite persistence for measurements, weather, chemistry tests, and events.
+
+The logger stores raw time-series data and maintains rollup tables so the
+history page can show long time ranges without loading every individual sample.
+It is intentionally local-file based so the Pi can run without cloud services.
+"""
+
 from __future__ import annotations
 
 import json
@@ -20,6 +28,8 @@ from poolctl.domain.models import (
 )
 from poolctl.services.weather import WEATHER_FIELDS, WeatherObservation
 
+# Precomputed history buckets used by the GUI for long time ranges: 1 minute,
+# 1 hour, and 1 day. Raw measurement rows are still stored separately.
 ROLLUP_BUCKET_SECONDS = (60, 3600, 86400)
 
 
@@ -135,6 +145,9 @@ class MeasurementLogger:
         inserted_count = 0
         with self._connect() as connection:
             for measurement in measurements:
+                # INSERT OR IGNORE makes logging idempotent. If a caller retries
+                # with the same Measurement.id, SQLite ignores the duplicate and
+                # rollups are not double-counted.
                 cursor = connection.execute(
                     """
                     INSERT OR IGNORE INTO measurements (
@@ -162,6 +175,9 @@ class MeasurementLogger:
                 )
                 if int(cursor.rowcount) > 0:
                     inserted_count += 1
+
+                    # Only update rollups after a new raw row was inserted.
+                    # This keeps minute/hour/day aggregates consistent.
                     self._upsert_rollups(connection, measurement)
         return inserted_count
 
@@ -231,6 +247,8 @@ class MeasurementLogger:
         max_points: int | None = None,
     ) -> tuple[MeasurementRecord, ...]:
         if bucket_seconds is None:
+            # No rollup requested: read raw points and optionally downsample them
+            # for display.
             records = self.history(
                 sensor_id=sensor_id,
                 since=since,
@@ -243,6 +261,8 @@ class MeasurementLogger:
         if bucket_seconds not in ROLLUP_BUCKET_SECONDS:
             raise ValueError("unsupported bucket_seconds")
         if qualities not in (None, (Quality.GOOD,)):
+            # Rollups contain only good-quality samples. If callers need suspect
+            # or bad samples too, use raw history.
             records = self.history(
                 sensor_id=sensor_id,
                 since=since,
@@ -1001,6 +1021,9 @@ class MeasurementLogger:
 
         value = float(measurement.value)
         for bucket_seconds in ROLLUP_BUCKET_SECONDS:
+            # Bucket starts are aligned to UTC epoch boundaries. That makes a
+            # point land in the same bucket regardless of local timezone or
+            # daylight-saving transitions.
             bucket_start = _bucket_start_iso(measurement.observed_at, bucket_seconds)
             connection.execute(
                 """

@@ -1,3 +1,11 @@
+"""
+Pump schedule evaluation and manual override handling.
+
+The timer converts configured local-time run windows into desired pump state.
+Manual overrides latch until the next scheduled transition so the live GUI can
+temporarily force on/off/high/low without permanently editing the schedule.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Mapping

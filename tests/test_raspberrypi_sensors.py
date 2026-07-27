@@ -1,3 +1,10 @@
+"""
+Tests for Raspberry Pi sensor drivers.
+
+These cases cover DFRobot pH/ORP probes, CPU telemetry, fan RPM, temperature
+conversion, and optional-sensor circuit breakers.
+"""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone

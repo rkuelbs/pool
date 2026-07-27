@@ -1,3 +1,11 @@
+"""
+Clock abstractions for real time and accelerated simulation time.
+
+Services depend on this small interface instead of calling datetime.now()
+directly. That makes controller behavior deterministic in tests and allows the
+simulator to run faster than wall-clock time.
+"""
+
 from __future__ import annotations
 
 import asyncio

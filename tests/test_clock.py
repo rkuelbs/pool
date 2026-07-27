@@ -1,3 +1,10 @@
+"""
+Tests for real and simulated clock abstractions.
+
+Clock behavior is important because simulations, schedules, and controller
+timing should not depend directly on wall-clock calls.
+"""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone

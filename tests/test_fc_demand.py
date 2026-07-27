@@ -1,3 +1,10 @@
+"""
+Tests for the free-chlorine demand estimator.
+
+These tests document the FC mass balance, manual chlorine additions, catch-up
+dosing, high-FC delay, and observe-only versus automatic modes.
+"""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone

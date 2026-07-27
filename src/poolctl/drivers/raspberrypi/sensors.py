@@ -1,3 +1,11 @@
+"""
+Raspberry Pi sensor drivers.
+
+This module contains hardware-facing sensor code for the Pi, including Modbus
+chemistry probes, Waveshare analog inputs, CPU telemetry, and fan RPM. Optional
+RS485 probes use circuit breakers so a missing sensor cannot stall dosing.
+"""
+
 from __future__ import annotations
 
 import os
@@ -91,6 +99,9 @@ class DFRobotSensorCircuitBreaker:
             return
 
         if now >= self._open_until:
+            # Cooldown expired, so allow the next Modbus read to try again.
+            # A success will reset the failure count; another failure will open
+            # the breaker again.
             self._open_until = None
             return
 
@@ -110,6 +121,8 @@ class DFRobotSensorCircuitBreaker:
 
         self._consecutive_failures += 1
         if self._consecutive_failures >= self._config.failure_threshold:
+            # Once open, the probe is skipped for a while instead of causing
+            # repeated Modbus timeouts on every acquisition cycle.
             self._open_until = self._clock.now() + timedelta(
                 seconds=self._config.cooldown_s
             )
@@ -223,6 +236,8 @@ class DFRobotPhSensor:
     async def read_all(self) -> list[Measurement]:
         self._circuit_breaker.assert_can_attempt()
         try:
+            # Read pH and probe temperature in one Modbus request. The sensor
+            # stores pH as pH*100 and temperature as degC*10.
             ph_register, temp_register = await self._transport.read_holding_registers(
                 start_address=0x0000,
                 count=2,
@@ -234,6 +249,9 @@ class DFRobotPhSensor:
         observed_at = self._clock.now()
         raw_ph = ph_register / 100.0
         temp_c = signed_16(temp_register) / 10.0
+
+        # Poolctl displays and logs water temperatures in degF, so normalize at
+        # the driver boundary instead of converting in the GUI or logger.
         temp_f = (temp_c * 9.0 / 5.0) + 32.0
 
         return [
@@ -276,6 +294,9 @@ async def calibrate_dfrobot_ph_sensor(
     ph_value: float,
     bus: SharedModbusRtuBus | None = None,
 ) -> DFRobotPhCalibrationResult:
+    # The DFRobot pH probe expects a point identifier followed by the pH value
+    # scaled by 100. The GUI collects human pH values and this helper translates
+    # them into the documented Modbus payload.
     register_values = dfrobot_ph_calibration_register_values(
         point=point,
         ph_value=ph_value,
@@ -368,6 +389,9 @@ class DFRobotOrpSensor:
     async def read_all(self) -> list[Measurement]:
         self._circuit_breaker.assert_can_attempt()
         try:
+            # Read ORP and probe temperature together. A failed optional probe
+            # raises once here, then the circuit breaker can cool it down so
+            # dosing control is not delayed by repeated timeouts.
             orp_register, temp_register = await self._transport.read_holding_registers(
                 start_address=0x0000,
                 count=2,
@@ -379,6 +403,9 @@ class DFRobotOrpSensor:
         observed_at = self._clock.now()
         raw_orp_mv = signed_16(orp_register)
         temp_c = signed_16(temp_register) / 10.0
+
+        # The DFRobot ICD reports temperature in Celsius. Convert once here so
+        # ORP temp behaves like the rest of the pool temperature signals.
         temp_f = (temp_c * 9.0 / 5.0) + 32.0
 
         return [
@@ -477,6 +504,8 @@ class RaspberryPiCpuLoadSensor:
 
         value = 0.0
         if self._previous_total is not None and self._previous_idle is not None:
+            # /proc/stat is cumulative since boot. CPU load is calculated from
+            # the change between this read and the previous read.
             total_delta = total - self._previous_total
             idle_delta = idle - self._previous_idle
             if total_delta > 0:
@@ -529,6 +558,9 @@ class RaspberryPiCpuFanRpmSensor:
         for candidate_glob in self._sensor_path_globs:
             candidates = sorted(glob(candidate_glob))
             if candidates:
+                # Raspberry Pi OS has moved the fan RPM file between hwmon paths
+                # across images, so try the configured glob first and then known
+                # fallbacks.
                 source_glob = candidate_glob
                 break
         if not candidates or source_glob is None:

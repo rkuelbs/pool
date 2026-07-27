@@ -1,3 +1,11 @@
+"""
+Route actuator commands through safety and driver state tracking.
+
+The router is the single place services use to command outputs. It applies the
+safety gate, sends commands to drivers, remembers the latest actuator states,
+and gives the GUI a consistent view of what the controller last requested.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Iterable
@@ -94,6 +102,8 @@ class CommandRouter:
             )
 
         if self._safety_enabled and not bypass_safety:
+            # Safety checks use the router's current actuator-state view plus the
+            # freshest measurements supplied by the caller.
             snapshot = self._snapshot(measurements, now=now)
             decision = self._safety_gate.check_command(command, snapshot)
 
@@ -107,6 +117,8 @@ class CommandRouter:
                     metadata=decision.metadata,
                 )
 
+        # bypass_safety is reserved for tightly scoped diagnostics such as a
+        # dosing-pump calibration run. The metadata makes that visible in logs.
         metadata = {"safety_bypassed": True} if bypass_safety else None
         return await self._apply_driver_command(
             command,
@@ -126,6 +138,9 @@ class CommandRouter:
         await self._ensure_state_loaded()
         now = self._clock.now()
         snapshot = self._snapshot(measurements, now=now)
+
+        # evaluate() returns system-generated actuator commands such as "shut
+        # booster off" or "force pump high for freeze protection."
         actions = self._safety_gate.evaluate(snapshot)
         suppressed = set(suppressed_action_reason_codes)
 
@@ -155,6 +170,8 @@ class CommandRouter:
             if actuator_id in self._state_samples:
                 continue
 
+            # Lazy-load hardware state the first time it is needed. This avoids
+            # assuming relay defaults before the Pi reads the board.
             self._record_state(await driver.read_state())
 
     def _snapshot(
@@ -221,6 +238,8 @@ class CommandRouter:
                 metadata=result_metadata,
             )
 
+        # Update local state only after the driver reports success. If Modbus
+        # fails, the router keeps its prior state view and returns applied=False.
         self._record_state(sample)
 
         return self._result(
@@ -236,6 +255,8 @@ class CommandRouter:
         self._state_samples[sample.actuator_id] = sample
 
         if current is None or current.state != sample.state:
+            # Track when each state began; safety rules use these timestamps for
+            # booster low-pressure grace periods and pump prime timeouts.
             self._state_started_at[sample.actuator_id] = sample.observed_at
 
     def _result(

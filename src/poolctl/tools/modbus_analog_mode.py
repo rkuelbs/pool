@@ -1,3 +1,11 @@
+"""
+CLI helper for reading or writing Waveshare analog input mode registers.
+
+The pool uses the non-B 0-5 V analog input module. This tool exists so bringup
+can verify every channel is in the expected voltage mode before pressure or pH
+calibration values are trusted.
+"""
+
 from __future__ import annotations
 
 import argparse

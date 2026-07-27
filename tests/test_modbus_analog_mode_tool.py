@@ -1,3 +1,10 @@
+"""
+Tests for the Waveshare analog input mode CLI helper.
+
+These tests keep the bringup tool's command-line behavior and register writes
+stable for configuring the analog module.
+"""
+
 from __future__ import annotations
 
 import pytest

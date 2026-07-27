@@ -1,3 +1,11 @@
+"""
+Interactive Modbus bringup helper.
+
+Use this script before running the full controller to verify that the RS485
+adapter, relay board, analog module, and chemistry probes respond at the
+configured baud rate and slave addresses.
+"""
+
 from __future__ import annotations
 
 import argparse

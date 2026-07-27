@@ -1,3 +1,10 @@
+"""
+Tests for MQTT publishing and inbound control/test-result handling.
+
+MQTT is optional, so these tests exercise the bridge logic without requiring a
+real broker during normal unit tests.
+"""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone

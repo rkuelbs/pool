@@ -1,3 +1,10 @@
+"""
+Tests for simulated actuator drivers.
+
+Simulated actuators update the SimulatedPlant and let controller behavior be
+tested on Windows without real hardware.
+"""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone

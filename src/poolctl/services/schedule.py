@@ -1,3 +1,11 @@
+"""
+Shared schedule parsing helpers.
+
+Small value objects in this module keep time-of-day and weekday handling
+consistent across the pump timer, chlorination windows, and web configuration
+forms.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

@@ -1,3 +1,10 @@
+"""
+Tests for safety interlocks and lockouts.
+
+This file documents the pressure, booster, chlorination, prime, overpressure,
+loss-of-prime, and freeze-protection safety rules.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path

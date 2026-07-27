@@ -1,3 +1,10 @@
+"""
+Tests for Calcium Saturation Index calculation.
+
+CSI depends on valid live pH/temperature and latest entered chemistry tests, so
+these tests cover ready and not-ready calculation paths.
+"""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone

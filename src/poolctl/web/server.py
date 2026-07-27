@@ -1,3 +1,11 @@
+"""
+HTTP server, API routes, static assets, and background runtime loop.
+
+This module intentionally keeps the deployment simple: a small Python web server
+serves the dashboard and owns an AsyncRuntime task that ticks the controller
+continuously, even when no browser is connected.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -87,6 +95,9 @@ class AsyncRuntime:
     """
 
     def __init__(self) -> None:
+        # The standard-library HTTP server is synchronous, but most poolctl I/O
+        # is async. A dedicated event-loop thread lets API handlers submit async
+        # work without creating a new loop for every request.
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(
             target=self._run_loop,
@@ -106,6 +117,10 @@ class AsyncRuntime:
 
     def _run_loop(self) -> None:
         asyncio.set_event_loop(self._loop)
+
+        # All app mutations are serialized through this lock. That prevents a
+        # dashboard command from changing actuators halfway through a background
+        # controller tick.
         self._app_lock = asyncio.Lock()
         self._loop.run_forever()
 
@@ -120,6 +135,8 @@ class AsyncRuntime:
             return await coroutine
 
     def run_serial(self, coroutine: Coroutine[Any, Any, Any]) -> Any:
+        # API handlers use this for commands/config writes that must not overlap
+        # the background tick worker.
         future = asyncio.run_coroutine_threadsafe(self._run_serial(coroutine), self._loop)
         return future.result()
 
@@ -160,8 +177,14 @@ class AsyncRuntime:
             previous_started = self._last_tick_started_s
             self._last_tick_started_s = started
             try:
+                # build_live_snapshot() calls app.tick(), so this worker is the
+                # continuously running controller loop. The pool keeps operating
+                # even when no browser is open.
                 payload = await self._run_serial(build_live_snapshot(app))
                 elapsed = self._loop.time() - started
+
+                # Put loop timing in the payload so the dashboard can show when
+                # Modbus timeouts or expensive code are threatening 0.25 s ticks.
                 payload["loop"] = _loop_timing_payload(
                     target_interval_s=interval_s,
                     started_s=started,
@@ -171,6 +194,9 @@ class AsyncRuntime:
                 )
                 self._merge_weather_status(payload)
                 with self._state_lock:
+                    # Store the latest payload for normal GET /api/live calls.
+                    # Those requests can return quickly without forcing a fresh
+                    # controller tick.
                     self._latest_live_payload = payload
                     self._last_tick_error = None
             except asyncio.CancelledError:
@@ -179,6 +205,8 @@ class AsyncRuntime:
                 with self._state_lock:
                     self._last_tick_error = str(error)
             elapsed = self._loop.time() - started
+            # Sleep only the remaining part of the interval. If a tick overruns,
+            # the next loop starts immediately and the overrun is reported.
             await asyncio.sleep(max(0.0, interval_s - elapsed))
 
     async def _weather_worker(
@@ -189,6 +217,8 @@ class AsyncRuntime:
     ) -> None:
         while True:
             try:
+                # Weather uses blocking HTTP. Run it in a thread so an Open-Meteo
+                # timeout cannot block the async controller loop.
                 result = await asyncio.to_thread(app.poll_weather_due)
                 with self._state_lock:
                     self._last_weather_result = _weather_poll_payload(result)

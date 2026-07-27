@@ -1,3 +1,11 @@
+"""
+Open-Meteo weather download and forecast cache.
+
+Observed hourly weather is logged to SQLite for history charts. Forecast data is
+kept in memory and refreshed periodically so future chemistry prediction logic
+can use it without treating forecasts as historical measurements.
+"""
+
 from __future__ import annotations
 
 import json

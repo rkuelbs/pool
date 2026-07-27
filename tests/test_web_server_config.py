@@ -1,3 +1,10 @@
+"""
+Tests for web server configuration APIs.
+
+These tests cover form-backed GUI updates for schedule, safety, acquisition,
+logging, chlorination, FC demand, and other YAML-backed settings.
+"""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone

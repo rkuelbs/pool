@@ -1,3 +1,10 @@
+"""
+Tests for Raspberry Pi Waveshare analog input drivers.
+
+The tests protect bulk register reads, voltage scaling, two-point calibration,
+startup channel-mode writes, and raw pH voltage exposure.
+"""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone

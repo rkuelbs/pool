@@ -1,3 +1,12 @@
+"""
+Free-chlorine demand estimator.
+
+This service uses manual FC test results and logged chlorine additions to
+estimate how many ounces per day the pool has been consuming. ORP and pH are
+left out on purpose so the first closed-loop behavior is understandable and
+based on hand-entered chemistry tests.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
@@ -231,11 +240,18 @@ def estimate_fc_demand_plan(
 
     elapsed_days = elapsed_hours / 24.0
     automated_chlorine_oz = max(0.0, automated_chlorine_oz)
+
+    # Convert actual delivered sodium hypochlorite into FC ppm added to the
+    # pool. This uses the same strength and pool volume assumptions as the
+    # dosing recommendation, so the estimate stays internally consistent.
     automated_added_fc = fc_ppm_from_fl_oz(
         automated_chlorine_oz,
         strength_percent=config.chlorine_strength_percent,
         pool_volume_gal=config.pool_volume_gal,
     )
+
+    # Manual sodium-hypochlorite additions entered on the GUI count too. Acid
+    # additions and other chemistry events do not affect FC demand.
     manual_hypo_oz = sum(
         addition.amount_fl_oz
         for addition in sodium_hypochlorite_additions
@@ -251,6 +267,11 @@ def estimate_fc_demand_plan(
         if addition.chemical == ChemicalType.SODIUM_HYPOCHLORITE
     )
     added_fc_ppm = automated_added_fc + manual_added_fc
+
+    # Mass balance:
+    #   previous FC + FC added - FC consumed = current FC
+    # Therefore:
+    #   FC consumed = previous FC + FC added - current FC
     consumed_fc_ppm = previous.free_chlorine + added_fc_ppm - current.free_chlorine
     raw_daily_demand_ppm = consumed_fc_ppm / elapsed_days
     daily_demand_ppm = max(0.0, raw_daily_demand_ppm)
@@ -274,6 +295,10 @@ def estimate_fc_demand_plan(
         if correction_fc_ppm > 0
         else 0.0
     )
+
+    # If FC is above target, keep the learned daily duty cycle but delay the
+    # next day's dosing start by the fraction of a normal day's demand that is
+    # already "stored" as excess FC.
     skip_days = (
         abs(correction_fc_ppm) / daily_demand_ppm
         if correction_fc_ppm < 0 and daily_demand_ppm > 0
@@ -293,12 +318,18 @@ def estimate_fc_demand_plan(
     effective_daily_dose_oz = maintenance_dose_oz
     delay_eligible_minutes_today = 0.0
     if correction_fc_ppm > 0:
+        # Low FC is corrected on the next local day by adding one catch-up dose
+        # to the learned maintenance dose.
         recommended_daily_dose_oz = maintenance_dose_oz + catch_up_dose_oz
         if local_date == next_adjustment_date:
             effective_daily_dose_oz = recommended_daily_dose_oz
     elif correction_fc_ppm < 0 and skip_days > 0 and local_date >= next_adjustment_date:
         elapsed_adjustment_days = (local_date - next_adjustment_date).days
         remaining_skip_days = max(0.0, skip_days - elapsed_adjustment_days)
+
+        # Delay is expressed in eligible dosing minutes, not clock minutes, so a
+        # short pump schedule still delays by the correct fraction of that
+        # schedule's normal dosing opportunity.
         delay_eligible_minutes_today = min(1.0, remaining_skip_days) * available_minutes_today
 
     if effective_daily_dose_oz > config.max_daily_dose_oz:
@@ -361,6 +392,10 @@ def fc_ppm_from_fl_oz(
         raise ValueError("strength_percent must be > 0")
     if pool_volume_gal <= 0:
         raise ValueError("pool_volume_gal must be > 0")
+
+    # Rule-of-thumb concentration math: 1 gallon of 10% chlorine in 10,000
+    # gallons raises FC by about 10 ppm. `amount_fl_oz / 128` converts ounces to
+    # gallons, then strength and pool volume scale the result.
     return (amount_fl_oz / 128.0) * strength_percent * (10000.0 / pool_volume_gal)
 
 

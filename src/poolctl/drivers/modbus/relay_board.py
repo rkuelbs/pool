@@ -1,3 +1,11 @@
+"""
+Low-level Waveshare Modbus RTU relay board support.
+
+This module knows how to read and write relay coils on the 8-channel relay
+module. The rest of the controller maps pump, booster, and dosing commands onto
+these relay numbers in Raspberry Pi actuator drivers.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Mapping

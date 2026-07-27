@@ -1,3 +1,10 @@
+"""
+Tests for routing actuator commands through drivers and safety checks.
+
+The command router is the boundary between controller decisions and hardware,
+so these tests verify accepted, rejected, and safety-generated commands.
+"""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone

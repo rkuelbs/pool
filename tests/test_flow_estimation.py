@@ -1,3 +1,10 @@
+"""
+Tests for derived hydraulic estimates.
+
+The flow formulas and filter restriction metric are field-tuned assumptions, so
+these tests protect the configured equations and pump-off zero behavior.
+"""
+
 from __future__ import annotations
 
 import math

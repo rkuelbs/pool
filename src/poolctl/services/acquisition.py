@@ -1,3 +1,12 @@
+"""
+Sensor acquisition, filtering, validation, and logging policy.
+
+Acquisition separates "reading" from "logging." Safety-critical pressures can be
+read frequently while slower chemistry values are only logged when pump-flow
+conditions make them valid. Rolling filters smooth readings without blocking the
+main control loop with long oversampling bursts.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
@@ -222,6 +231,10 @@ class AcquisitionService:
         self._multi_sensor_drivers = tuple(multi_sensor_drivers)
         self._latest_measurements: dict[SensorId, Measurement] = {}
         self._latest_raw_measurements: dict[SensorId, Measurement] = {}
+
+        # Rolling filter buffers are stored by sensor ID. Keeping the buffers in
+        # the acquisition service means simulated and real drivers get identical
+        # smoothing behavior.
         self._filter_buffers: dict[SensorId, list[Measurement]] = {}
         self._last_read_at: dict[str, datetime] = {}
         self._last_logged_at: dict[SensorId, datetime] = {}
@@ -319,6 +332,9 @@ class AcquisitionService:
         }
         failures: list[AcquisitionFailure] = []
 
+        # Oversampling is a short burst inside one acquisition poll. Production
+        # configs generally keep this at one sample so Modbus reads cannot block
+        # the fast control loop for a long time.
         for sample_index in range(group.oversampling.sample_count):
             sample_measurements, sample_failures = await self._read_sample(group.sensor_ids)
 
@@ -337,6 +353,8 @@ class AcquisitionService:
             if not samples:
                 continue
 
+            # Processing order matters: reduce burst samples, mark flow-dependent
+            # values valid/suspect, then apply the rolling filter to valid data.
             reduced_measurement = self._reduce_measurements(samples, group.oversampling)
             self._latest_raw_measurements[reduced_measurement.sensor_id] = reduced_measurement
             validated_measurement = self._apply_flow_validity(
@@ -385,6 +403,9 @@ class AcquisitionService:
         measurements: list[Measurement] = []
         failures: list[AcquisitionFailure] = []
 
+        # Single-sensor drivers handle simple values such as CPU temperature or
+        # simulated one-off sensors. Missing sensors are allowed here because a
+        # later multi-sensor driver may provide the same ID.
         for sensor_id in sensor_ids:
             driver = self._sensor_drivers.get(sensor_id)
             if driver is None:
@@ -402,6 +423,9 @@ class AcquisitionService:
                     )
                 )
 
+        # Multi-sensor drivers can satisfy several requested sensor IDs with one
+        # call. The Waveshare analog module uses this path to read all input
+        # registers once, then expose pressure and raw-voltage measurements.
         for multi_driver in self._multi_sensor_drivers:
             driver_sensor_ids = getattr(multi_driver, "sensor_ids", None)
             if driver_sensor_ids is not None and not sensor_id_set.intersection(
@@ -494,6 +518,9 @@ class AcquisitionService:
         if not group.requires_pump_flow:
             return measurement
 
+        # Chemistry and loop temperature values may be stale when water is not
+        # moving. We keep the latest reading visible but lower its quality so it
+        # can be greyed out in the GUI and skipped by normal history logging.
         valid, reason, pump_on_seconds = self._flow_is_valid(
             group,
             actuator_states=actuator_states,
@@ -561,6 +588,8 @@ class AcquisitionService:
             raise ValueError(f"unknown filter type: {filtering.filter_type.value}")
 
         if measurement.quality != Quality.GOOD:
+            # Do not average suspect water with previously valid water. Clearing
+            # the buffer gives the next valid flow period a fresh filter window.
             self._filter_buffers.pop(measurement.sensor_id, None)
             return measurement.model_copy(
                 update={
@@ -583,6 +612,8 @@ class AcquisitionService:
         buffer = _trim_filter_buffer(buffer, filtering, measurement.observed_at)
         self._filter_buffers[measurement.sensor_id] = buffer
 
+        # Filter metadata is logged with the measurement. This makes it possible
+        # to debug smoothing behavior from the database without live memory.
         filter_metadata = {
             "type": filtering.filter_type.value,
             "status": "filtered",
@@ -609,6 +640,7 @@ class AcquisitionService:
         values = [sample.value for sample in buffer]
         return measurement.model_copy(
             update={
+                # A boxcar filter is the arithmetic mean of the current window.
                 "value": round(mean(values), _decimal_places(values)),
                 "source_measurement_ids": [sample.id for sample in buffer],
                 "metadata": {
@@ -648,6 +680,8 @@ class AcquisitionService:
                 reason=str(measurement.metadata.get("validity_reason", "invalid_flow")),
             )
 
+        # Reading and logging rates are independent. A sensor can be sampled
+        # quickly for safety/control while only persisting slower trend points.
         last_logged_at = self._last_logged_at.get(measurement.sensor_id)
         if last_logged_at is not None:
             elapsed_s = (now - last_logged_at).total_seconds()

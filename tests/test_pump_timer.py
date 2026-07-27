@@ -1,3 +1,10 @@
+"""
+Tests for pump schedules and manual overrides.
+
+These cases document local-time schedule evaluation, override latching, and the
+next-scheduled-event behavior used by the live controls.
+"""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone

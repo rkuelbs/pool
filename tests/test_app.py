@@ -1,3 +1,10 @@
+"""
+Tests for the composed PoolControllerApp runtime.
+
+This file exercises whole-application behavior: building from config, ticking
+services together, logging derived values, weather polling, and MQTT inputs.
+"""
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone

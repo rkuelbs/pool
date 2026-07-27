@@ -1,3 +1,12 @@
+"""
+Waveshare Modbus analog input module support.
+
+The pressure and analog pH inputs are read as voltages and then converted to
+engineering units with two-point calibration from the YAML config. The driver
+reads all channels in one Modbus request so the controller tick is not slowed by
+one serial transaction per sensor.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -156,11 +165,19 @@ class WaveshareAnalogInput8ChDriver:
     def sensor_ids(self) -> tuple[SensorId, ...]:
         sensor_ids = [sensor.sensor_id for sensor in self._config.sensors]
         if SensorId.RAW_PH in sensor_ids:
+            # The calibrated pH value is useful for control, while the raw
+            # voltage is useful when checking or adjusting a two-point
+            # calibration from the GUI.
             sensor_ids.append(SensorId.RAW_PH_VOLTAGE)
         return tuple(sensor_ids)
 
     async def read_all(self) -> list[Measurement]:
         await self._apply_startup_channel_mode()
+
+        # Read all eight analog inputs in one Modbus transaction. This is much
+        # faster and more predictable than one serial request per pressure
+        # sensor, especially when the controller is ticking four times per
+        # second.
         registers = await self._transport.read_input_registers(
             start_address=0x0000,
             count=8,
@@ -174,10 +191,17 @@ class WaveshareAnalogInput8ChDriver:
 
         for sensor in self._config.sensors:
             register_value = registers[sensor.channel - 1]
+
+            # The module returns raw register values. YAML chooses the scale and
+            # offset so the same driver can handle 0-5 V, 0-10 V, or raw ADC
+            # style module modes.
             voltage = (
                 register_value * self._config.raw_to_volts_scale
                 + self._config.raw_to_volts_offset
             )
+
+            # Two-point calibration maps voltage to the engineering unit for the
+            # configured sensor: psi for pressure channels, pH for analog pH.
             calibrated_value = sensor.calibration.apply(voltage)
 
             metadata = {
@@ -216,6 +240,9 @@ class WaveshareAnalogInput8ChDriver:
             )
 
         if raw_ph_voltage is not None:
+            # Publish a second raw-voltage measurement for the analog pH channel.
+            # It is not used as the pH value, but it makes field calibration
+            # visible on the config page and in diagnostics.
             measurements.append(
                 Measurement(
                     sensor_id=SensorId.RAW_PH_VOLTAGE,
@@ -241,6 +268,9 @@ class WaveshareAnalogInput8ChDriver:
         if startup_mode < 0 or startup_mode > 0xFFFF:
             raise ValueError("startup_channel_mode must be between 0 and 65535")
 
+        # The Waveshare input mode lives in one holding register per channel.
+        # Writing every channel at startup makes the Pi deployment deterministic
+        # even if the module was previously configured by a bringup tool.
         for channel_index in range(CHANNEL_COUNT):
             await self._transport.write_holding_register(
                 register_address=CHANNEL_MODE_REGISTER_BASE + channel_index,

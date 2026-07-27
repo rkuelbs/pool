@@ -1,3 +1,11 @@
+"""
+MQTT bridge for publishing data and receiving limited remote inputs.
+
+MQTT support lets another dashboard observe poolctl state and send selected
+commands or test results. It is kept as a service so the controller can run with
+or without MQTT enabled.
+"""
+
 from __future__ import annotations
 
 import json

@@ -1,3 +1,12 @@
+"""
+Derived hydraulic calculations.
+
+Pressure sensors are converted into estimated flow, pump dynamic head, and
+filter restriction metrics. These values are displayed and logged like ordinary
+measurements, but they are derived from the latest pressure readings and YAML
+calibration constants.
+"""
+
 from __future__ import annotations
 
 import math
@@ -168,6 +177,8 @@ def estimate_flows(
     pump_pressure = pump_measurement.value if pump_measurement is not None else None
 
     if pump_state != ActuatorState.ON:
+        # With the pump off, all estimated hydraulic flows are defined as zero
+        # even if pressure sensors still report residual static pressure.
         pump_flow_gpm = 0.0
         return_flow_gpm = 0.0
         bubbler_flow_gpm = 0.0
@@ -175,12 +186,16 @@ def estimate_flows(
     elif isinstance(pump_pressure, int | float):
         model = config.pump_pressure_model
         if speed_state == ActuatorState.LOW:
+            # Pump flow is estimated from pump outlet pressure using the
+            # configured low-speed pump curve constants.
             pump_flow_gpm = _pump_flow_from_pressure(
                 pressure_psi=float(pump_pressure),
                 c_no_flow=model.c_no_flow_low,
                 c_dynamic=model.c_dynamic,
                 pressure_scale_psi=model.pressure_scale_psi,
             )
+            # Dynamic head adds a suction-side term to outlet pressure. This is
+            # displayed below pump pressure and logged as a derived signal.
             pump_dynamic_head_psi = _pump_dynamic_head_from_pressure_and_flow(
                 pump_output_pressure_psi=float(pump_pressure),
                 flow_gpm=pump_flow_gpm,
@@ -212,6 +227,8 @@ def estimate_flows(
                 ),
             )
         if speed_state == ActuatorState.HIGH:
+            # The same equation is used at high speed, but with high-speed
+            # no-flow constants from YAML.
             pump_flow_gpm = _pump_flow_from_pressure(
                 pressure_psi=float(pump_pressure),
                 c_no_flow=model.c_no_flow_high,
@@ -250,6 +267,8 @@ def estimate_flows(
             )
 
     if pump_state == ActuatorState.ON:
+        # If pump speed is unknown, branch flows can still be estimated directly
+        # from their own pressure sensors, but pump curve flow is left unknown.
         return_flow_gpm = _quadratic_flow_from_pressure(
             pressure_psi=_measurement_value(measurements, SensorId.RETURN_PSI),
             model=config.return_flow_model,
@@ -288,6 +307,10 @@ def _pump_flow_from_pressure(
     c_dynamic: float,
     pressure_scale_psi: float,
 ) -> float:
+    # Rearranged from:
+    #   pressure = pressure_scale_psi * (c_no_flow - c_dynamic * flow^2)
+    # The term becomes negative when measured pressure is above the configured
+    # no-flow pressure, so clamp to zero instead of returning a math error.
     term = c_no_flow - (pressure_psi / pressure_scale_psi)
     if term <= 0:
         return 0.0
@@ -301,6 +324,8 @@ def _quadratic_flow_from_pressure(
 ) -> float | None:
     if pressure_psi is None:
         return None
+    # Branch flows use PRESSURE = A + B * FLOW^2. Values below A imply no
+    # positive flow from this model.
     term = (pressure_psi - model.a) / model.b
     if term <= 0:
         return 0.0
@@ -329,6 +354,8 @@ def _with_filter_restriction(
 ) -> FlowEstimates:
     flow = estimates.pump_flow_gpm
     if not isinstance(flow, int | float) or flow <= 0:
+        # Filter restriction is only meaningful with actual flow through the
+        # filter. When flow is zero the GUI should display the filter as inactive.
         return estimates
 
     pump_output = _measurement_value(measurements, SensorId.PUMP_OUTPUT_PSI)
@@ -336,6 +363,8 @@ def _with_filter_restriction(
     if pump_output is None or filter_output is None:
         return estimates
 
+    # Restriction rises with pressure drop across the filter and is normalized by
+    # flow squared so it can be compared across low/high pump speeds.
     metric = 10000.0 * (pump_output - filter_output) / (flow ** 2)
     percent = _restriction_percent(
         metric=metric,

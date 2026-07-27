@@ -1,3 +1,10 @@
+"""
+Tests for Raspberry Pi relay-backed actuator drivers.
+
+These tests verify domain ON/OFF/LOW/HIGH commands translate into the expected
+Waveshare relay coil states.
+"""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone

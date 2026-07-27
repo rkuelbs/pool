@@ -1,3 +1,10 @@
+"""
+Tests for live dashboard snapshot generation.
+
+The web UI consumes JSON-friendly dictionaries, so these tests verify display
+values, colors, status flags, history data, and live controls.
+"""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone

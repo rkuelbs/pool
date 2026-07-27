@@ -1,3 +1,10 @@
+"""
+Tests for the shared async Modbus RTU bus wrapper.
+
+These tests protect pymodbus compatibility, request serialization, retries, and
+connection reuse behavior.
+"""
+
 from __future__ import annotations
 
 from poolctl.drivers.modbus.rtu_bus import ModbusRtuBusRegistry

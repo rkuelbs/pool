@@ -1,3 +1,12 @@
+"""
+A correlated software model of the pool equipment.
+
+The simulated plant gives sensor readings believable relationships: pressures
+rise when pumps run, water temperature follows a daily pattern, chemistry drifts
+over time, and chlorine dosing affects ORP and tank level. It is not a physics
+model; it is a deterministic-enough test fixture for controller behavior.
+"""
+
 from __future__ import annotations
 
 import math
@@ -78,6 +87,8 @@ class SimulatedPlant:
 
         elapsed_hours = elapsed_s / 3600.0
 
+        # Slow plant dynamics use elapsed time. If the SimulatedClock runs 60x
+        # faster than real time, these values also evolve 60x faster.
         self._update_water_temperature(now, elapsed_hours)
         self._update_chemistry(elapsed_hours)
         self._update_tank_level(elapsed_hours)
@@ -161,6 +172,8 @@ class SimulatedPlant:
         speed = self.pump_speed_factor()
 
         if speed <= 0.0:
+            # Real pressure transducers rarely read exactly zero, so the
+            # simulator leaves a small noisy residual pressure with the pump off.
             return max(0.0, noisy(0.25, 0.12))
 
         if sensor_name == "pump_output_psi":
@@ -177,6 +190,8 @@ class SimulatedPlant:
             base = 0.0
 
         if sensor_name == "booster_psi" and self.booster_is_on():
+            # The booster branch gets a large bump so booster safety rules and
+            # GUI coloring can be exercised in simulation.
             base += 45.0
 
         return max(0.0, noisy(base, 0.35))
@@ -271,6 +286,8 @@ class SimulatedPlant:
         self.simulated_orp_mv -= orp_decay_per_hour * elapsed_hours
 
         if self.chlorine_dosing_pump == ActuatorState.ON:
+            # Dosing changes chemistry gradually, so the live/history charts show
+            # a slow response rather than an instant step change.
             # Dosing increases ORP and slightly lowers simulated pH.
             self.simulated_orp_mv += 25.0 * elapsed_hours
             self.simulated_ph -= 0.003 * elapsed_hours
@@ -283,6 +300,7 @@ class SimulatedPlant:
         Decrease chlorine tank level while the chlorine dosing pump is on.
         """
         if self.chlorine_dosing_pump == ActuatorState.ON:
+            # This is only a visible simulation cue, not a calibrated tank model.
             tank_drop_percent_per_hour = 2.0
             self.tank_level_percent -= tank_drop_percent_per_hour * elapsed_hours
 

@@ -1,3 +1,10 @@
+"""
+Tests for the DFRobot Modbus configuration CLI helper.
+
+The tool is used during RS485 bringup, so tests focus on argument parsing and
+the register writes produced for address/baud changes.
+"""
+
 from __future__ import annotations
 
 import pytest

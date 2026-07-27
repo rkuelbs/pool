@@ -1,3 +1,11 @@
+"""
+Parse high-level runtime and GUI configuration.
+
+Most other modules use small service-specific config dataclasses. This module
+holds the broad switches that decide which deployment stage is active, which
+driver profile is used, and how the live dashboard should present sensors.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Mapping

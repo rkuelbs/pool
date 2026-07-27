@@ -1,3 +1,11 @@
+"""
+Simulated actuator drivers.
+
+These drivers update the SimulatedPlant instead of GPIO or Modbus hardware.
+They let the scheduler, safety logic, chlorination controller, and web GUI be
+tested on a development machine with the same domain commands used on the Pi.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable

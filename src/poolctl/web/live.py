@@ -1,3 +1,11 @@
+"""
+Build JSON-friendly snapshots for the web dashboard.
+
+The HTML/JavaScript frontend should not need to understand domain dataclasses,
+enum types, or Measurement objects. This module translates current app state
+into dictionaries with display strings, colors, status flags, and history data.
+"""
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta

@@ -1,3 +1,12 @@
+"""
+Safety interlocks and lockouts for pool equipment.
+
+The safety gate enforces pressure, booster, chlorinator, priming, and freeze
+protection rules before actuator commands reach hardware. Lockout faults remain
+active until explicitly cleared so a transient dangerous condition cannot be
+ignored by the next scheduler tick.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
@@ -337,9 +346,15 @@ class SafetyGate:
     def __init__(self, config: SafetyConfig | None = None) -> None:
         self.config = config if config is not None else SafetyConfig()
         self.active_fault: SafetyFault | None = None
+
+        # High-speed prime tracking is stateful because the rule depends on how
+        # long the pump has been high without achieving minimum outlet pressure.
         self._pump_high_started_at: datetime | None = None
         self._pump_high_observed_pressure: bool = False
         self._pump_high_reached_min_output: bool = False
+
+        # Low-speed priming and freeze protection are latches. A latch lets the
+        # gate keep requesting the same safe state across many ticks.
         self._low_pressure_prime_until: datetime | None = None
         self._freeze_latched_speed: ActuatorState | None = None
         self._freeze_started_at: datetime | None = None
@@ -382,6 +397,9 @@ class SafetyGate:
         snapshot: SafetySnapshot,
     ) -> SafetyDecision:
         if self.active_fault is not None and command.requested_by != CommandSource.SYSTEM:
+            # Human, timer, GUI, MQTT, and controller commands are rejected while
+            # locked out. SYSTEM commands are still allowed so the gate can shut
+            # actuators down.
             return SafetyDecision(
                 accepted=False,
                 rejection_reason=f"safety lockout active: {self.active_fault.message}",
@@ -416,12 +434,16 @@ class SafetyGate:
         pump_output_psi = snapshot.pressure_psi(self.config.pressure_sensors.pump_output)
         freeze_required_speed, freeze_observation = self._freeze_required_speed(snapshot)
 
+        # Update timers/latches before checking lockouts so the current pressure
+        # reading participates in prime-timeout decisions.
         self._update_pump_high_tracking(snapshot, pump_output_psi)
 
         if (
             pump_output_psi is not None
             and pump_output_psi > self.config.pump_output_overpressure_psi
         ):
+            # Overpressure is an immediate hard lockout. All outputs are shut
+            # down and future non-system commands are rejected until cleared.
             fault = self._raise_fault(
                 code="pump_output_overpressure",
                 severity=SafetySeverity.ERROR,
@@ -434,6 +456,8 @@ class SafetyGate:
             return self._shutdown_all_actions(snapshot.now, fault=fault)
 
         if self._pump_high_prime_timed_out(snapshot):
+            # Loss of prime is a lockout because continuing to run dry can damage
+            # the pump. The operator must inspect and clear it explicitly.
             fault = self._raise_fault(
                 code="loss_of_prime",
                 severity=SafetySeverity.WARNING,
@@ -524,6 +548,8 @@ class SafetyGate:
             return []
 
         if booster_psi > self.config.booster_max_psi:
+            # Booster overpressure does not lock out the whole system; it simply
+            # turns the booster relay off because the filter pump can still run.
             return [
                 self._action(
                     snapshot.now,
@@ -594,6 +620,8 @@ class SafetyGate:
             and pump_output_psi is not None
             and pump_output_psi < self.config.pump_low_prime_min_output_psi
         ):
+            # A low-speed pump can be unable to prime. Temporarily force high
+            # speed, then return to low after the configured hold time.
             self._low_pressure_prime_until = snapshot.now + timedelta(
                 seconds=self.config.pump_low_prime_seconds
             )
@@ -649,6 +677,7 @@ class SafetyGate:
 
         now = snapshot.now
         if self._freeze_latched_speed is None:
+            # Enter freeze mode only when crossing the ON thresholds.
             if observed_temp <= freeze.high_speed_on_below_temp:
                 self._set_freeze_latch(ActuatorState.HIGH, now=now)
             elif observed_temp <= freeze.low_speed_on_below_temp:
@@ -662,6 +691,8 @@ class SafetyGate:
             self._set_freeze_latch(ActuatorState.HIGH, now=now)
 
         if self._freeze_min_run_elapsed(now=now):
+            # Hysteresis uses separate OFF thresholds and a minimum runtime so
+            # the pump does not rapidly cycle around the freeze setpoint.
             if self._freeze_latched_speed == ActuatorState.HIGH:
                 if observed_temp >= freeze.low_speed_off_above_temp:
                     self._clear_freeze_state()
@@ -709,6 +740,8 @@ class SafetyGate:
         if not candidates:
             return None
 
+        # If both temperature sources are enabled, protect against the coldest
+        # observed value.
         observed_sensor, observed_temp = min(candidates, key=lambda item: item[1])
         observation = f"{observed_temp:.1f} {freeze.threshold_unit.value} ({observed_sensor})"
         return observed_temp, observation
@@ -724,6 +757,9 @@ class SafetyGate:
         if measurement is None:
             return None
 
+        # Freeze protection uses raw measurements, not quality-filtered values,
+        # because it must still work when chemistry readings are marked invalid
+        # due to the pump being off.
         if measurement.unit not in {TemperatureUnit.DEG_F.value, TemperatureUnit.DEG_C.value}:
             return None
 
@@ -761,6 +797,8 @@ class SafetyGate:
         pump_speed = snapshot.actuator_state(ActuatorId.PUMP_MOTOR_SPEED)
 
         if not pump_on:
+            # Set speed before turning the pump on so the motor starts in the
+            # required freeze-protection speed.
             if pump_speed != freeze_required_speed:
                 actions.append(
                     self._action(
@@ -903,6 +941,9 @@ class SafetyGate:
             raised_at=now,
         )
         self.active_fault = fault
+
+        # A lockout supersedes softer latches. Clear them so recovery starts from
+        # a known state after the operator clears the fault.
         self._low_pressure_prime_until = None
         self._clear_freeze_state()
         return fault

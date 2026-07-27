@@ -1,3 +1,10 @@
+"""
+Tests for runtime and live-view configuration parsing.
+
+These tests catch invalid YAML/mapping values before they can silently change
+which layers, sensors, or dashboard thresholds are active.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path
