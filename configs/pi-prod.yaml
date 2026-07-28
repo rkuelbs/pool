@@ -17,12 +17,24 @@ runtime:
 pump_timer:
   timezone: America/Chicago
   schedules:
-  - name: daytime_filter
-    start: '09:30'
-    end: '16:30'
+  - name: morning_dosing
+    start: '07:00'
+    end: '09:00'
     pump_speed: low
     booster: 'off'
     allow_dosing: true
+  - name: midday_dosing
+    start: '10:30'
+    end: '14:00'
+    pump_speed: low
+    booster: 'off'
+    allow_dosing: true
+  - name: afternoon_filter
+    start: '15:30'
+    end: '17:00'
+    pump_speed: low
+    booster: 'off'
+    allow_dosing: false
   - name: evening_vacuum
     start: '21:00'
     end: '22:00'
@@ -130,18 +142,18 @@ flow_estimation:
     dirty_value: 8.0
 chlorination:
   enabled: true
-  daily_dose_oz: 42.6
+  daily_dose_oz: 0
   pump_output_oz_per_min: 1.72
   no_dose_last_minutes: 10.0
   max_duty_cycle: 0.5
   cycle_on_seconds: 60.0
   max_cycle_period_seconds: 1800.0
-  min_cycle_on_seconds: 20.0
+  min_cycle_on_seconds: 30.0
 fc_demand:
   enabled: true
   mode: observe_only
-  pool_volume_gal: 16200.0
-  target_fc_ppm: 4.0
+  pool_volume_gal: 16000.0
+  target_fc_ppm: 4.5
   chlorine_strength_percent: 12.0
   minimum_test_interval_hours: 12.0
   max_daily_dose_oz: 120.0
