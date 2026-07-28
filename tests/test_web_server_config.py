@@ -408,7 +408,10 @@ def test_acquisition_and_logging_updates_write_yaml(tmp_path: Path) -> None:
     logging_result = apply_logging_config_update(
         app=app,
         config_path=path,
-        payload={"database_path": "data/new.sqlite3"},
+        payload={
+            "database_path": "data/new.sqlite3",
+            "control_measurement_interval_s": 45.0,
+        },
     )
     assert logging_result["requires_restart"] is True
     assert serialize_acquisition_config(app)["requires_restart"] is True
@@ -416,6 +419,7 @@ def test_acquisition_and_logging_updates_write_yaml(tmp_path: Path) -> None:
 
     saved = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert str(saved["logging"]["database_path"]).endswith("new.sqlite3")
+    assert saved["logging"]["control_measurement_interval_s"] == 45.0
     assert saved["acquisition"]["groups"]["pressures"]["filter"]["type"] == "boxcar"
     assert saved["acquisition"]["groups"]["pressures"]["filter"]["window_samples"] == 2
 

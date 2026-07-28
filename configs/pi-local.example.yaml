@@ -47,3 +47,4 @@ fc_demand:
 # Optional site-specific paths. Leave these out if pi-prod.yaml is correct.
 # logging:
 #   database_path: data/pi-prod.sqlite3
+#   control_measurement_interval_s: 30.0

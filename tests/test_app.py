@@ -418,6 +418,87 @@ async def test_tick_logs_chlorine_delivery_while_dosing_pump_is_on(tmp_path: Pat
     assert cumulative_records[-1].unit == "fl oz"
 
 
+@pytest.mark.asyncio
+async def test_chlorination_control_history_is_throttled_between_state_changes(
+    tmp_path: Path,
+) -> None:
+    clock = make_clock()
+    config = {
+        "runtime": {
+            "stage": "open_loop_timer",
+            "driver_profile": "simulated",
+            "enabled_layers": ["pump_timer", "chlorination", "logging"],
+            "enabled_actuators": [
+                "pump_motor",
+                "pump_motor_speed",
+                "booster_pump",
+                "chlorine_dosing_pump",
+            ],
+            "enabled_sensor_groups": [],
+        },
+        "logging": {
+            "database_path": str(tmp_path / "chlorine_control.sqlite3"),
+            "control_measurement_interval_s": 30.0,
+        },
+        "pump_timer": {
+            "timezone": "UTC",
+            "schedules": [
+                {
+                    "name": "midday_filter",
+                    "start": "12:00",
+                    "end": "14:00",
+                    "pump_speed": "low",
+                    "booster": "off",
+                    "allow_dosing": True,
+                }
+            ],
+        },
+        "chlorination": {
+            "enabled": True,
+            "daily_dose_oz": 4.0,
+            "pump_output_oz_per_min": 1.0,
+            "no_dose_last_minutes": 10.0,
+            "max_duty_cycle": 0.5,
+            "cycle_on_seconds": 60.0,
+        },
+    }
+
+    app = build_app_from_mapping(config, clock=clock)
+    await app.tick()
+    await clock.advance(1.0)
+    await app.tick()
+
+    assert app.measurement_logger is not None
+    assert len(
+        app.measurement_logger.history(
+            sensor_id=SensorId.CHLORINATION_DUTY_CYCLE_PERCENT,
+            limit=10,
+        )
+    ) == 1
+    assert len(
+        app.measurement_logger.history(
+            sensor_id=SensorId.CHLORINE_DAILY_DELIVERED_OZ,
+            limit=10,
+        )
+    ) == 1
+
+    await clock.advance(29.0)
+    await app.tick()
+
+    assert len(
+        app.measurement_logger.history(
+            sensor_id=SensorId.CHLORINATION_DUTY_CYCLE_PERCENT,
+            limit=10,
+        )
+    ) == 2
+    cumulative_records = app.measurement_logger.history(
+        sensor_id=SensorId.CHLORINE_DAILY_DELIVERED_OZ,
+        limit=10,
+    )
+    assert len(cumulative_records) == 2
+    assert round(cumulative_records[-1].value, 3) == 0.5
+
+
 def test_chlorine_delivery_accounting_stops_at_auto_off_time() -> None:
     previous = datetime(2026, 5, 21, 12, 0, tzinfo=timezone.utc)
     auto_off_at = previous + timedelta(seconds=30)

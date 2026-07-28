@@ -94,6 +94,12 @@ from poolctl.services.weather import WeatherConfig, WeatherPollResult, WeatherSe
 
 
 FC_DEMAND_BASE_EMA_ALPHA = 0.35
+CHLORINATION_CONTROL_SENSOR_IDS = frozenset(
+    {
+        SensorId.CHLORINATION_DUTY_CYCLE_PERCENT,
+        SensorId.CHLORINE_DAILY_DELIVERED_OZ,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -253,6 +259,8 @@ class PoolControllerApp:
     dosing_prime_safety_bypass: bool = True
     dosing_prime_delivery_exclude_started_at: datetime | None = None
     dosing_prime_delivery_exclude_until: datetime | None = None
+    chlorination_control_last_logged_at: datetime | None = None
+    chlorination_control_last_signature: tuple[Any, ...] | None = None
 
     async def tick(self, *, force_acquisition: bool = False) -> AppTickResult:
         # Measure the tick with a monotonic clock. This is used for loop timing
@@ -365,7 +373,13 @@ class PoolControllerApp:
             ),
             observed_at=self.clock.now(),
         )
-        logged_measurement_count += self._log_measurements(control_measurements)
+        logged_measurement_count += self._log_measurements(
+            self._loggable_chlorination_control_measurements(
+                measurements=control_measurements,
+                chlorination_status=chlorination_status,
+                observed_at=self.clock.now(),
+            )
+        )
         safety_results: tuple[ActuatorCommandResult, ...] = ()
 
         if self.runtime_config.layer_enabled(FeatureLayer.SAFETY_ENFORCEMENT):
@@ -1294,6 +1308,120 @@ class PoolControllerApp:
             )
 
         return tuple(measurements)
+
+    def _loggable_chlorination_control_measurements(
+        self,
+        *,
+        measurements: tuple[Measurement, ...],
+        chlorination_status: ChlorinationStatus | None,
+        observed_at: datetime,
+    ) -> tuple[Measurement, ...]:
+        """
+        Return controller-state measurements that are due for database logging.
+
+        Chlorination status is still produced every tick for live publication,
+        but the history table should not receive one row per 0.25 second control
+        loop pass. At that rate the history API's row cap shows only the newest
+        slice of a long dosing window. We keep these graph snapshots sparse and
+        stable by logging immediately on important state/config changes, then at
+        a configured heartbeat while the state remains unchanged.
+        """
+        chlorination_measurements = tuple(
+            measurement
+            for measurement in measurements
+            if measurement.sensor_id in CHLORINATION_CONTROL_SENSOR_IDS
+        )
+        other_measurements = tuple(
+            measurement
+            for measurement in measurements
+            if measurement.sensor_id not in CHLORINATION_CONTROL_SENSOR_IDS
+        )
+
+        if not chlorination_measurements:
+            return other_measurements
+
+        if self._chlorination_control_log_due(
+            chlorination_status=chlorination_status,
+            observed_at=observed_at,
+        ):
+            return other_measurements + chlorination_measurements
+
+        return other_measurements
+
+    def _chlorination_control_log_due(
+        self,
+        *,
+        chlorination_status: ChlorinationStatus | None,
+        observed_at: datetime,
+    ) -> bool:
+        interval_s = self.measurement_logging_config.control_measurement_interval_s
+        signature = self._chlorination_control_log_signature(chlorination_status)
+        last_logged_at = self.chlorination_control_last_logged_at
+        last_signature = self.chlorination_control_last_signature
+        elapsed_s = (
+            None
+            if last_logged_at is None
+            else (observed_at - last_logged_at).total_seconds()
+        )
+
+        due = (
+            last_logged_at is None
+            or elapsed_s is None
+            or elapsed_s < 0
+            or elapsed_s >= interval_s
+            or signature != last_signature
+        )
+        if due:
+            object.__setattr__(
+                self,
+                "chlorination_control_last_logged_at",
+                observed_at,
+            )
+            object.__setattr__(
+                self,
+                "chlorination_control_last_signature",
+                signature,
+            )
+
+        return due
+
+    def _chlorination_control_log_signature(
+        self,
+        chlorination_status: ChlorinationStatus | None,
+    ) -> tuple[Any, ...]:
+        dosing_state = self.router.actuator_states.get(ActuatorId.CHLORINE_DOSING_PUMP)
+        dosing_state_value = dosing_state.value if dosing_state is not None else None
+        if chlorination_status is None:
+            return ("no_status", dosing_state_value)
+
+        return (
+            chlorination_status.enabled,
+            chlorination_status.layer_enabled,
+            dosing_state_value,
+            chlorination_status.desired_state.value,
+            chlorination_status.active,
+            chlorination_status.reason,
+            round(chlorination_status.daily_dose_oz, 3),
+            round(chlorination_status.base_daily_dose_oz, 3),
+            round(chlorination_status.duty_cycle, 6),
+            chlorination_status.duty_cycle_limited,
+            round(chlorination_status.cycle_on_seconds, 3),
+            (
+                None
+                if chlorination_status.cycle_off_seconds is None
+                else round(chlorination_status.cycle_off_seconds, 3)
+            ),
+            (
+                None
+                if chlorination_status.cycle_period_seconds is None
+                else round(chlorination_status.cycle_period_seconds, 3)
+            ),
+            chlorination_status.eligible_window_active,
+            chlorination_status.duty_cycle_window_active,
+            chlorination_status.dose_adjustment_source,
+            chlorination_status.dose_adjustment_reason,
+            round(chlorination_status.delay_eligible_minutes, 3),
+        )
 
     def poll_weather_due(self) -> WeatherPollResult:
         if self.weather_service is None:

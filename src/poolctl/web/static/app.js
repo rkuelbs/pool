@@ -3108,6 +3108,8 @@ async function loadLoggingConfig() {
     const response = await fetch("/api/config/logging", { cache: "no-store" });
     const payload = await parseApiResponse(response, "logging config load failed");
     document.getElementById("loggingDatabasePath").value = payload.database_path;
+    document.getElementById("loggingControlMeasurementInterval").value =
+      payload.control_measurement_interval_s ?? 30;
     setLoggingStatus("Logging config loaded");
   } catch (error) {
     setLoggingStatus(error.message);
@@ -3124,6 +3126,9 @@ async function saveLoggingConfig() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         database_path: document.getElementById("loggingDatabasePath").value.trim(),
+        control_measurement_interval_s: Number(
+          document.getElementById("loggingControlMeasurementInterval").value,
+        ),
       }),
     });
     const payload = await parseApiResponse(response, "logging config save failed");

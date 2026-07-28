@@ -18,6 +18,20 @@ from poolctl.services.measurement_logging import (
 from poolctl.services.weather import WeatherObservation
 
 
+def test_measurement_logging_config_parses_control_measurement_interval() -> None:
+    config = MeasurementLoggingConfig.from_mapping(
+        {
+            "logging": {
+                "database_path": "data/test.sqlite3",
+                "control_measurement_interval_s": 15.0,
+            }
+        }
+    )
+
+    assert config.database_path == Path("data/test.sqlite3")
+    assert config.control_measurement_interval_s == 15.0
+
+
 def test_measurement_logger_persists_and_queries_history(tmp_path: Path) -> None:
     logger = MeasurementLogger(
         MeasurementLoggingConfig(database_path=tmp_path / "measurements.sqlite3")

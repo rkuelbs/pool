@@ -85,6 +85,7 @@ safety:
     pump_high_prime_timeout_s: 30
 logging:
   database_path: data\windows-dev.sqlite3
+  control_measurement_interval_s: 30.0
 mqtt:
   enabled: false
   host: 127.0.0.1

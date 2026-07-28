@@ -183,7 +183,7 @@ Important sections:
 - `safety`: pressure interlocks, lockout thresholds, freeze protection.
 - `acquisition`: sensor groups, read intervals, log intervals, validation rules,
   optional burst oversampling, rolling filters, chemistry refresh runs.
-- `logging`: SQLite database path.
+- `logging`: SQLite database path and controller-state snapshot interval.
 - `modbus_relay`: relay board serial settings, Modbus slave ID, relay mapping.
   `dosing_uses_flash` defaults to `true` so chlorine dosing ON commands are
   sent as Waveshare timed flash pulses instead of latched relay ON writes.
@@ -315,6 +315,14 @@ ranges and centers; otherwise it gives traces separate color-matched axes.
 Lab tests and chemical additions are plotted as point/event series rather than
 continuous sensor streams.
 
+Most physical sensors are already logged at their acquisition group's
+`log_interval_s`. Some controller-state values, such as `Dosing duty cycle` and
+`Daily chlorine delivered`, are produced every runtime tick for live status but
+are persisted using `logging.control_measurement_interval_s` plus immediate
+samples when the dosing state or duty plan changes. This keeps long history
+windows useful with the 0.25 s control loop instead of filling the database with
+four duplicate-style status rows per second.
+
 The range selector controls the window length, not necessarily how far back the
 database query can go. Use `Prev` and `Next` to move that same high-resolution
 window through history, or set the `Ending` date/time and press `Jump` to view a
@@ -399,10 +407,14 @@ loop.
 The History page can graph chlorination control signals:
 
 - `Daily chlorine delivered`: cumulative fluid ounces delivered since local
-  midnight using the configured pump timer timezone.
+  midnight using the configured pump timer timezone. This is a graph snapshot of
+  the persistent chlorine delivery event table, not the source of dose
+  accounting.
 - `Dosing duty cycle`: the current duty cycle during valid dosing time. This is
   logged across the full eligible window, including duty-cycle OFF portions, but
-  not during high-FC holdoff time.
+  not during high-FC holdoff time. Like daily delivered chlorine, it uses
+  `logging.control_measurement_interval_s` plus immediate samples on dosing
+  state/duty-plan changes.
 - `FC demand`: estimated free-chlorine consumption in ppm/day from the latest
   two manual FC tests, logged once per distinct estimate.
 - `Base FC demand`: exponential moving average of FC demand. This is an

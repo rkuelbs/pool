@@ -18,7 +18,7 @@ pump_timer:
   timezone: America/Chicago
   schedules:
   - name: daytime_filter
-    start: 09:30
+    start: '09:30'
     end: '16:30'
     pump_speed: low
     booster: 'off'
@@ -176,6 +176,7 @@ safety:
     pump_high_prime_timeout_s: 30
 logging:
   database_path: data/pi-prod.sqlite3
+  control_measurement_interval_s: 30.0
 mqtt:
   enabled: false
   host: 127.0.0.1

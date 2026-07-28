@@ -31,6 +31,7 @@ from poolctl.services.weather import WEATHER_FIELDS, WeatherObservation
 # Precomputed history buckets used by the GUI for long time ranges: 1 minute,
 # 1 hour, and 1 day. Raw measurement rows are still stored separately.
 ROLLUP_BUCKET_SECONDS = (60, 3600, 86400)
+DEFAULT_CONTROL_MEASUREMENT_INTERVAL_S = 30.0
 
 
 @dataclass(frozen=True)
@@ -40,16 +41,32 @@ class MeasurementLoggingConfig:
     """
 
     database_path: Path = Path("data/poolctl.sqlite3")
+    control_measurement_interval_s: float = DEFAULT_CONTROL_MEASUREMENT_INTERVAL_S
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> MeasurementLoggingConfig:
         logging_data = _mapping_value(data, "logging", default={})
         raw_database_path = logging_data.get("database_path", cls.database_path)
+        raw_control_measurement_interval_s = logging_data.get(
+            "control_measurement_interval_s",
+            cls.control_measurement_interval_s,
+        )
 
         if not isinstance(raw_database_path, str | Path):
             raise ValueError("logging.database_path must be a path string")
+        if not isinstance(raw_control_measurement_interval_s, int | float):
+            raise ValueError("logging.control_measurement_interval_s must be a number")
 
-        return cls(database_path=Path(raw_database_path))
+        control_measurement_interval_s = float(raw_control_measurement_interval_s)
+        if control_measurement_interval_s <= 0:
+            raise ValueError(
+                "logging.control_measurement_interval_s must be greater than zero"
+            )
+
+        return cls(
+            database_path=Path(raw_database_path),
+            control_measurement_interval_s=control_measurement_interval_s,
+        )
 
 
 @dataclass(frozen=True)

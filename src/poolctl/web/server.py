@@ -2150,6 +2150,9 @@ def apply_acquisition_config_update(
 def serialize_logging_config(app: PoolControllerApp) -> dict[str, Any]:
     return {
         "database_path": str(app.measurement_logging_config.database_path),
+        "control_measurement_interval_s": (
+            app.measurement_logging_config.control_measurement_interval_s
+        ),
         "layer_enabled": app.runtime_config.layer_enabled(FeatureLayer.LOGGING),
         "requires_restart": True,
     }
@@ -2243,23 +2246,34 @@ def apply_logging_config_update(
     database_path = payload.get("database_path")
     if not isinstance(database_path, str):
         raise ValueError("database_path must be a string")
+    control_measurement_interval_s = _positive_float(
+        payload.get(
+            "control_measurement_interval_s",
+            app.measurement_logging_config.control_measurement_interval_s,
+        ),
+        "control_measurement_interval_s",
+    )
 
     proposed = MeasurementLoggingConfig.from_mapping(
         {
             "logging": {
                 "database_path": database_path,
+                "control_measurement_interval_s": control_measurement_interval_s,
             }
         }
     )
 
     config_data = _load_config_write_mapping(config_path, local_config_path=local_config_path)
-    config_data["logging"] = {"database_path": str(proposed.database_path)}
+    config_data["logging"] = {
+        "database_path": str(proposed.database_path),
+        "control_measurement_interval_s": proposed.control_measurement_interval_s,
+    }
     _save_config_write_mapping(config_path, local_config_path=local_config_path, data=config_data)
 
     return {
         "updated": True,
         "requires_restart": True,
-        "message": "Logging database path updated on disk. Restart is required to reopen logger.",
+        "message": "Logging config updated on disk. Restart is required to apply it.",
     }
 
 
