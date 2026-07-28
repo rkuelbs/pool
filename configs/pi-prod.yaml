@@ -130,8 +130,8 @@ flow_estimation:
     dirty_value: 8.0
 chlorination:
   enabled: true
-  daily_dose_oz: 0.0
-  pump_output_oz_per_min: 1.7
+  daily_dose_oz: 42.6
+  pump_output_oz_per_min: 1.72
   no_dose_last_minutes: 10.0
   max_duty_cycle: 0.5
   cycle_on_seconds: 60.0
@@ -140,7 +140,7 @@ chlorination:
 fc_demand:
   enabled: true
   mode: observe_only
-  pool_volume_gal: 16000.0
+  pool_volume_gal: 16200.0
   target_fc_ppm: 4.0
   chlorine_strength_percent: 12.0
   minimum_test_interval_hours: 12.0
