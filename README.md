@@ -138,10 +138,39 @@ python -m pytest tests\test_web_live.py tests\test_web_server_config.py
 
 ## Configuration Overview
 
-The active config file controls the deployment. The two main configs are:
+The active config controls the deployment. The two main tracked base configs are:
 
 - `configs/windows-dev.yaml`
 - `configs/pi-prod.yaml`
+
+The Raspberry Pi service can also load an ignored local override file:
+
+- `configs/pi-local.yaml`
+
+At runtime, `pi-local.yaml` is merged on top of `pi-prod.yaml`. Nested mappings
+merge recursively, while lists replace the base list. That means a local
+`pump_timer.schedules` list replaces the tracked schedule list as a whole.
+
+Use this local file for values that change on the actual pool:
+
+- pump timer schedules
+- `allow_dosing` choices per schedule window
+- daily chlorine dose
+- dosing pump calibration rate
+- FC-demand target, pool volume, and operating mode
+- site-specific paths or hardware settings if they differ from the tracked base
+
+`configs/pi-local.yaml` is ignored by git. `configs/pi-local.example.yaml` is a
+tracked template you can copy on the Pi:
+
+```bash
+cp configs/pi-local.example.yaml configs/pi-local.yaml
+```
+
+The dashboard Config and Schedule forms save to the local override when the
+server is started with `--local-config`. This lets `git pull` update
+`configs/pi-prod.yaml` without conflicting with daily schedule and dosing edits
+made on the Pi.
 
 Important sections:
 
@@ -593,6 +622,7 @@ APP_GROUP=pool \
 PROJECT_DIR=/home/pool/projects/pool \
 VENV_DIR=/home/pool/projects/pool/venv \
 CONFIG_PATH=/home/pool/projects/pool/configs/pi-prod.yaml \
+LOCAL_CONFIG_PATH=/home/pool/projects/pool/configs/pi-local.yaml \
 WEB_HOST=0.0.0.0 \
 WEB_PORT=8000 \
 TICK_INTERVAL_S=0.25 \
@@ -633,6 +663,7 @@ APP_GROUP=pool \
 PROJECT_DIR=/home/pool/projects/pool \
 VENV_DIR=/home/pool/projects/pool/venv \
 CONFIG_PATH=/home/pool/projects/pool/configs/pi-prod.yaml \
+LOCAL_CONFIG_PATH=/home/pool/projects/pool/configs/pi-local.yaml \
 WEB_HOST=0.0.0.0 \
 WEB_PORT=8000 \
 TICK_INTERVAL_S=0.25 \
@@ -642,7 +673,9 @@ BACKUP_KEEP_COUNT=720 \
 ./deploy/systemd/install-pi-services.sh
 ```
 
-If you intentionally want to discard local Pi edits to a file before pulling:
+If you still have old local Pi edits in `configs/pi-prod.yaml`, move the local
+sections into `configs/pi-local.yaml`, then restore the tracked base file before
+pulling:
 
 ```bash
 git restore configs/pi-prod.yaml

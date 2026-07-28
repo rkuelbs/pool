@@ -13,6 +13,7 @@ from pathlib import Path
 import yaml  # type: ignore[import-untyped]
 
 from poolctl.app import build_app_from_mapping
+from poolctl.config_files import load_config_with_overrides
 from poolctl.services.clock import SimulatedClock
 from poolctl.web.server import (
     add_chemical_addition,
@@ -138,6 +139,56 @@ def test_apply_pump_timer_update_updates_running_app_and_yaml(tmp_path: Path) ->
     assert saved["pump_timer"]["schedules"][0]["name"] == "evening_filter"
     assert saved["pump_timer"]["schedules"][0]["allow_dosing"] is False
     assert saved["pump_timer"]["timezone"] == "UTC"
+
+
+def test_gui_config_update_can_write_local_override_without_touching_base(tmp_path: Path) -> None:
+    base_path = tmp_path / "pi-prod.yaml"
+    local_path = tmp_path / "pi-local.yaml"
+    base_data = config_mapping()
+    base_path.write_text(yaml.safe_dump(base_data, sort_keys=False), encoding="utf-8")
+    base_before = base_path.read_text(encoding="utf-8")
+    app = build_app_from_mapping(base_data, clock=make_clock())
+
+    result = apply_pump_timer_config_update(
+        app=app,
+        config_path=base_path,
+        local_config_path=local_path,
+        payload={
+            "timezone": "UTC",
+            "schedules": [
+                {
+                    "name": "local_evening",
+                    "start": "18:00",
+                    "end": "21:00",
+                    "pump_speed": "low",
+                    "booster": "off",
+                    "allow_dosing": True,
+                }
+            ],
+        },
+    )
+
+    assert result["timezone"] == "UTC"
+    assert base_path.read_text(encoding="utf-8") == base_before
+    local_data = yaml.safe_load(local_path.read_text(encoding="utf-8"))
+    assert local_data == {
+        "pump_timer": {
+            "timezone": "UTC",
+            "schedules": [
+                {
+                    "name": "local_evening",
+                    "start": "18:00",
+                    "end": "21:00",
+                    "pump_speed": "low",
+                    "booster": "off",
+                    "allow_dosing": True,
+                }
+            ],
+        }
+    }
+    effective = load_config_with_overrides(base_path, local_path=local_path)
+    assert effective["runtime"] == base_data["runtime"]
+    assert effective["pump_timer"]["schedules"][0]["name"] == "local_evening"
 
 
 def test_chlorination_update_applies_live_and_persists(tmp_path: Path) -> None:

@@ -15,6 +15,7 @@ fi
 PROJECT_DIR="${PROJECT_DIR:-$APP_HOME/projects/pool}"
 VENV_DIR="${VENV_DIR:-$PROJECT_DIR/venv}"
 CONFIG_PATH="${CONFIG_PATH:-$PROJECT_DIR/configs/pi-prod.yaml}"
+LOCAL_CONFIG_PATH="${LOCAL_CONFIG_PATH:-$PROJECT_DIR/configs/pi-local.yaml}"
 WEB_HOST="${WEB_HOST:-0.0.0.0}"
 WEB_PORT="${WEB_PORT:-8000}"
 TICK_INTERVAL_S="${TICK_INTERVAL_S:-0.25}"
@@ -48,6 +49,7 @@ render_template() {
     -e "s|__PROJECT_DIR__|$PROJECT_DIR|g" \
     -e "s|__VENV_DIR__|$VENV_DIR|g" \
     -e "s|__CONFIG_PATH__|$CONFIG_PATH|g" \
+    -e "s|__LOCAL_CONFIG_PATH__|$LOCAL_CONFIG_PATH|g" \
     -e "s|__WEB_HOST__|$WEB_HOST|g" \
     -e "s|__WEB_PORT__|$WEB_PORT|g" \
     -e "s|__TICK_INTERVAL_S__|$TICK_INTERVAL_S|g" \
@@ -101,6 +103,7 @@ echo "  APP_GROUP=$APP_GROUP"
 echo "  PROJECT_DIR=$PROJECT_DIR"
 echo "  VENV_DIR=$VENV_DIR"
 echo "  CONFIG_PATH=$CONFIG_PATH"
+echo "  LOCAL_CONFIG_PATH=$LOCAL_CONFIG_PATH"
 echo "  WEB_HOST=$WEB_HOST"
 echo "  WEB_PORT=$WEB_PORT"
 echo "  TICK_INTERVAL_S=$TICK_INTERVAL_S"

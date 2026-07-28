@@ -17,9 +17,8 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-import yaml  # type: ignore[import-untyped]
-
 from poolctl.config import DriverProfile, FeatureLayer, LiveViewConfig, RuntimeConfig
+from poolctl.config_files import load_config_with_overrides
 from poolctl.domain.models import (
     ACTUATOR_AUTO_OFF_AT_METADATA,
     ACTUATOR_ON_PULSE_SECONDS_METADATA,
@@ -1471,18 +1470,13 @@ class PoolControllerApp:
 def build_app_from_config(
     path: str | Path,
     *,
+    local_config_path: str | Path | None = None,
     clock: Clock | None = None,
     actuator_drivers: Iterable[ActuatorDriver] | None = None,
     sensor_drivers: Iterable[SensorDriver] | None = None,
     multi_sensor_drivers: Iterable[MultiSensorDriver] = (),
 ) -> PoolControllerApp:
-    config_path = Path(path)
-
-    with config_path.open("r", encoding="utf-8") as config_file:
-        data = yaml.safe_load(config_file) or {}
-
-    if not isinstance(data, Mapping):
-        raise ValueError("app config file must contain a mapping")
+    data = load_config_with_overrides(path, local_path=local_config_path)
 
     return build_app_from_mapping(
         data,
@@ -1496,9 +1490,10 @@ def build_app_from_config(
 def build_simulated_app(
     path: str | Path,
     *,
+    local_config_path: str | Path | None = None,
     clock: Clock | None = None,
 ) -> PoolControllerApp:
-    return build_app_from_config(path, clock=clock)
+    return build_app_from_config(path, local_config_path=local_config_path, clock=clock)
 
 
 def build_app_from_mapping(

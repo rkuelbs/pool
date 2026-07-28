@@ -17,6 +17,7 @@ import json
 import os
 import threading
 from collections.abc import Coroutine
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from http import HTTPStatus
@@ -27,6 +28,12 @@ from urllib.parse import parse_qs, urlparse
 
 from poolctl.app import PoolControllerApp, build_app_from_config
 from poolctl.config import DriverProfile, FeatureLayer, RuntimeConfig
+from poolctl.config_files import (
+    config_write_path,
+    load_config_with_overrides,
+    load_writable_config_mapping,
+    save_config_mapping,
+)
 from poolctl.domain.models import (
     ActuatorCommand,
     ActuatorId,
@@ -59,9 +66,6 @@ from poolctl.web.live import (
     build_history_series_payload,
     build_live_snapshot,
 )
-
-import yaml  # type: ignore[import-untyped]
-
 
 STATIC_DIR = Path(__file__).with_name("static")
 MAX_EVENT_COUNT = 500
@@ -315,6 +319,7 @@ def _weather_poll_payload(result: WeatherPollResult) -> dict[str, Any]:
 class PoolCtlWebHandler(BaseHTTPRequestHandler):
     app: PoolControllerApp
     config_path: Path
+    local_config_path: Path | None
     event_log: list[dict[str, Any]]
     event_ids: set[str]
     async_runtime: AsyncRuntime
@@ -696,6 +701,7 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             result = apply_runtime_config_update(
                 app=self.app,
                 config_path=self.config_path,
+                local_config_path=self.local_config_path,
                 payload=payload,
             )
         except ValueError as error:
@@ -713,6 +719,7 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             result = apply_pump_timer_config_update(
                 app=self.app,
                 config_path=self.config_path,
+                local_config_path=self.local_config_path,
                 payload=payload,
             )
         except ValueError as error:
@@ -730,6 +737,7 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             result = apply_safety_config_update(
                 app=self.app,
                 config_path=self.config_path,
+                local_config_path=self.local_config_path,
                 payload=payload,
             )
         except ValueError as error:
@@ -760,6 +768,7 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             result = apply_chlorination_config_update(
                 app=self.app,
                 config_path=self.config_path,
+                local_config_path=self.local_config_path,
                 payload=payload,
             )
         except ValueError as error:
@@ -777,6 +786,7 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             result = apply_fc_demand_config_update(
                 app=self.app,
                 config_path=self.config_path,
+                local_config_path=self.local_config_path,
                 payload=payload,
             )
         except ValueError as error:
@@ -794,6 +804,7 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             result = apply_acquisition_config_update(
                 app=self.app,
                 config_path=self.config_path,
+                local_config_path=self.local_config_path,
                 payload=payload,
             )
         except ValueError as error:
@@ -811,6 +822,7 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             result = apply_logging_config_update(
                 app=self.app,
                 config_path=self.config_path,
+                local_config_path=self.local_config_path,
                 payload=payload,
             )
         except ValueError as error:
@@ -828,6 +840,7 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             result = apply_notifications_config_update(
                 app=self.app,
                 config_path=self.config_path,
+                local_config_path=self.local_config_path,
                 payload=payload,
             )
         except ValueError as error:
@@ -837,13 +850,19 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
         self._serve_json(result)
 
     def _serve_analog_input_config(self) -> None:
-        self._serve_json(serialize_analog_input_config(self.config_path))
+        self._serve_json(
+            serialize_analog_input_config(
+                self.config_path,
+                local_config_path=self.local_config_path,
+            )
+        )
 
     def _serve_update_analog_input_config(self) -> None:
         try:
             payload = self._read_json_body()
             result = apply_analog_input_config_update(
                 config_path=self.config_path,
+                local_config_path=self.local_config_path,
                 payload=payload,
             )
         except ValueError as error:
@@ -854,7 +873,10 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
 
     def _serve_ph_sensor_config(self) -> None:
         try:
-            payload = serialize_ph_sensor_config(self.config_path)
+            payload = serialize_ph_sensor_config(
+                self.config_path,
+                local_config_path=self.local_config_path,
+            )
         except ValueError as error:
             self._serve_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
             return
@@ -866,6 +888,7 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             payload = self._read_json_body()
             result = apply_ph_sensor_config_update(
                 config_path=self.config_path,
+                local_config_path=self.local_config_path,
                 payload=payload,
             )
         except ValueError as error:
@@ -881,6 +904,7 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
                 calibrate_ph_sensor_from_config(
                     app=self.app,
                     config_path=self.config_path,
+                    local_config_path=self.local_config_path,
                     payload=payload,
                 )
             )
@@ -1103,13 +1127,14 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
 def create_server(
     *,
     config_path: str | Path,
+    local_config_path: str | Path | None = None,
     host: str,
     port: int,
     sim_speedup: float | None = None,
     tick_interval_s: float = 0.25,
 ) -> ThreadingHTTPServer:
-    clock = simulation_clock(config_path, speedup=sim_speedup)
-    app = build_app_from_config(config_path, clock=clock)
+    clock = simulation_clock(config_path, local_config_path=local_config_path, speedup=sim_speedup)
+    app = build_app_from_config(config_path, local_config_path=local_config_path, clock=clock)
     async_runtime = AsyncRuntime()
     async_runtime.start_tick_loop(app, interval_s=tick_interval_s)
     async_runtime.start_weather_loop(app)
@@ -1119,6 +1144,9 @@ def create_server(
 
     BoundPoolCtlWebHandler.app = app
     BoundPoolCtlWebHandler.config_path = Path(config_path)
+    BoundPoolCtlWebHandler.local_config_path = (
+        Path(local_config_path) if local_config_path is not None else None
+    )
     BoundPoolCtlWebHandler.event_log = []
     BoundPoolCtlWebHandler.event_ids = set()
     BoundPoolCtlWebHandler.async_runtime = async_runtime
@@ -1154,11 +1182,16 @@ async def route_command(app: PoolControllerApp, payload: dict[str, Any]) -> dict
     }
 
 
-def simulation_clock(path: str | Path, *, speedup: float | None) -> Clock | None:
+def simulation_clock(
+    path: str | Path,
+    *,
+    local_config_path: str | Path | None = None,
+    speedup: float | None,
+) -> Clock | None:
     if speedup is None:
         return None
 
-    data = _load_config_mapping(path)
+    data = _load_config_mapping(path, local_config_path=local_config_path)
     runtime_config = RuntimeConfig.from_mapping(data)
     if runtime_config.driver_profile != DriverProfile.SIMULATED:
         return None
@@ -1169,19 +1202,33 @@ def simulation_clock(path: str | Path, *, speedup: float | None) -> Clock | None
     )
 
 
-def _load_config_mapping(path: str | Path) -> dict[str, Any]:
-    with Path(path).open("r", encoding="utf-8") as config_file:
-        data = yaml.safe_load(config_file) or {}
+def _load_config_mapping(
+    path: str | Path,
+    *,
+    local_config_path: str | Path | None = None,
+) -> dict[str, Any]:
+    return load_config_with_overrides(path, local_path=local_config_path)
 
-    if not isinstance(data, dict):
-        raise ValueError("config file must contain a mapping")
 
-    return data
+def _load_config_write_mapping(
+    config_path: str | Path,
+    *,
+    local_config_path: str | Path | None = None,
+) -> dict[str, Any]:
+    return load_writable_config_mapping(config_path, local_path=local_config_path)
 
 
 def _save_config_mapping(path: str | Path, data: dict[str, Any]) -> None:
-    with Path(path).open("w", encoding="utf-8") as config_file:
-        yaml.safe_dump(data, config_file, sort_keys=False)
+    save_config_mapping(path, data)
+
+
+def _save_config_write_mapping(
+    config_path: str | Path,
+    *,
+    local_config_path: str | Path | None = None,
+    data: dict[str, Any],
+) -> None:
+    _save_config_mapping(config_write_path(config_path, local_path=local_config_path), data)
 
 
 def request_process_restart(delay_s: float = 0.4) -> None:
@@ -1730,6 +1777,7 @@ def apply_runtime_config_update(
     *,
     app: PoolControllerApp,
     config_path: Path,
+    local_config_path: Path | None = None,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
     stage = payload.get("stage")
@@ -1745,7 +1793,7 @@ def apply_runtime_config_update(
     ):
         raise ValueError("enabled_layers must be a list of strings")
 
-    config_data = _load_config_mapping(config_path)
+    config_data = _load_config_write_mapping(config_path, local_config_path=local_config_path)
     runtime_data = config_data.setdefault("runtime", {})
     if not isinstance(runtime_data, dict):
         raise ValueError("runtime must be a mapping in config")
@@ -1753,7 +1801,7 @@ def apply_runtime_config_update(
     runtime_data["stage"] = stage
     runtime_data["driver_profile"] = driver_profile
     runtime_data["enabled_layers"] = enabled_layers
-    _save_config_mapping(config_path, config_data)
+    _save_config_write_mapping(config_path, local_config_path=local_config_path, data=config_data)
 
     return {
         "updated": True,
@@ -1784,6 +1832,7 @@ def apply_pump_timer_config_update(
     *,
     app: PoolControllerApp,
     config_path: Path,
+    local_config_path: Path | None = None,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
     schedules_data = payload.get("schedules")
@@ -1801,14 +1850,14 @@ def apply_pump_timer_config_update(
             }
         }
     )
-    config_data = _load_config_mapping(config_path)
+    config_data = _load_config_write_mapping(config_path, local_config_path=local_config_path)
     pump_timer_data = config_data.setdefault("pump_timer", {})
     if not isinstance(pump_timer_data, dict):
         raise ValueError("pump_timer must be a mapping in config")
 
     pump_timer_data["timezone"] = timezone_name
     pump_timer_data["schedules"] = schedules_data
-    _save_config_mapping(config_path, config_data)
+    _save_config_write_mapping(config_path, local_config_path=local_config_path, data=config_data)
 
     app.apply_pump_timer_config(proposed_config)
     return serialize_pump_timer_config(app)
@@ -1856,6 +1905,7 @@ def apply_safety_config_update(
     *,
     app: PoolControllerApp,
     config_path: Path,
+    local_config_path: Path | None = None,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
     safety_data = {
@@ -1868,14 +1918,14 @@ def apply_safety_config_update(
     }
     proposed = SafetyConfig.from_mapping(safety_data)
 
-    config_data = _load_config_mapping(config_path)
+    config_data = _load_config_write_mapping(config_path, local_config_path=local_config_path)
     config_data["safety"] = {
         "pressure_sensor_ids": payload.get("pressure_sensor_ids", {}),
         "freeze_protection": payload.get("freeze_protection", {}),
         "thresholds": payload.get("thresholds", {}),
         "timeouts": payload.get("timeouts", {}),
     }
-    _save_config_mapping(config_path, config_data)
+    _save_config_write_mapping(config_path, local_config_path=local_config_path, data=config_data)
 
     app.apply_safety_config(proposed)
     return {
@@ -1905,11 +1955,12 @@ def apply_chlorination_config_update(
     *,
     app: PoolControllerApp,
     config_path: Path,
+    local_config_path: Path | None = None,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
     proposed = ChlorinationConfig.from_mapping({"chlorination": payload})
 
-    config_data = _load_config_mapping(config_path)
+    config_data = _load_config_write_mapping(config_path, local_config_path=local_config_path)
     config_data["chlorination"] = {
         "enabled": proposed.enabled,
         "daily_dose_oz": proposed.daily_dose_oz,
@@ -1920,7 +1971,7 @@ def apply_chlorination_config_update(
         "max_cycle_period_seconds": proposed.max_cycle_period_seconds,
         "min_cycle_on_seconds": proposed.min_cycle_on_seconds,
     }
-    _save_config_mapping(config_path, config_data)
+    _save_config_write_mapping(config_path, local_config_path=local_config_path, data=config_data)
 
     app.apply_chlorination_config(proposed)
     return {
@@ -1948,11 +1999,12 @@ def apply_fc_demand_config_update(
     *,
     app: PoolControllerApp,
     config_path: Path,
+    local_config_path: Path | None = None,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
     proposed = FcDemandConfig.from_mapping({"fc_demand": payload})
 
-    config_data = _load_config_mapping(config_path)
+    config_data = _load_config_write_mapping(config_path, local_config_path=local_config_path)
     config_data["fc_demand"] = {
         "enabled": proposed.enabled,
         "mode": proposed.mode.value,
@@ -1962,7 +2014,7 @@ def apply_fc_demand_config_update(
         "minimum_test_interval_hours": proposed.minimum_test_interval_hours,
         "max_daily_dose_oz": proposed.max_daily_dose_oz,
     }
-    _save_config_mapping(config_path, config_data)
+    _save_config_write_mapping(config_path, local_config_path=local_config_path, data=config_data)
 
     app.apply_fc_demand_config(proposed)
     return {
@@ -2059,6 +2111,7 @@ def apply_acquisition_config_update(
     *,
     app: PoolControllerApp,
     config_path: Path,
+    local_config_path: Path | None = None,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
     groups = payload.get("groups")
@@ -2080,12 +2133,12 @@ def apply_acquisition_config_update(
 
     _chemistry_sampling_refresh_values(acquisition_data)
 
-    config_data = _load_config_mapping(config_path)
+    config_data = _load_config_write_mapping(config_path, local_config_path=local_config_path)
     config_data["acquisition"] = {
         "groups": groups,
         "chemistry_sampling_refresh": chemistry_sampling_refresh,
     }
-    _save_config_mapping(config_path, config_data)
+    _save_config_write_mapping(config_path, local_config_path=local_config_path, data=config_data)
 
     return {
         "updated": True,
@@ -2125,11 +2178,12 @@ def apply_notifications_config_update(
     *,
     app: PoolControllerApp,
     config_path: Path,
+    local_config_path: Path | None = None,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
     proposed = NotificationsConfig.from_mapping({"notifications": payload})
 
-    config_data = _load_config_mapping(config_path)
+    config_data = _load_config_write_mapping(config_path, local_config_path=local_config_path)
     config_data["notifications"] = {
         "enabled": proposed.enabled,
         "provider": proposed.provider.value,
@@ -2143,7 +2197,7 @@ def apply_notifications_config_update(
             "sound": proposed.pushover.sound,
         },
     }
-    _save_config_mapping(config_path, config_data)
+    _save_config_write_mapping(config_path, local_config_path=local_config_path, data=config_data)
 
     app.apply_notifications_config(proposed)
     return {
@@ -2183,6 +2237,7 @@ def apply_logging_config_update(
     *,
     app: PoolControllerApp,
     config_path: Path,
+    local_config_path: Path | None = None,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
     database_path = payload.get("database_path")
@@ -2197,9 +2252,9 @@ def apply_logging_config_update(
         }
     )
 
-    config_data = _load_config_mapping(config_path)
+    config_data = _load_config_write_mapping(config_path, local_config_path=local_config_path)
     config_data["logging"] = {"database_path": str(proposed.database_path)}
-    _save_config_mapping(config_path, config_data)
+    _save_config_write_mapping(config_path, local_config_path=local_config_path, data=config_data)
 
     return {
         "updated": True,
@@ -2208,8 +2263,12 @@ def apply_logging_config_update(
     }
 
 
-def serialize_analog_input_config(config_path: Path) -> dict[str, Any]:
-    data = _load_config_mapping(config_path)
+def serialize_analog_input_config(
+    config_path: Path,
+    *,
+    local_config_path: Path | None = None,
+) -> dict[str, Any]:
+    data = _load_config_mapping(config_path, local_config_path=local_config_path)
     analog_data = data.get("modbus_analog_input", {})
     if not isinstance(analog_data, dict):
         raise ValueError("modbus_analog_input must be a mapping in config")
@@ -2223,6 +2282,7 @@ def serialize_analog_input_config(config_path: Path) -> dict[str, Any]:
 def apply_analog_input_config_update(
     *,
     config_path: Path,
+    local_config_path: Path | None = None,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
     analog_data = payload.get("modbus_analog_input")
@@ -2231,9 +2291,9 @@ def apply_analog_input_config_update(
 
     WaveshareAnalogInputConfig.from_mapping({"modbus_analog_input": analog_data})
 
-    config_data = _load_config_mapping(config_path)
+    config_data = _load_config_write_mapping(config_path, local_config_path=local_config_path)
     config_data["modbus_analog_input"] = analog_data
-    _save_config_mapping(config_path, config_data)
+    _save_config_write_mapping(config_path, local_config_path=local_config_path, data=config_data)
 
     return {
         "updated": True,
@@ -2242,8 +2302,12 @@ def apply_analog_input_config_update(
     }
 
 
-def serialize_ph_sensor_config(config_path: Path) -> dict[str, Any]:
-    data = _load_config_mapping(config_path)
+def serialize_ph_sensor_config(
+    config_path: Path,
+    *,
+    local_config_path: Path | None = None,
+) -> dict[str, Any]:
+    data = _load_config_mapping(config_path, local_config_path=local_config_path)
     enabled = _bool_config_value(data, "enable_modbus_ph_sensor", False)
     raw_sensor_data = data.get("modbus_ph_sensor", {})
     if not isinstance(raw_sensor_data, dict):
@@ -2275,6 +2339,7 @@ def serialize_ph_sensor_config(config_path: Path) -> dict[str, Any]:
 def apply_ph_sensor_config_update(
     *,
     config_path: Path,
+    local_config_path: Path | None = None,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
     enabled = _bool_payload_value(payload, "enabled", False)
@@ -2282,8 +2347,9 @@ def apply_ph_sensor_config_update(
     if not isinstance(sensor_data, dict):
         raise ValueError("modbus_ph_sensor must be a mapping")
 
-    config_data = _load_config_mapping(config_path)
-    existing_sensor_data = config_data.get("modbus_ph_sensor", {})
+    effective_config = _load_config_mapping(config_path, local_config_path=local_config_path)
+    config_data = _load_config_write_mapping(config_path, local_config_path=local_config_path)
+    existing_sensor_data = effective_config.get("modbus_ph_sensor", {})
     if not isinstance(existing_sensor_data, dict):
         existing_sensor_data = {}
     if "circuit_breaker" not in sensor_data and "circuit_breaker" in existing_sensor_data:
@@ -2308,11 +2374,15 @@ def apply_ph_sensor_config_update(
         "circuit_breaker": _dfrobot_circuit_breaker_payload(breaker),
     }
 
-    runtime = config_data.get("runtime", {})
+    runtime = effective_config.get("runtime", {})
     if isinstance(runtime, dict) and runtime.get("driver_profile") == DriverProfile.RASPBERRY_PI.value:
+        if "acquisition" not in config_data:
+            acquisition = effective_config.get("acquisition")
+            if isinstance(acquisition, dict):
+                config_data["acquisition"] = deepcopy(acquisition)
         _set_acquisition_ph_sensor_ids(config_data, enabled=enabled)
 
-    _save_config_mapping(config_path, config_data)
+    _save_config_write_mapping(config_path, local_config_path=local_config_path, data=config_data)
 
     return {
         "updated": True,
@@ -2320,7 +2390,7 @@ def apply_ph_sensor_config_update(
         "message": (
             "pH sensor config updated on disk. Restart is required to rebuild hardware drivers."
         ),
-        **serialize_ph_sensor_config(config_path),
+        **serialize_ph_sensor_config(config_path, local_config_path=local_config_path),
     }
 
 
@@ -2347,6 +2417,7 @@ async def calibrate_ph_sensor_from_config(
     *,
     app: PoolControllerApp,
     config_path: Path,
+    local_config_path: Path | None = None,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
     if app.runtime_config.driver_profile != DriverProfile.RASPBERRY_PI:
@@ -2361,7 +2432,7 @@ async def calibrate_ph_sensor_from_config(
     if not isinstance(ph_value, int | float):
         raise ValueError("ph_value must be a number")
 
-    data = _load_config_mapping(config_path)
+    data = _load_config_mapping(config_path, local_config_path=local_config_path)
     config = ModbusRegisterDeviceConfig.from_mapping(
         data,
         "modbus_ph_sensor",
@@ -2428,6 +2499,11 @@ def _format_time(hour: int, minute: int) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the poolctl live web dashboard.")
     parser.add_argument("--config", default="configs/windows-dev.yaml")
+    parser.add_argument(
+        "--local-config",
+        default=None,
+        help="Optional local YAML override merged on top of --config. GUI config edits are saved here.",
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument(
@@ -2446,6 +2522,7 @@ def main() -> None:
 
     server = create_server(
         config_path=args.config,
+        local_config_path=args.local_config,
         host=args.host,
         port=args.port,
         sim_speedup=args.sim_speedup,

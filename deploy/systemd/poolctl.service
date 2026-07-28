@@ -10,7 +10,7 @@ Group=pool
 WorkingDirectory=/home/pool/projects/pool
 Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=-/etc/poolctl/poolctl.env
-ExecStart=/home/pool/projects/pool/venv/bin/python -m poolctl.web.server --config /home/pool/projects/pool/configs/pi-prod.yaml --host 0.0.0.0 --port 8000 --tick-interval-s 1.0
+ExecStart=/home/pool/projects/pool/venv/bin/python -m poolctl.web.server --config /home/pool/projects/pool/configs/pi-prod.yaml --local-config /home/pool/projects/pool/configs/pi-local.yaml --host 0.0.0.0 --port 8000 --tick-interval-s 0.25
 Restart=always
 RestartSec=3
 KillSignal=SIGINT

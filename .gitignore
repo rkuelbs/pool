@@ -7,6 +7,10 @@ venv/
 .env
 *.key
 *.pem
+configs/*-local.yaml
+configs/*.local.yaml
+!configs/*-local.example.yaml
+!configs/*.local.example.yaml
 
 .pytest_cache/
 .mypy_cache/

@@ -77,6 +77,7 @@ APP_GROUP=pool \
 PROJECT_DIR=/home/pool/projects/pool \
 VENV_DIR=/home/pool/projects/pool/venv \
 CONFIG_PATH=/home/pool/projects/pool/configs/pi-prod.yaml \
+LOCAL_CONFIG_PATH=/home/pool/projects/pool/configs/pi-local.yaml \
 WEB_HOST=0.0.0.0 \
 WEB_PORT=8000 \
 TICK_INTERVAL_S=0.25 \
@@ -87,6 +88,11 @@ BACKUP_KEEP_COUNT=720 \
 ```
 
 `BACKUP_KEEP_COUNT=720` keeps about 30 days of hourly backups.
+
+`LOCAL_CONFIG_PATH` defaults to `configs/pi-local.yaml`. The file is optional
+and may be missing on first boot. When present, it is merged on top of
+`CONFIG_PATH`; dashboard config edits are saved there so `git pull` can update
+the tracked base config without conflicting with schedule or dose changes.
 
 ## Reinstall or Update Services
 
@@ -99,6 +105,7 @@ APP_GROUP=pool \
 PROJECT_DIR=/home/pool/projects/pool \
 VENV_DIR=/home/pool/projects/pool/venv \
 CONFIG_PATH=/home/pool/projects/pool/configs/pi-prod.yaml \
+LOCAL_CONFIG_PATH=/home/pool/projects/pool/configs/pi-local.yaml \
 WEB_HOST=0.0.0.0 \
 WEB_PORT=8000 \
 TICK_INTERVAL_S=0.25 \

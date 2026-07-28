@@ -1,0 +1,49 @@
+# Copy this file to configs/pi-local.yaml on the Raspberry Pi.
+# configs/pi-local.yaml is ignored by git and is merged on top of pi-prod.yaml
+# at runtime. Put local, frequently changed values here so git pulls can update
+# configs/pi-prod.yaml without conflicting with schedule or dose edits.
+
+pump_timer:
+  timezone: America/Chicago
+  schedules:
+    - name: morning_filter
+      start: "08:00"
+      end: "12:00"
+      pump_speed: low
+      booster: off
+      allow_dosing: true
+    - name: afternoon_filter
+      start: "13:00"
+      end: "16:00"
+      pump_speed: low
+      booster: off
+      allow_dosing: true
+    - name: night_cleaning
+      start: "22:00"
+      end: "23:30"
+      pump_speed: high
+      booster: on
+      allow_dosing: false
+
+chlorination:
+  enabled: true
+  daily_dose_oz: 24.0
+  pump_output_oz_per_min: 1.0
+  no_dose_last_minutes: 10.0
+  max_duty_cycle: 0.5
+  cycle_on_seconds: 60.0
+  max_cycle_period_seconds: 1800.0
+  min_cycle_on_seconds: 5.0
+
+fc_demand:
+  enabled: true
+  mode: observe_only
+  pool_volume_gal: 15000.0
+  target_fc_ppm: 5.0
+  chlorine_strength_percent: 12.0
+  minimum_test_interval_hours: 12.0
+  max_daily_dose_oz: 96.0
+
+# Optional site-specific paths. Leave these out if pi-prod.yaml is correct.
+# logging:
+#   database_path: data/pi-prod.sqlite3

@@ -25,6 +25,8 @@ Core layout:
 configs/
   windows-dev.yaml        Windows simulation profile.
   pi-prod.yaml            Raspberry Pi production profile.
+  pi-local.yaml           Ignored Pi-local override when present.
+  pi-local.example.yaml   Tracked template for common local overrides.
 deploy/systemd/           Pi service and backup installer/templates.
 src/poolctl/
   app.py                  Runtime composition and continuous tick orchestration.
@@ -128,6 +130,13 @@ change to chlorination, FC-demand, diagnostic dosing, or relay mapping.
 - Freeze protection uses raw temperature availability as documented.
 - Pi `pi-prod.yaml` is a real deployment config. Treat changes carefully and
   keep them deployable.
+- Pi deployments can merge ignored `configs/pi-local.yaml` on top of tracked
+  `configs/pi-prod.yaml`. Put frequently changed site-specific values such as
+  schedules, daily chlorine dose, dosing pump rate, and FC-demand settings in
+  the local override. Do not require users to edit `pi-prod.yaml` for daily
+  operational changes.
+- GUI config saves should write to the configured local override when one is
+  active, while reads and runtime builds should use the merged effective config.
 - The config GUI must round-trip new YAML fields. If a web form saves a section,
   it must not silently delete fields it does not display.
 
