@@ -349,8 +349,12 @@ async def test_tick_confirms_dosing_flash_off_after_auto_off_expires() -> None:
 
 
 @pytest.mark.asyncio
-async def test_tick_logs_chlorine_delivery_while_dosing_pump_is_on(tmp_path: Path) -> None:
+async def test_tick_logs_chlorine_delivery_when_dosing_pulse_finishes(
+    tmp_path: Path,
+) -> None:
     clock = make_clock()
+    plant = SimulatedPlant(clock=clock)
+    dosing_driver = PulseAwareDosingActuator(clock)
     config = {
         "runtime": {
             "stage": "open_loop_timer",
@@ -388,18 +392,27 @@ async def test_tick_logs_chlorine_delivery_while_dosing_pump_is_on(tmp_path: Pat
             "cycle_on_seconds": 60.0,
         },
     }
+    actuator_drivers = [
+        driver
+        for driver in build_default_simulated_actuators(plant)
+        if driver.actuator_id != ActuatorId.CHLORINE_DOSING_PUMP
+    ]
+    actuator_drivers.append(dosing_driver)
 
-    app = build_app_from_mapping(config, clock=clock)
+    app = build_app_from_mapping(config, clock=clock, actuator_drivers=actuator_drivers)
     first = await app.tick()
     await clock.advance(30.0)
     second = await app.tick()
+    await clock.advance(30.1)
+    third = await app.tick()
 
     assert first.logged_chlorine_delivery_count == 0
-    assert second.logged_chlorine_delivery_count == 1
+    assert second.logged_chlorine_delivery_count == 0
+    assert third.logged_chlorine_delivery_count == 1
     assert app.measurement_logger is not None
     summary = app.measurement_logger.chlorine_delivery_summary()
-    assert round(summary.runtime_seconds, 3) == 30.0
-    assert round(summary.delivered_oz, 3) == 0.5
+    assert round(summary.runtime_seconds, 3) == 60.0
+    assert round(summary.delivered_oz, 3) == 1.0
     duty_records = app.measurement_logger.history(
         sensor_id=SensorId.CHLORINATION_DUTY_CYCLE_PERCENT,
         limit=10,
@@ -409,12 +422,11 @@ async def test_tick_logs_chlorine_delivery_while_dosing_pump_is_on(tmp_path: Pat
         limit=10,
     )
 
-    assert len(duty_records) == 2
+    assert len(duty_records) == 3
     assert round(duty_records[-1].value, 3) == 3.636
     assert duty_records[-1].unit == "percent"
-    assert len(cumulative_records) == 2
-    assert cumulative_records[0].value == 0.0
-    assert round(cumulative_records[-1].value, 3) == 0.5
+    assert len(cumulative_records) == 1
+    assert round(cumulative_records[-1].value, 3) == 1.0
     assert cumulative_records[-1].unit == "fl oz"
 
 
@@ -423,6 +435,8 @@ async def test_chlorination_control_history_is_throttled_between_state_changes(
     tmp_path: Path,
 ) -> None:
     clock = make_clock()
+    plant = SimulatedPlant(clock=clock)
+    dosing_driver = PulseAwareDosingActuator(clock)
     config = {
         "runtime": {
             "stage": "open_loop_timer",
@@ -463,7 +477,13 @@ async def test_chlorination_control_history_is_throttled_between_state_changes(
         },
     }
 
-    app = build_app_from_mapping(config, clock=clock)
+    actuator_drivers = [
+        driver
+        for driver in build_default_simulated_actuators(plant)
+        if driver.actuator_id != ActuatorId.CHLORINE_DOSING_PUMP
+    ]
+    actuator_drivers.append(dosing_driver)
+    app = build_app_from_mapping(config, clock=clock, actuator_drivers=actuator_drivers)
     await app.tick()
     await clock.advance(1.0)
     await app.tick()
@@ -480,7 +500,7 @@ async def test_chlorination_control_history_is_throttled_between_state_changes(
             sensor_id=SensorId.CHLORINE_DAILY_DELIVERED_OZ,
             limit=10,
         )
-    ) == 1
+    ) == 0
 
     await clock.advance(29.0)
     await app.tick()
@@ -495,8 +515,17 @@ async def test_chlorination_control_history_is_throttled_between_state_changes(
         sensor_id=SensorId.CHLORINE_DAILY_DELIVERED_OZ,
         limit=10,
     )
-    assert len(cumulative_records) == 2
-    assert round(cumulative_records[-1].value, 3) == 0.5
+    assert len(cumulative_records) == 0
+
+    await clock.advance(30.1)
+    await app.tick()
+
+    cumulative_records = app.measurement_logger.history(
+        sensor_id=SensorId.CHLORINE_DAILY_DELIVERED_OZ,
+        limit=10,
+    )
+    assert len(cumulative_records) == 1
+    assert round(cumulative_records[-1].value, 3) == 1.0
 
 
 def test_chlorine_delivery_accounting_stops_at_auto_off_time() -> None:

@@ -94,6 +94,7 @@ from poolctl.services.weather import WeatherConfig, WeatherPollResult, WeatherSe
 
 
 FC_DEMAND_BASE_EMA_ALPHA = 0.35
+DAILY_ENVIRONMENT_SUMMARY_INTERVAL_S = 3600.0
 CHLORINATION_CONTROL_SENSOR_IDS = frozenset(
     {
         SensorId.CHLORINATION_DUTY_CYCLE_PERCENT,
@@ -251,6 +252,11 @@ class PoolControllerApp:
     relay_startup_safe_off_done: bool = False
     relay_last_reconciled_at: datetime | None = None
     chlorine_delivery_checkpoint_at: datetime | None = None
+    chlorine_delivery_segment_started_at: datetime | None = None
+    chlorine_delivery_segment_ended_at: datetime | None = None
+    chlorine_delivery_segment_runtime_s: float = 0.0
+    chlorine_delivery_segment_delivered_oz: float = 0.0
+    chlorine_delivery_snapshot_pending: bool = False
     dosing_prime_until: datetime | None = None
     dosing_prime_started_at: datetime | None = None
     dosing_prime_mode: str = "prime"
@@ -261,6 +267,8 @@ class PoolControllerApp:
     dosing_prime_delivery_exclude_until: datetime | None = None
     chlorination_control_last_logged_at: datetime | None = None
     chlorination_control_last_signature: tuple[Any, ...] | None = None
+    daily_environment_last_checked_at: datetime | None = None
+    fc_demand_last_logged_measurement_id: str | None = None
 
     async def tick(self, *, force_acquisition: bool = False) -> AppTickResult:
         # Measure the tick with a monotonic clock. This is used for loop timing
@@ -790,7 +798,11 @@ class PoolControllerApp:
         plan_adjustment: ChlorinationPlanAdjustment | None = None,
     ) -> tuple[tuple[ActuatorCommandResult, ...], ChlorinationStatus | None, int]:
         if self.chlorination_controller is None:
-            return (), None, self._log_chlorine_delivery_since_last_tick(self.clock.now())
+            logged_delivery_count = self._log_chlorine_delivery_since_last_tick(
+                self.clock.now()
+            )
+            logged_delivery_count += self._flush_chlorine_delivery_if_inactive()
+            return (), None, logged_delivery_count
 
         now = self.clock.now()
         # Delivery is accounted for before issuing a new state command. The
@@ -880,6 +892,7 @@ class PoolControllerApp:
                 if confirmation is not None:
                     results.append(confirmation)
 
+            logged_delivery_count += self._flush_chlorine_delivery_if_inactive()
             return tuple(results), status, logged_delivery_count
 
         for command in evaluation.commands:
@@ -890,6 +903,7 @@ class PoolControllerApp:
             if confirmation is not None:
                 results.append(confirmation)
 
+        logged_delivery_count += self._flush_chlorine_delivery_if_inactive()
         return tuple(results), evaluation.status, logged_delivery_count
 
     async def _confirm_expired_dosing_flash_off(
@@ -945,15 +959,98 @@ class PoolControllerApp:
             return 0
 
         delivered_oz = runtime_seconds / 60.0 * self.chlorination_config.pump_output_oz_per_min
-        return self.measurement_logger.log_chlorine_delivery(
-            observed_at=runtime_end,
+        self._accumulate_chlorine_delivery_segment(
+            started_at=previous,
+            ended_at=runtime_end,
+            runtime_seconds=runtime_seconds,
+            delivered_oz=delivered_oz,
+        )
+        if self._chlorine_delivery_segment_should_flush(
+            sample=sample,
+            runtime_end=runtime_end,
+            now=now,
+        ):
+            return self._flush_chlorine_delivery_segment()
+
+        return 0
+
+    def _accumulate_chlorine_delivery_segment(
+        self,
+        *,
+        started_at: datetime,
+        ended_at: datetime,
+        runtime_seconds: float,
+        delivered_oz: float,
+    ) -> None:
+        segment_started_at = self.chlorine_delivery_segment_started_at
+        if segment_started_at is None:
+            object.__setattr__(self, "chlorine_delivery_segment_started_at", started_at)
+
+        object.__setattr__(self, "chlorine_delivery_segment_ended_at", ended_at)
+        object.__setattr__(
+            self,
+            "chlorine_delivery_segment_runtime_s",
+            self.chlorine_delivery_segment_runtime_s + runtime_seconds,
+        )
+        object.__setattr__(
+            self,
+            "chlorine_delivery_segment_delivered_oz",
+            self.chlorine_delivery_segment_delivered_oz + delivered_oz,
+        )
+
+    def _chlorine_delivery_segment_should_flush(
+        self,
+        *,
+        sample: ActuatorStateSample | None,
+        runtime_end: datetime,
+        now: datetime,
+    ) -> bool:
+        if sample is None:
+            return False
+        if sample.state == ActuatorState.OFF:
+            return True
+
+        auto_off_at = _metadata_datetime(sample.metadata.get(ACTUATOR_AUTO_OFF_AT_METADATA))
+        return auto_off_at is not None and runtime_end >= auto_off_at and now >= auto_off_at
+
+    def _flush_chlorine_delivery_if_inactive(self) -> int:
+        state = self.router.actuator_states.get(ActuatorId.CHLORINE_DOSING_PUMP)
+        if state == ActuatorState.ON:
+            return 0
+
+        return self._flush_chlorine_delivery_segment()
+
+    def _flush_chlorine_delivery_segment(self) -> int:
+        if self.measurement_logger is None:
+            return 0
+
+        runtime_seconds = self.chlorine_delivery_segment_runtime_s
+        delivered_oz = self.chlorine_delivery_segment_delivered_oz
+        if runtime_seconds <= 0 or delivered_oz <= 0:
+            return 0
+
+        started_at = self.chlorine_delivery_segment_started_at
+        ended_at = self.chlorine_delivery_segment_ended_at or self.clock.now()
+        object.__setattr__(self, "chlorine_delivery_segment_started_at", None)
+        object.__setattr__(self, "chlorine_delivery_segment_ended_at", None)
+        object.__setattr__(self, "chlorine_delivery_segment_runtime_s", 0.0)
+        object.__setattr__(self, "chlorine_delivery_segment_delivered_oz", 0.0)
+
+        logged_count = self.measurement_logger.log_chlorine_delivery(
+            observed_at=ended_at,
             runtime_seconds=runtime_seconds,
             delivered_oz=delivered_oz,
             metadata={
-                "source": "runtime_tick",
+                "source": "runtime_segment",
+                "segment_started_at": started_at.isoformat() if started_at else None,
+                "segment_ended_at": ended_at.isoformat(),
                 "pump_output_oz_per_min": self.chlorination_config.pump_output_oz_per_min,
             },
         )
+        if logged_count:
+            object.__setattr__(self, "chlorine_delivery_snapshot_pending", True)
+
+        return logged_count
 
     def _dosing_prime_delivery_exclusion_overlaps(
         self,
@@ -1050,6 +1147,14 @@ class PoolControllerApp:
     ) -> tuple[Measurement, ...]:
         if self.measurement_logger is None:
             return ()
+
+        last_checked_at = self.daily_environment_last_checked_at
+        if last_checked_at is not None:
+            elapsed_s = (observed_at - last_checked_at).total_seconds()
+            if 0 <= elapsed_s < DAILY_ENVIRONMENT_SUMMARY_INTERVAL_S:
+                return ()
+
+        object.__setattr__(self, "daily_environment_last_checked_at", observed_at)
 
         local_day, start_utc, end_utc, summary_observed_at = _completed_local_day_window(
             observed_at,
@@ -1207,20 +1312,7 @@ class PoolControllerApp:
                 )
             )
 
-        if (
-            chlorination_status is not None
-            and (
-                (
-                    chlorination_status.enabled
-                    and chlorination_status.layer_enabled
-                    and chlorination_status.eligible_window_active
-                    and chlorination_status.duty_cycle > 0
-                )
-                or self.router.actuator_states.get(ActuatorId.CHLORINE_DOSING_PUMP)
-                == ActuatorState.ON
-            )
-            and self.measurement_logger is not None
-        ):
+        if self.chlorine_delivery_snapshot_pending and self.measurement_logger is not None:
             local_day_start = _local_day_start(
                 observed_at,
                 timezone_name=self.pump_timer_config.timezone,
@@ -1245,15 +1337,20 @@ class PoolControllerApp:
                     },
                 )
             )
+            object.__setattr__(self, "chlorine_delivery_snapshot_pending", False)
 
         if (
             fc_demand_status is not None
             and fc_demand_status.ready
             and fc_demand_status.daily_demand_ppm is not None
         ):
+            fc_demand_measurement_id = _fc_demand_measurement_id(fc_demand_status)
+            if fc_demand_measurement_id == self.fc_demand_last_logged_measurement_id:
+                return tuple(measurements)
+
             measurements.append(
                 Measurement(
-                    id=_fc_demand_measurement_id(fc_demand_status),
+                    id=fc_demand_measurement_id,
                     sensor_id=SensorId.FC_DEMAND_PPM_PER_DAY,
                     observed_at=(
                         fc_demand_status.current_sampled_at
@@ -1306,6 +1403,11 @@ class PoolControllerApp:
                     ),
                 )
             )
+            object.__setattr__(
+                self,
+                "fc_demand_last_logged_measurement_id",
+                fc_demand_measurement_id,
+            )
 
         return tuple(measurements)
 
@@ -1326,10 +1428,15 @@ class PoolControllerApp:
         stable by logging immediately on important state/config changes, then at
         a configured heartbeat while the state remains unchanged.
         """
-        chlorination_measurements = tuple(
+        duty_cycle_measurements = tuple(
             measurement
             for measurement in measurements
-            if measurement.sensor_id in CHLORINATION_CONTROL_SENSOR_IDS
+            if measurement.sensor_id == SensorId.CHLORINATION_DUTY_CYCLE_PERCENT
+        )
+        delivery_measurements = tuple(
+            measurement
+            for measurement in measurements
+            if measurement.sensor_id == SensorId.CHLORINE_DAILY_DELIVERED_OZ
         )
         other_measurements = tuple(
             measurement
@@ -1337,16 +1444,16 @@ class PoolControllerApp:
             if measurement.sensor_id not in CHLORINATION_CONTROL_SENSOR_IDS
         )
 
-        if not chlorination_measurements:
-            return other_measurements
+        if not duty_cycle_measurements:
+            return other_measurements + delivery_measurements
 
         if self._chlorination_control_log_due(
             chlorination_status=chlorination_status,
             observed_at=observed_at,
         ):
-            return other_measurements + chlorination_measurements
+            return other_measurements + delivery_measurements + duty_cycle_measurements
 
-        return other_measurements
+        return other_measurements + delivery_measurements
 
     def _chlorination_control_log_due(
         self,
