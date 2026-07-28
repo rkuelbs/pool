@@ -399,6 +399,7 @@ async def test_tick_logs_chlorine_delivery_when_dosing_pulse_finishes(
     ]
     actuator_drivers.append(dosing_driver)
 
+    start = clock.now()
     app = build_app_from_mapping(config, clock=clock, actuator_drivers=actuator_drivers)
     first = await app.tick()
     await clock.advance(30.0)
@@ -425,9 +426,28 @@ async def test_tick_logs_chlorine_delivery_when_dosing_pulse_finishes(
     assert len(duty_records) == 3
     assert round(duty_records[-1].value, 3) == 3.636
     assert duty_records[-1].unit == "percent"
-    assert len(cumulative_records) == 1
-    assert round(cumulative_records[-1].value, 3) == 1.0
+    assert len(cumulative_records) == 2
+    assert [record.observed_at for record in cumulative_records] == [
+        start,
+        start + timedelta(seconds=60),
+    ]
+    assert [round(record.value, 3) for record in cumulative_records] == [0.0, 1.0]
     assert cumulative_records[-1].unit == "fl oz"
+    assert cumulative_records[0].metadata["snapshot_boundary"] == "start"
+    assert cumulative_records[-1].metadata["snapshot_boundary"] == "end"
+
+    await clock.advance(1589.9)
+    fourth = await app.tick()
+    assert fourth.logged_chlorine_delivery_count == 0
+    cumulative_records = app.measurement_logger.history(
+        sensor_id=SensorId.CHLORINE_DAILY_DELIVERED_OZ,
+        limit=10,
+    )
+
+    assert len(cumulative_records) == 3
+    assert cumulative_records[-1].observed_at == start + timedelta(seconds=1650)
+    assert round(cumulative_records[-1].value, 3) == 1.0
+    assert cumulative_records[-1].metadata["snapshot_boundary"] == "start"
 
 
 @pytest.mark.asyncio
@@ -500,7 +520,7 @@ async def test_chlorination_control_history_is_throttled_between_state_changes(
             sensor_id=SensorId.CHLORINE_DAILY_DELIVERED_OZ,
             limit=10,
         )
-    ) == 0
+    ) == 1
 
     await clock.advance(29.0)
     await app.tick()
@@ -515,7 +535,9 @@ async def test_chlorination_control_history_is_throttled_between_state_changes(
         sensor_id=SensorId.CHLORINE_DAILY_DELIVERED_OZ,
         limit=10,
     )
-    assert len(cumulative_records) == 0
+    assert len(cumulative_records) == 1
+    assert round(cumulative_records[-1].value, 3) == 0.0
+    assert cumulative_records[-1].metadata["snapshot_boundary"] == "start"
 
     await clock.advance(30.1)
     await app.tick()
@@ -524,8 +546,9 @@ async def test_chlorination_control_history_is_throttled_between_state_changes(
         sensor_id=SensorId.CHLORINE_DAILY_DELIVERED_OZ,
         limit=10,
     )
-    assert len(cumulative_records) == 1
+    assert len(cumulative_records) == 2
     assert round(cumulative_records[-1].value, 3) == 1.0
+    assert cumulative_records[-1].metadata["snapshot_boundary"] == "end"
 
 
 def test_chlorine_delivery_accounting_stops_at_auto_off_time() -> None:

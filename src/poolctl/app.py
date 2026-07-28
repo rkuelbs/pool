@@ -256,7 +256,7 @@ class PoolControllerApp:
     chlorine_delivery_segment_ended_at: datetime | None = None
     chlorine_delivery_segment_runtime_s: float = 0.0
     chlorine_delivery_segment_delivered_oz: float = 0.0
-    chlorine_delivery_snapshot_pending: bool = False
+    chlorine_delivery_snapshot_points: tuple[tuple[datetime, str], ...] = ()
     dosing_prime_until: datetime | None = None
     dosing_prime_started_at: datetime | None = None
     dosing_prime_mode: str = "prime"
@@ -896,7 +896,12 @@ class PoolControllerApp:
             return tuple(results), status, logged_delivery_count
 
         for command in evaluation.commands:
-            results.append(await self.router.route(command, measurements=measurements))
+            result = await self.router.route(command, measurements=measurements)
+            results.append(result)
+            self._queue_chlorine_delivery_start_snapshot(
+                command=command,
+                result=result,
+            )
 
         if not results and evaluation.status.desired_state == ActuatorState.OFF:
             confirmation = await self._confirm_expired_dosing_flash_off(now)
@@ -935,6 +940,44 @@ class PoolControllerApp:
                     ),
                 },
             )
+        )
+
+    def _queue_chlorine_delivery_start_snapshot(
+        self,
+        *,
+        command: ActuatorCommand,
+        result: ActuatorCommandResult,
+    ) -> None:
+        if self.measurement_logger is None:
+            return
+        if not result.applied:
+            return
+        if command.actuator_id != ActuatorId.CHLORINE_DOSING_PUMP:
+            return
+        if command.state != ActuatorState.ON:
+            return
+        if command.metadata.get("controller") != "open_loop_chlorination":
+            return
+
+        self._queue_chlorine_delivery_snapshot(
+            observed_at=command.created_at,
+            boundary="start",
+        )
+
+    def _queue_chlorine_delivery_snapshot(
+        self,
+        *,
+        observed_at: datetime,
+        boundary: str,
+    ) -> None:
+        point = (observed_at, boundary)
+        if point in self.chlorine_delivery_snapshot_points:
+            return
+
+        object.__setattr__(
+            self,
+            "chlorine_delivery_snapshot_points",
+            (*self.chlorine_delivery_snapshot_points, point),
         )
 
     def _log_chlorine_delivery_since_last_tick(self, now: datetime) -> int:
@@ -1048,7 +1091,10 @@ class PoolControllerApp:
             },
         )
         if logged_count:
-            object.__setattr__(self, "chlorine_delivery_snapshot_pending", True)
+            self._queue_chlorine_delivery_snapshot(
+                observed_at=ended_at,
+                boundary="end",
+            )
 
         return logged_count
 
@@ -1312,32 +1358,35 @@ class PoolControllerApp:
                 )
             )
 
-        if self.chlorine_delivery_snapshot_pending and self.measurement_logger is not None:
-            local_day_start = _local_day_start(
-                observed_at,
-                timezone_name=self.pump_timer_config.timezone,
-            )
-            daily_delivery = self.measurement_logger.chlorine_delivery_summary(
-                since=local_day_start,
-                until=observed_at,
-            )
-            measurements.append(
-                Measurement(
-                    sensor_id=SensorId.CHLORINE_DAILY_DELIVERED_OZ,
-                    observed_at=observed_at,
-                    kind=MeasurementKind.ESTIMATED,
-                    value=round(daily_delivery.delivered_oz, 3),
-                    unit="fl oz",
-                    quality=Quality.GOOD,
-                    metadata={
-                        "driver": "chlorination_controller",
-                        "source": "chlorine_delivery",
-                        "local_day_start": local_day_start.isoformat(),
-                        "runtime_seconds_today": daily_delivery.runtime_seconds,
-                    },
+        if self.chlorine_delivery_snapshot_points and self.measurement_logger is not None:
+            snapshot_points = self.chlorine_delivery_snapshot_points
+            object.__setattr__(self, "chlorine_delivery_snapshot_points", ())
+            for snapshot_observed_at, boundary in snapshot_points:
+                local_day_start = _local_day_start(
+                    snapshot_observed_at,
+                    timezone_name=self.pump_timer_config.timezone,
                 )
-            )
-            object.__setattr__(self, "chlorine_delivery_snapshot_pending", False)
+                daily_delivery = self.measurement_logger.chlorine_delivery_summary(
+                    since=local_day_start,
+                    until=snapshot_observed_at,
+                )
+                measurements.append(
+                    Measurement(
+                        sensor_id=SensorId.CHLORINE_DAILY_DELIVERED_OZ,
+                        observed_at=snapshot_observed_at,
+                        kind=MeasurementKind.ESTIMATED,
+                        value=round(daily_delivery.delivered_oz, 3),
+                        unit="fl oz",
+                        quality=Quality.GOOD,
+                        metadata={
+                            "driver": "chlorination_controller",
+                            "source": "chlorine_delivery",
+                            "snapshot_boundary": boundary,
+                            "local_day_start": local_day_start.isoformat(),
+                            "runtime_seconds_today": daily_delivery.runtime_seconds,
+                        },
+                    )
+                )
 
         if (
             fc_demand_status is not None

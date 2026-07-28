@@ -320,11 +320,14 @@ Most physical sensors are already logged at their acquisition group's
 `Daily chlorine delivered`, are produced every runtime tick for live status but
 are persisted using `logging.control_measurement_interval_s` plus immediate
 samples when the dosing state or duty plan changes. Completed chlorine delivery
-is stored as one event row per completed dosing segment, and the cumulative
-daily-delivered graph snapshot is emitted from those delivery events rather
-than during every OFF tick. Daily water/weather summary generation is checked
-hourly. These rules keep long history windows useful with the 0.25 s control
-loop instead of filling the database with duplicate-style status rows.
+is stored as one event row per completed dosing segment. The cumulative
+daily-delivered graph logs boundary snapshots for each normal dose: the current
+total at the start of the dosing segment, then the new total after the completed
+segment is recorded. That gives history charts flat lines between pulses and a
+slope only during the actual dosing runtime. Daily water/weather summary
+generation is checked hourly. These rules keep long history windows useful with
+the 0.25 s control loop instead of filling the database with duplicate-style
+status rows.
 
 The range selector controls the window length, not necessarily how far back the
 database query can go. Use `Prev` and `Next` to move that same high-resolution
@@ -412,8 +415,8 @@ The History page can graph chlorination control signals:
 - `Daily chlorine delivered`: cumulative fluid ounces delivered since local
   midnight using the configured pump timer timezone. This is a graph snapshot of
   the persistent chlorine delivery event table, not the source of dose
-  accounting. A new snapshot is logged after a completed dosing segment is
-  recorded.
+  accounting. Normal dosing logs one snapshot at segment start with the current
+  total and one at segment end with the updated total.
 - `Dosing duty cycle`: the current duty cycle during valid dosing time. This is
   logged across the full eligible window, including duty-cycle OFF portions, but
   not during high-FC holdoff time. Like daily delivered chlorine, it uses
