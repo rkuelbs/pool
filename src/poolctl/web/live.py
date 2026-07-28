@@ -297,6 +297,7 @@ def build_history_payload(
     validated_only: bool = True,
     resolution: str = "auto",
     max_points: int = 1500,
+    until: datetime | None = None,
 ) -> dict[str, Any]:
     """
     Serialize logged measurement history for one sensor.
@@ -307,19 +308,23 @@ def build_history_payload(
     if limit < 1:
         raise ValueError("limit must be at least 1")
 
+    window_until = until if until is not None else app.clock.now()
+    since = window_until - timedelta(hours=hours)
+
     if app.measurement_logger is None:
         return {
             "sensor_id": sensor_id.value,
+            "hours": hours,
+            "since": since.isoformat(),
+            "until": window_until.isoformat(),
             "points": [],
         }
 
-    now = app.clock.now()
-    since = now - timedelta(hours=hours)
     bucket_seconds = history_bucket_seconds(hours=hours, resolution=resolution, validated_only=validated_only)
     records = app.measurement_logger.history_with_rollup(
         sensor_id=sensor_id,
         since=since,
-        until=now,
+        until=window_until,
         limit=limit,
         qualities=(Quality.GOOD,) if validated_only else None,
         bucket_seconds=bucket_seconds,
@@ -328,6 +333,9 @@ def build_history_payload(
 
     return {
         "sensor_id": sensor_id.value,
+        "hours": hours,
+        "since": since.isoformat(),
+        "until": window_until.isoformat(),
         "points": [
             measurement_payload(
                 record.sensor_id,
@@ -348,6 +356,7 @@ def build_history_series_payload(
     validated_only: bool = True,
     resolution: str = "auto",
     max_points: int = 1500,
+    until: datetime | None = None,
 ) -> dict[str, Any]:
     if not sensor_ids:
         raise ValueError("at least one sensor_id is required")
@@ -358,14 +367,20 @@ def build_history_series_payload(
     if limit < 1:
         raise ValueError("limit must be at least 1")
 
+    window_until = until if until is not None else app.clock.now()
+    since = window_until - timedelta(hours=hours)
+
     if app.measurement_logger is None:
         return {
             "sensor_ids": [sensor_id.value if isinstance(sensor_id, SensorId) else str(sensor_id) for sensor_id in sensor_ids],
+            "validated_only": validated_only,
+            "bucket_seconds": history_bucket_seconds(hours=hours, resolution=resolution, validated_only=validated_only),
+            "hours": hours,
+            "since": since.isoformat(),
+            "until": window_until.isoformat(),
             "series": [],
         }
 
-    now = app.clock.now()
-    since = now - timedelta(hours=hours)
     bucket_seconds = history_bucket_seconds(hours=hours, resolution=resolution, validated_only=validated_only)
     series = []
     for sensor_token in sensor_ids:
@@ -386,7 +401,7 @@ def build_history_series_payload(
             records = app.measurement_logger.history_with_rollup(
                 sensor_id=sensor_id,
                 since=since,
-                until=now,
+                until=window_until,
                 limit=limit,
                 qualities=(Quality.GOOD,) if validated_only else None,
                 bucket_seconds=bucket_seconds,
@@ -415,7 +430,7 @@ def build_history_series_payload(
             lab_points = app.measurement_logger.lab_value_history(
                 field=str(lab_spec["field"]),
                 since=since,
-                until=now,
+                until=window_until,
                 limit=limit,
             )
             points = [
@@ -446,7 +461,7 @@ def build_history_series_payload(
             addition_points = app.measurement_logger.chemical_addition_value_history(
                 chemical=chemical_spec["chemical"],
                 since=since,
-                until=now,
+                until=window_until,
                 limit=limit,
             )
             points = [
@@ -479,7 +494,7 @@ def build_history_series_payload(
         weather_points = app.measurement_logger.weather_history(
             field=field,
             since=since,
-            until=now,
+            until=window_until,
             limit=limit,
         )
         unit = (
@@ -511,6 +526,9 @@ def build_history_series_payload(
         "sensor_ids": [sensor_id.value if isinstance(sensor_id, SensorId) else str(sensor_id) for sensor_id in sensor_ids],
         "validated_only": validated_only,
         "bucket_seconds": bucket_seconds,
+        "hours": hours,
+        "since": since.isoformat(),
+        "until": window_until.isoformat(),
         "series": series,
     }
 

@@ -629,10 +629,13 @@ h2 {
 
 .history-controls {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
 .history-controls select,
+.history-controls input,
+.history-controls button,
 #timerAddRow,
 #timerReload,
 #timerSave,
@@ -664,6 +667,18 @@ h2 {
   font-size: 12px;
   min-height: 32px;
   padding: 4px 8px;
+}
+
+.history-anchor-control {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: 12px;
+  gap: 6px;
+}
+
+.history-anchor-control input {
+  min-width: 185px;
 }
 
 #timerAddRow,
@@ -713,6 +728,11 @@ h2 {
 #safetyClearLockout {
   background: #fff0ee;
   border-color: #efb2ab;
+}
+
+.history-controls button:disabled {
+  color: #9aa6b2;
+  cursor: default;
 }
 
 .history-chart {
@@ -1172,7 +1192,17 @@ h2 {
     width: 100%;
   }
 
-  .history-controls select {
+  .history-controls select,
+  .history-controls button {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .history-anchor-control {
+    width: 100%;
+  }
+
+  .history-anchor-control input {
     flex: 1;
     min-width: 0;
   }

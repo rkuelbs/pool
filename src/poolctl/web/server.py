@@ -553,6 +553,7 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             validated_only = _bool_query_value(query, "validated_only", True)
             resolution = _string_query_value(query, "resolution", "auto")
             max_points = _int_query_value(query, "max_points", 1500)
+            until = _datetime_query_value(query, "until", self.app.clock.now())
 
             if len(sensor_ids) == 1 and sensor_ids[0] not in EXTRA_HISTORY_IDS:
                 payload = build_history_payload(
@@ -563,6 +564,7 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
                     validated_only=validated_only,
                     resolution=resolution,
                     max_points=max_points,
+                    until=until,
                 )
             else:
                 payload = build_history_series_payload(
@@ -573,6 +575,7 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
                     validated_only=validated_only,
                     resolution=resolution,
                     max_points=max_points,
+                    until=until,
                 )
         except ValueError as error:
             self._serve_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
@@ -592,6 +595,7 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             validated_only = _bool_query_value(query, "validated_only", True)
             resolution = _string_query_value(query, "resolution", "auto")
             max_points = _int_query_value(query, "max_points", 1500)
+            until = _datetime_query_value(query, "until", self.app.clock.now())
             payload = build_history_series_payload(
                 self.app,
                 sensor_ids=tuple(sensor_ids),
@@ -600,6 +604,7 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
                 validated_only=validated_only,
                 resolution=resolution,
                 max_points=max_points,
+                until=until,
             )
             csv_content = _history_csv_content(payload)
         except ValueError as error:
@@ -1297,6 +1302,28 @@ def _string_query_value(
         return default
 
     return values[0]
+
+
+def _datetime_query_value(
+    query: dict[str, list[str]],
+    key: str,
+    default: datetime,
+) -> datetime:
+    values = query.get(key)
+    if not values or not values[0].strip():
+        return default
+
+    value = values[0].strip()
+    if value.endswith("Z"):
+        value = f"{value[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as error:
+        raise ValueError(f"{key} must be an ISO timestamp") from error
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def _bool_query_value(

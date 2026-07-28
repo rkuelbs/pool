@@ -255,9 +255,10 @@ rolling filter.
   pump controls, chlorination dose target, FC-demand status, safety status, CPU
   temperature/load/fan status on Pi, and runtime loop timing.
 - History: measurement/weather/test-result/chemical-addition charts with
-  selectable series, hover readouts, automatic rollup resolution, CSV export,
-  water-test and chemical-addition entry, and single-axis or multi-axis scaling
-  depending on selected signal ranges.
+  selectable series, hover readouts, automatic rollup resolution, past-window
+  navigation, calendar/time jump, CSV export, water-test and chemical-addition
+  entry, and single-axis or multi-axis scaling depending on selected signal
+  ranges.
 - Schedule: pump timer schedule editor, including a per-window dosing checkbox
   for excluding cleaning/night runs from liquid chlorine dosing.
 - Config: forms for runtime layers, safety, chlorination, FC demand,
@@ -271,8 +272,8 @@ drivers or long-lived services must be rebuilt.
 ## History and Rollups
 
 The logger stores raw measurement rows and maintains 1-minute, 1-hour, and
-1-day rollups for continuous measurements. The History page currently requests
-`auto` resolution:
+1-day rollups for continuous measurements. The History page requests `auto`
+resolution based on the selected window length:
 
 - Up to 48 hours: raw logged points.
 - More than 48 hours through 14 days: 1-minute rollups.
@@ -284,6 +285,12 @@ selected range. The chart uses one y-axis when selected traces have similar
 ranges and centers; otherwise it gives traces separate color-matched axes.
 Lab tests and chemical additions are plotted as point/event series rather than
 continuous sensor streams.
+
+The range selector controls the window length, not necessarily how far back the
+database query can go. Use `Prev` and `Next` to move that same high-resolution
+window through history, or set the `Ending` date/time and press `Jump` to view a
+specific past day. `Now` returns the chart to the live rolling window. CSV export
+uses the same selected window shown on the chart.
 
 ## Open-loop Chlorination
 

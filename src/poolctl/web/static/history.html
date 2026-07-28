@@ -166,6 +166,13 @@
               <option value="720">30 days</option>
               <option value="8760">1 year</option>
             </select>
+            <button id="historyPrevWindow" type="button">Prev</button>
+            <button id="historyNextWindow" type="button">Next</button>
+            <label class="history-anchor-control">Ending
+              <input id="historyUntil" type="datetime-local">
+            </label>
+            <button id="historyApplyUntil" type="button">Jump</button>
+            <button id="historyNow" type="button">Now</button>
             <select id="historyValidity" aria-label="History validity">
               <option value="validated" selected>Validated</option>
               <option value="all">Raw + validated</option>

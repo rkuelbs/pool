@@ -209,6 +209,7 @@ const HISTORY_AXIS_EPSILON = 1e-6;
 let historyLoading = false;
 let lastHistoryLoadedAt = 0;
 let lastHistoryKey = "";
+let historyUntilMs = null;
 let timerConfigLoading = false;
 let timerConfigSaving = false;
 let faultLoading = false;
@@ -1463,11 +1464,13 @@ async function refreshHistory(force) {
   updateHistoryChecklistAppearance();
   const sensorIds = selectedHistorySensorIds();
   const validatedOnly = validitySelect.value !== "all";
-  const key = `${sensorIds.join(",")}:${hoursSelect.value}:${validatedOnly}`;
+  const untilIso = historyUntilMs === null ? "" : new Date(historyUntilMs).toISOString();
+  const key = `${sensorIds.join(",")}:${hoursSelect.value}:${validatedOnly}:${untilIso}`;
   const now = Date.now();
+  updateHistoryWindowControls();
 
   if (!sensorIds.length) {
-    drawHistoryChartSeries([]);
+    drawHistoryChartSeries([], currentHistoryWindow());
     status.textContent = "Select one or more sensors";
     return;
   }
@@ -1492,6 +1495,9 @@ async function refreshHistory(force) {
       max_points: "1800",
       resolution: "auto",
     });
+    if (untilIso) {
+      params.set("until", untilIso);
+    }
     sensorIds.forEach((sensorId) => params.append("sensor_id", sensorId));
     const response = await fetch(`/api/history?${params.toString()}`, { cache: "no-store" });
     const payload = await parseApiResponse(
@@ -1501,11 +1507,11 @@ async function refreshHistory(force) {
     );
 
     const series = normalizeHistorySeries(payload);
-    drawHistoryChartSeries(series);
+    drawHistoryChartSeries(series, historyWindowFromPayload(payload));
     lastHistoryKey = key;
     lastHistoryLoadedAt = now;
   } catch (error) {
-    drawHistoryChartSeries([]);
+    drawHistoryChartSeries([], currentHistoryWindow());
     status.textContent = error.message;
   } finally {
     historyLoading = false;
@@ -1530,7 +1536,7 @@ function normalizeHistorySeries(payload) {
   return [];
 }
 
-function drawHistoryChartSeries(series) {
+function drawHistoryChartSeries(series, windowInfo = null) {
   const chart = document.getElementById("historyChart");
   const status = document.getElementById("historyStatus");
   chart.replaceChildren();
@@ -1567,13 +1573,20 @@ function drawHistoryChartSeries(series) {
   const allPoints = chartSeries.flatMap((entry) => entry.points);
   if (!allPoints.length) {
     chart.appendChild(svgText("No logged measurements yet", width / 2, height / 2, "history-empty"));
-    status.textContent = "Waiting for loggable samples";
+    const windowLabel = windowInfo ? ` in ${historyWindowLabel(windowInfo)}` : "";
+    status.textContent = `Waiting for loggable samples${windowLabel}`;
     return;
   }
 
   const times = allPoints.map((point) => point._time);
-  const minTime = Math.min(...times);
-  const maxTime = Math.max(...times);
+  let minTime = Math.min(...times);
+  let maxTime = Math.max(...times);
+  const windowStartMs = windowInfo ? Number(windowInfo.startMs) : NaN;
+  const windowEndMs = windowInfo ? Number(windowInfo.endMs) : NaN;
+  if (Number.isFinite(windowStartMs) && Number.isFinite(windowEndMs) && windowEndMs > windowStartMs) {
+    minTime = windowStartMs;
+    maxTime = windowEndMs;
+  }
 
   // Alternate per-series axes left/right so each trace gets its own fitted scale.
   const leftAxisCount = Math.ceil(chartSeries.length / 2);
@@ -1737,7 +1750,8 @@ function drawHistoryChartSeries(series) {
     plotHeight,
   });
 
-  status.textContent = `${allPoints.length} points across ${withAxes.length} sensors`;
+  const windowLabel = historyWindowLabel({ startMs: minTime, endMs: maxTime });
+  status.textContent = `${allPoints.length} points across ${withAxes.length} sensors | ${windowLabel}`;
 }
 
 function appendHistorySeriesTrace(chart, entry, coordinates) {
@@ -1922,6 +1936,98 @@ function nearestPoint(seriesEntry, timestamp) {
   return { label: seriesEntry.label || seriesEntry.sensor_id, point: best };
 }
 
+function currentHistoryWindow() {
+  const hours = selectedHistoryHours();
+  const endMs = historyUntilMs === null ? historyReferenceNowMs() : historyUntilMs;
+  if (!Number.isFinite(hours) || hours <= 0 || !Number.isFinite(endMs)) {
+    return null;
+  }
+  return {
+    startMs: endMs - hours * 3600 * 1000,
+    endMs,
+  };
+}
+
+function historyWindowFromPayload(payload) {
+  const startMs = payload && payload.since ? new Date(payload.since).getTime() : NaN;
+  const endMs = payload && payload.until ? new Date(payload.until).getTime() : NaN;
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+    return currentHistoryWindow();
+  }
+  return { startMs, endMs };
+}
+
+function selectedHistoryHours() {
+  const select = document.getElementById("historyHours");
+  return select ? Number(select.value) : 24;
+}
+
+function historyReferenceNowMs() {
+  const observedAt = latestLivePayload ? new Date(latestLivePayload.observed_at).getTime() : NaN;
+  return Number.isFinite(observedAt) ? observedAt : Date.now();
+}
+
+function historyWindowLabel(windowInfo) {
+  if (!windowInfo) {
+    return "live window";
+  }
+  const start = new Date(windowInfo.startMs);
+  const end = new Date(windowInfo.endMs);
+  return `${start.toLocaleString()} to ${end.toLocaleString()}`;
+}
+
+function datetimeLocalValue(timestampMs) {
+  const date = new Date(timestampMs);
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60 * 1000);
+  return local.toISOString().slice(0, 16);
+}
+
+function parseHistoryUntilInput() {
+  const input = document.getElementById("historyUntil");
+  if (!input || !input.value) {
+    return null;
+  }
+  const parsed = new Date(input.value).getTime();
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function setHistoryUntil(timestampMs) {
+  const now = historyReferenceNowMs();
+  if (timestampMs === null || !Number.isFinite(timestampMs) || timestampMs >= now) {
+    historyUntilMs = null;
+  } else {
+    historyUntilMs = timestampMs;
+  }
+  updateHistoryWindowControls();
+  refreshHistory(true);
+}
+
+function shiftHistoryWindow(direction) {
+  const hours = selectedHistoryHours();
+  if (!Number.isFinite(hours) || hours <= 0) {
+    return;
+  }
+  const baseMs = historyUntilMs === null ? historyReferenceNowMs() : historyUntilMs;
+  setHistoryUntil(baseMs + direction * hours * 3600 * 1000);
+}
+
+function updateHistoryWindowControls() {
+  const input = document.getElementById("historyUntil");
+  const nextButton = document.getElementById("historyNextWindow");
+  const nowButton = document.getElementById("historyNow");
+  if (input) {
+    if (document.activeElement !== input) {
+      input.value = datetimeLocalValue(historyUntilMs === null ? historyReferenceNowMs() : historyUntilMs);
+    }
+  }
+  if (nextButton) {
+    nextButton.disabled = historyUntilMs === null;
+  }
+  if (nowButton) {
+    nowButton.disabled = historyUntilMs === null;
+  }
+}
+
 function selectedHistorySensorIds() {
   return [...document.querySelectorAll('#historySensorChecklist input[type="checkbox"]:checked')].map(
     (input) => input.value,
@@ -1994,6 +2100,9 @@ function exportHistoryCsv() {
     resolution: "auto",
     max_points: "2000",
   });
+  if (historyUntilMs !== null) {
+    params.set("until", new Date(historyUntilMs).toISOString());
+  }
   sensorIds.forEach((sensorId) => params.append("sensor_id", sensorId));
   window.open(`/api/history.csv?${params.toString()}`, "_blank");
 }
@@ -2173,8 +2282,21 @@ function initializeHistoryControls() {
   });
   updateHistoryChecklistAppearance();
 
-  document.getElementById("historyHours").addEventListener("change", () => refreshHistory(true));
+  document.getElementById("historyHours").addEventListener("change", () => {
+    updateHistoryWindowControls();
+    refreshHistory(true);
+  });
   document.getElementById("historyValidity").addEventListener("change", () => refreshHistory(true));
+  document.getElementById("historyPrevWindow").addEventListener("click", () => shiftHistoryWindow(-1));
+  document.getElementById("historyNextWindow").addEventListener("click", () => shiftHistoryWindow(1));
+  document.getElementById("historyApplyUntil").addEventListener("click", () => setHistoryUntil(parseHistoryUntilInput()));
+  document.getElementById("historyNow").addEventListener("click", () => setHistoryUntil(null));
+  document.getElementById("historyUntil").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      setHistoryUntil(parseHistoryUntilInput());
+    }
+  });
+  document.getElementById("historyUntil").addEventListener("change", () => setHistoryUntil(parseHistoryUntilInput()));
   document.getElementById("historySelectAll").addEventListener("click", () => {
     checklist.querySelectorAll('input[type="checkbox"]').forEach((input) => {
       input.checked = true;
@@ -2190,6 +2312,7 @@ function initializeHistoryControls() {
     refreshHistory(true);
   });
   document.getElementById("historyExportCsv").addEventListener("click", exportHistoryCsv);
+  updateHistoryWindowControls();
 }
 
 async function loadPumpTimerConfig() {

@@ -7,7 +7,7 @@ values, colors, status flags, history data, and live controls.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, cast
 
@@ -463,6 +463,48 @@ def test_history_payload_can_filter_to_validated_measurements(tmp_path: Path) ->
 
     assert all(point["quality"] == "good" for point in validated["points"])
     assert any(point["quality"] == "suspect" for point in raw["points"])
+
+
+def test_history_payload_can_use_past_until_window(tmp_path: Path) -> None:
+    app = build_app_from_mapping(
+        logging_live_config(str(tmp_path / "history.sqlite3")),
+        clock=make_clock(),
+    )
+    assert app.measurement_logger is not None
+    now = app.clock.now()
+    past_until = now - timedelta(days=30)
+    past_sample = past_until - timedelta(hours=2)
+
+    app.measurement_logger.log_measurements(
+        (
+            Measurement(
+                sensor_id=SensorId.PUMP_OUTPUT_PSI,
+                observed_at=past_sample,
+                value=11.0,
+                unit="psi",
+                quality=Quality.GOOD,
+            ),
+            Measurement(
+                sensor_id=SensorId.PUMP_OUTPUT_PSI,
+                observed_at=now,
+                value=22.0,
+                unit="psi",
+                quality=Quality.GOOD,
+            ),
+        )
+    )
+
+    payload = build_history_payload(
+        app,
+        sensor_id=SensorId.PUMP_OUTPUT_PSI,
+        hours=24.0,
+        limit=20,
+        until=past_until,
+    )
+
+    assert payload["since"] == (past_until - timedelta(hours=24)).isoformat()
+    assert payload["until"] == past_until.isoformat()
+    assert [point["value"] for point in payload["points"]] == [11.0]
 
 
 def test_history_series_payload_can_include_lab_test_signals(tmp_path: Path) -> None:
