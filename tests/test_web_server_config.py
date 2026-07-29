@@ -898,6 +898,39 @@ def test_lab_test_api_accepts_sparse_payload_and_defaults_sampled_at(tmp_path: P
     assert listed["lab_tests"][0]["tds"] == 1000.0
 
 
+def test_event_entry_api_interprets_naive_times_as_local_controller_time(
+    tmp_path: Path,
+) -> None:
+    config = config_mapping()
+    runtime = dict(config["runtime"])  # type: ignore[index]
+    runtime["enabled_layers"] = ["pump_timer", "logging"]
+    config["runtime"] = runtime
+    config["logging"] = {"database_path": str(tmp_path / "events.sqlite3")}
+    app = build_app_from_mapping(config, clock=make_clock())
+
+    lab = add_lab_test(
+        app=app,
+        payload={
+            "sampled_at": "2026-05-22T07:30",
+            "free_chlorine": 3.2,
+        },
+        source="local_gui",
+    )
+    chemical = add_chemical_addition(
+        app=app,
+        payload={
+            "added_at": "2026-05-22T07:45",
+            "chemical": "sodium_hypochlorite",
+            "amount": 32.0,
+            "unit": "fl_oz",
+        },
+        source="local_gui",
+    )
+
+    assert lab["lab_test"]["sampled_at"] == "2026-05-22T12:30:00+00:00"
+    assert chemical["chemical_addition"]["added_at"] == "2026-05-22T12:45:00+00:00"
+
+
 def test_chemical_addition_api_helpers_store_defaults_and_list(tmp_path: Path) -> None:
     config = config_mapping()
     runtime = dict(config["runtime"])  # type: ignore[index]
@@ -936,3 +969,15 @@ def test_chemical_addition_api_helpers_store_defaults_and_list(tmp_path: Path) -
     assert acid["chemical_addition"]["amount_fl_oz"] == 128.0
     assert len(listed["chemical_additions"]) == 2
     assert listed["chemical_additions"][1]["chemical"] == "muriatic_acid"
+
+
+def test_history_event_forms_use_local_datetime_inputs() -> None:
+    static_dir = Path(__file__).parents[1] / "src" / "poolctl" / "web" / "static"
+    history_html = (static_dir / "history.html").read_text(encoding="utf-8")
+
+    assert 'id="labSampledAt" type="datetime-local"' in history_html
+    assert 'id="chemicalAddedAt" type="datetime-local"' in history_html
+
+    for page_name in ("config.html", "live.html", "schedule.html"):
+        html = (static_dir / page_name).read_text(encoding="utf-8")
+        assert 'id="labSampledAt" type="datetime-local"' in html

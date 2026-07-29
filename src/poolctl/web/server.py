@@ -25,6 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Literal, TypeVar
 from urllib.parse import parse_qs, urlparse
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from poolctl.app import PoolControllerApp, build_app_from_config
 from poolctl.config import DriverProfile, FeatureLayer, RuntimeConfig
@@ -1403,6 +1404,41 @@ def _datetime_query_value(
     return parsed
 
 
+def _datetime_payload_value(
+    value: Any,
+    *,
+    key: str,
+    default: datetime,
+    local_timezone_name: str,
+) -> datetime:
+    if value is None:
+        parsed = default
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            parsed = default
+        else:
+            if text.endswith("Z"):
+                text = f"{text[:-1]}+00:00"
+            try:
+                parsed = datetime.fromisoformat(text)
+            except ValueError as error:
+                raise ValueError(f"{key} must be an ISO timestamp") from error
+    else:
+        raise ValueError(f"{key} must be an ISO timestamp string")
+
+    if parsed.tzinfo is None:
+        try:
+            local_timezone = ZoneInfo(local_timezone_name)
+        except ZoneInfoNotFoundError as error:
+            raise ValueError(
+                f"configured timezone is invalid: {local_timezone_name}"
+            ) from error
+        parsed = parsed.replace(tzinfo=local_timezone)
+
+    return parsed.astimezone(timezone.utc)
+
+
 def _bool_query_value(
     query: dict[str, list[str]],
     key: str,
@@ -1534,12 +1570,12 @@ def add_lab_test(
         raise ValueError("measurement logging is not enabled")
 
     raw = dict(payload)
-    sampled_at = raw.get("sampled_at")
-    if sampled_at is None:
-        sampled_at = app.clock.now().isoformat()
-    if not isinstance(sampled_at, str):
-        raise ValueError("sampled_at must be an ISO timestamp string")
-    raw["sampled_at"] = sampled_at
+    raw["sampled_at"] = _datetime_payload_value(
+        raw.get("sampled_at"),
+        key="sampled_at",
+        default=app.clock.now(),
+        local_timezone_name=app.pump_timer_config.timezone,
+    ).isoformat()
     raw["entered_at"] = app.clock.now().isoformat()
     raw = {key: value for key, value in raw.items() if value is not None}
     metadata = raw.get("metadata", {})
@@ -1622,11 +1658,12 @@ def add_chemical_addition(
         raise ValueError("measurement logging is not enabled")
 
     raw = dict(payload)
-    added_at = raw.get("added_at")
-    if added_at is None:
-        added_at = app.clock.now().isoformat()
-    if not isinstance(added_at, str):
-        raise ValueError("added_at must be an ISO timestamp string")
+    added_at = _datetime_payload_value(
+        raw.get("added_at"),
+        key="added_at",
+        default=app.clock.now(),
+        local_timezone_name=app.pump_timer_config.timezone,
+    ).isoformat()
 
     chemical = _chemical_type_from_payload(raw.get("chemical"))
     amount = _positive_float(raw.get("amount"), "amount")

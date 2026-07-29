@@ -2088,6 +2088,19 @@ function datetimeLocalValue(timestampMs) {
   return local.toISOString().slice(0, 16);
 }
 
+function datetimeLocalIsoString(inputId, label) {
+  const input = document.getElementById(inputId);
+  const value = stringOrNull(input ? input.value : null);
+  if (!value) {
+    return null;
+  }
+  const parsedMs = new Date(value).getTime();
+  if (!Number.isFinite(parsedMs)) {
+    throw new Error(`${label} must be a valid local date/time`);
+  }
+  return new Date(parsedMs).toISOString();
+}
+
 function parseHistoryUntilInput() {
   const input = document.getElementById("historyUntil");
   if (!input || !input.value) {
@@ -3863,7 +3876,7 @@ async function saveLabTest() {
 
 function collectLabTestPayload() {
   const payload = {
-    sampled_at: stringOrNull(document.getElementById("labSampledAt").value),
+    sampled_at: datetimeLocalIsoString("labSampledAt", "Sampled at"),
     ph: numberOrNull(document.getElementById("labPh").value),
     free_chlorine: numberOrNull(document.getElementById("labFreeChlorine").value),
     combined_chlorine: numberOrNull(document.getElementById("labCombinedChlorine").value),
@@ -4013,7 +4026,7 @@ async function saveChemicalAddition() {
 
 function collectChemicalAdditionPayload() {
   const payload = {
-    added_at: stringOrNull(document.getElementById("chemicalAddedAt").value),
+    added_at: datetimeLocalIsoString("chemicalAddedAt", "Added at"),
     chemical: document.getElementById("chemicalType").value,
     amount: numberOrNull(document.getElementById("chemicalAmount").value),
     unit: document.getElementById("chemicalUnit").value,

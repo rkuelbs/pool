@@ -287,8 +287,8 @@ rolling filter.
 - History: measurement/weather/test-result/chemical-addition charts with
   selectable series, hover readouts, automatic rollup resolution, past-window
   navigation, calendar/time jump, CSV export, water-test and chemical-addition
-  entry, and single-axis or multi-axis scaling depending on selected signal
-  ranges.
+  entry with local date/time pickers, and single-axis or multi-axis scaling
+  depending on selected signal ranges.
 - Schedule: pump timer schedule editor, including a per-window dosing checkbox
   for excluding cleaning/night runs from liquid chlorine dosing.
 - Config: forms for runtime layers, safety, chlorination, FC demand,
@@ -337,6 +337,12 @@ database query can go. Use `Prev` and `Next` to move that same high-resolution
 window through history, or set the `Ending` date/time and press `Jump` to view a
 specific past day. `Now` returns the chart to the live rolling window. CSV export
 uses the same selected window shown on the chart.
+
+Water-test and chemical-addition entry times use local date/time pickers. Leaving
+the time blank records the event at the controller's current time. A selected
+browser-local time is converted to an offset-aware timestamp before logging; API
+payloads that provide a timestamp without an offset are interpreted in the
+configured pump-timer timezone.
 
 ## Open-loop Chlorination
 

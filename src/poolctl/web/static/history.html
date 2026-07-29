@@ -371,7 +371,7 @@
           </div>
         </div>
         <div class="config-grid">
-          <label>Sampled At (ISO) <input id="labSampledAt" type="text" placeholder="2026-05-23T14:30:00-05:00"></label>
+          <label>Sampled At (Local, blank = now) <input id="labSampledAt" type="datetime-local" step="60"></label>
           <label>pH <input id="labPh" type="number" step="0.01"></label>
           <label>Free Chlorine <input id="labFreeChlorine" type="number" step="0.01"></label>
           <label>Combined Chlorine <input id="labCombinedChlorine" type="number" step="0.01"></label>
@@ -401,7 +401,7 @@
           </div>
         </div>
         <div class="config-grid">
-          <label>Added At (ISO) <input id="chemicalAddedAt" type="text" placeholder="2026-05-23T14:30:00-05:00"></label>
+          <label>Added At (Local, blank = now) <input id="chemicalAddedAt" type="datetime-local" step="60"></label>
           <label>Chemical
             <select id="chemicalType">
               <option value="sodium_hypochlorite" selected>Sodium Hypochlorite</option>
