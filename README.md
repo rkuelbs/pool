@@ -323,11 +323,13 @@ samples when the dosing state or duty plan changes. Completed chlorine delivery
 is stored as one event row per completed dosing segment. The cumulative
 daily-delivered graph logs boundary snapshots for each normal dose: the current
 total at the start of the dosing segment, then the new total after the completed
-segment is recorded. That gives history charts flat lines between pulses and a
-slope only during the actual dosing runtime. Daily water/weather summary
-generation is checked hourly. These rules keep long history windows useful with
-the 0.25 s control loop instead of filling the database with duplicate-style
-status rows.
+segment is recorded. It also logs a zero-value reset at each local midnight.
+That gives history charts flat lines between pulses and a slope only during the
+actual dosing runtime, with a visible reset before the first dose of the day.
+Daily water/weather/chemical summary generation and daily moving-average rows
+are checked hourly. These rules keep long history windows useful with the
+0.25 s control loop instead of filling the database with duplicate-style status
+rows.
 
 The range selector controls the window length, not necessarily how far back the
 database query can go. Use `Prev` and `Next` to move that same high-resolution
@@ -416,23 +418,37 @@ The History page can graph chlorination control signals:
   midnight using the configured pump timer timezone. This is a graph snapshot of
   the persistent chlorine delivery event table, not the source of dose
   accounting. Normal dosing logs one snapshot at segment start with the current
-  total and one at segment end with the updated total.
+  total and one at segment end with the updated total. A zero-value reset
+  snapshot is logged at local midnight.
 - `Dosing duty cycle`: the current duty cycle during valid dosing time. This is
   logged across the full eligible window, including duty-cycle OFF portions, but
   not during high-FC holdoff time. Like daily delivered chlorine, it uses
   `logging.control_measurement_interval_s` plus immediate samples on dosing
   state/duty-plan changes.
+- `Daily sodium hypochlorite added`: completed-day total fluid ounces from
+  automated dosing plus manually logged sodium hypochlorite additions. Metadata
+  keeps the automated/manual split and the FC-ppm equivalent.
+- `Daily muriatic acid added`: completed-day total fluid ounces from manually
+  logged muriatic acid additions.
+- `Sodium hypochlorite 7d/28d avg` and `Muriatic acid 7d/28d avg`: moving
+  averages of the completed-day chemical totals. Early history uses the
+  available completed-day rows until a full window has accumulated.
 - `FC demand`: estimated free-chlorine consumption in ppm/day from the latest
-  two manual FC tests, logged once per distinct estimate.
+  FC test and an earlier test selected near the configured lookback window,
+  logged once per distinct estimate.
 - `Base FC demand`: exponential moving average of FC demand. This is an
   observe-only baseline for seasonal trend work; it does not change dosing by
   itself.
 - `Predicted FC demand` and `FC demand residual`: placeholder prediction and
   actual-minus-predicted error. For now the prediction is just the baseline with
   no pH, ORP, UV, or temperature modifier.
-- `Daily water temp min/avg/max`: daily summaries from the `orp_temp` sensor.
-  The minimum is logged because it may better represent pool water than daytime
+- `Daily ORP avg`, `Daily water temp min/avg/max`, and `Daily pH avg`: daily
+  summaries from `raw_orp`, `orp_temp`, and `raw_ph`. The water-temperature
+  minimum is logged because it may better represent pool water than daytime
   plumbing warmed by sun.
+- `ORP 7d/28d avg`, `Water temp 7d/28d avg`, `pH 7d/28d avg`, and
+  `UV dose 7d/28d avg`: moving averages of the completed-day summary rows for
+  seasonal demand tracking.
 - `Daily UV dose` and `Daily shortwave dose`: previous-day sums from the
   Open-Meteo hourly weather history, for later correlation with FC demand.
 
@@ -470,6 +486,8 @@ fc_demand:
   target_fc_ppm: 4.0
   chlorine_strength_percent: 12.0
   minimum_test_interval_hours: 12.0
+  demand_window_days: 7.0
+  max_demand_window_days: 14.0
   max_daily_dose_oz: 256.0
 ```
 
@@ -497,13 +515,25 @@ controller's desired state.
 `fc_demand` estimates daily free-chlorine demand from manual FC tests plus
 logged chlorine additions/delivery. It deliberately does not use ORP or pH.
 The history page also logs observe-only trend signals for base demand,
-predicted demand, residual demand, daily ORP-temperature min/avg/max, UV dose,
-and shortwave dose. These provide the data needed to evaluate seasonal
-temperature and sunlight modifiers later without changing the current dosing
-controller.
+predicted demand, residual demand, daily ORP, pH, ORP-temperature min/avg/max,
+UV dose, shortwave dose, daily chemical totals, and 7-day/28-day daily moving
+averages. These provide the data needed to evaluate seasonal temperature,
+sunlight, and chemical-demand modifiers later without changing the current
+dosing controller.
 
-The estimator needs at least two manual free-chlorine test results separated by
-`minimum_test_interval_hours`. Between those tests, it sums:
+The estimator needs at least two manual free-chlorine test results. It uses the
+latest FC test as the current value, then selects an earlier test for the mass
+balance:
+
+- Ignore tests closer than `minimum_test_interval_hours`.
+- Prefer the earliest test at or beyond `demand_window_days` before the latest
+  test.
+- If there is no test that old, use the oldest eligible test inside the maximum
+  window.
+- If no eligible prior test is within `max_demand_window_days`, wait for better
+  test history instead of estimating from stale conditions.
+
+Between the selected tests, it sums:
 
 - automated dosing pump delivery logged by the runtime loop
 - manually logged sodium hypochlorite additions
@@ -520,6 +550,11 @@ Then it estimates:
 daily demand ppm = max(0, previous FC + added FC - current FC) / elapsed days
 maintenance dose oz/day = dose needed to replace daily demand
 ```
+
+The default `demand_window_days: 7.0` and `max_demand_window_days: 14.0` reduce
+single-test noise while still letting weekly weather and sunlight changes move
+the estimate. The live status and lab-test feedback show the elapsed days used
+for the current estimate.
 
 When FC is below `target_fc_ppm`, the catch-up dose is added only on the day
 after the latest FC test. After that day, the dose returns to the estimated

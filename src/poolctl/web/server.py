@@ -1990,6 +1990,8 @@ def serialize_fc_demand_config(app: PoolControllerApp) -> dict[str, Any]:
         "target_fc_ppm": config.target_fc_ppm,
         "chlorine_strength_percent": config.chlorine_strength_percent,
         "minimum_test_interval_hours": config.minimum_test_interval_hours,
+        "demand_window_days": config.demand_window_days,
+        "max_demand_window_days": config.max_demand_window_days,
         "max_daily_dose_oz": config.max_daily_dose_oz,
         "applied_live": True,
     }
@@ -2012,6 +2014,8 @@ def apply_fc_demand_config_update(
         "target_fc_ppm": proposed.target_fc_ppm,
         "chlorine_strength_percent": proposed.chlorine_strength_percent,
         "minimum_test_interval_hours": proposed.minimum_test_interval_hours,
+        "demand_window_days": proposed.demand_window_days,
+        "max_demand_window_days": proposed.max_demand_window_days,
         "max_daily_dose_oz": proposed.max_daily_dose_oz,
     }
     _save_config_write_mapping(config_path, local_config_path=local_config_path, data=config_data)

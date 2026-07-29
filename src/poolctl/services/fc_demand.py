@@ -24,6 +24,10 @@ from poolctl.services.chlorination import (
 from poolctl.services.pump_timer import PumpTimerConfig
 
 
+DEFAULT_DEMAND_WINDOW_DAYS = 7.0
+DEFAULT_MAX_DEMAND_WINDOW_DAYS = 14.0
+
+
 @dataclass(frozen=True)
 class FcDemandConfig:
     """
@@ -39,6 +43,8 @@ class FcDemandConfig:
     target_fc_ppm: float = 4.0
     chlorine_strength_percent: float = 12.0
     minimum_test_interval_hours: float = 12.0
+    demand_window_days: float = DEFAULT_DEMAND_WINDOW_DAYS
+    max_demand_window_days: float = DEFAULT_MAX_DEMAND_WINDOW_DAYS
     max_daily_dose_oz: float = 256.0
 
     def __post_init__(self) -> None:
@@ -50,6 +56,14 @@ class FcDemandConfig:
             raise ValueError("fc_demand.chlorine_strength_percent must be > 0")
         if self.minimum_test_interval_hours < 0:
             raise ValueError("fc_demand.minimum_test_interval_hours must be >= 0")
+        if self.demand_window_days <= 0:
+            raise ValueError("fc_demand.demand_window_days must be > 0")
+        if self.max_demand_window_days <= 0:
+            raise ValueError("fc_demand.max_demand_window_days must be > 0")
+        if self.max_demand_window_days < self.demand_window_days:
+            raise ValueError(
+                "fc_demand.max_demand_window_days must be >= demand_window_days"
+            )
         if self.max_daily_dose_oz < 0:
             raise ValueError("fc_demand.max_daily_dose_oz must be >= 0")
 
@@ -75,6 +89,16 @@ class FcDemandConfig:
                 "minimum_test_interval_hours",
                 cls.minimum_test_interval_hours,
             ),
+            demand_window_days=_float_value(
+                config_data,
+                "demand_window_days",
+                cls.demand_window_days,
+            ),
+            max_demand_window_days=_float_value(
+                config_data,
+                "max_demand_window_days",
+                cls.max_demand_window_days,
+            ),
             max_daily_dose_oz=_float_value(
                 config_data,
                 "max_daily_dose_oz",
@@ -87,6 +111,14 @@ class FcDemandConfig:
 class FcTestPoint:
     sampled_at: datetime
     free_chlorine: float
+
+
+@dataclass(frozen=True)
+class FcDemandTestSelection:
+    previous: FcTestPoint
+    current: FcTestPoint
+    elapsed_hours: float
+    demand_window_source: str
 
 
 @dataclass(frozen=True)
@@ -103,6 +135,9 @@ class FcDemandStatus:
     current_sampled_at: datetime | None = None
     current_fc_ppm: float | None = None
     elapsed_days: float | None = None
+    demand_window_days: float = DEFAULT_DEMAND_WINDOW_DAYS
+    max_demand_window_days: float = DEFAULT_MAX_DEMAND_WINDOW_DAYS
+    demand_window_source: str | None = None
     automated_chlorine_oz: float = 0.0
     manual_hypo_oz: float = 0.0
     added_fc_ppm: float | None = None
@@ -142,6 +177,9 @@ class FcDemandStatus:
             ),
             "current_fc_ppm": self.current_fc_ppm,
             "elapsed_days": self.elapsed_days,
+            "demand_window_days": self.demand_window_days,
+            "max_demand_window_days": self.max_demand_window_days,
+            "demand_window_source": self.demand_window_source,
             "automated_chlorine_oz": self.automated_chlorine_oz,
             "manual_hypo_oz": self.manual_hypo_oz,
             "added_fc_ppm": self.added_fc_ppm,
@@ -171,6 +209,16 @@ class FcDemandPlan:
     adjustment: ChlorinationPlanAdjustment | None = None
 
 
+def fc_demand_test_selection(
+    config: FcDemandConfig,
+    fc_tests: Sequence[FcTestPoint],
+) -> FcDemandTestSelection | None:
+    clean_tests = _clean_fc_tests(fc_tests)
+    if len(clean_tests) < 2:
+        return None
+    return _select_fc_demand_test(clean_tests, config=config)
+
+
 def estimate_fc_demand_plan(
     *,
     config: FcDemandConfig,
@@ -191,19 +239,12 @@ def estimate_fc_demand_plan(
                 target_fc_ppm=config.target_fc_ppm,
                 pool_volume_gal=config.pool_volume_gal,
                 chlorine_strength_percent=config.chlorine_strength_percent,
+                demand_window_days=config.demand_window_days,
+                max_demand_window_days=config.max_demand_window_days,
             )
         )
 
-    clean_tests = tuple(
-        sorted(
-            (
-                FcTestPoint(sampled_at=test.sampled_at, free_chlorine=float(test.free_chlorine))
-                for test in fc_tests
-                if test.free_chlorine >= 0
-            ),
-            key=lambda item: item.sampled_at,
-        )
-    )
+    clean_tests = _clean_fc_tests(fc_tests)
     if len(clean_tests) < 2:
         return FcDemandPlan(
             status=_base_status(
@@ -213,31 +254,33 @@ def estimate_fc_demand_plan(
             )
         )
 
-    previous = clean_tests[-2]
-    current = clean_tests[-1]
-    elapsed_hours = (current.sampled_at - previous.sampled_at).total_seconds() / 3600.0
-    if elapsed_hours <= 0:
-        return FcDemandPlan(
-            status=_base_status(
-                config,
-                ready=False,
-                reason="latest FC tests are not in chronological order",
-                previous=previous,
-                current=current,
-            )
+    selection = _select_fc_demand_test(clean_tests, config=config)
+    if selection is None:
+        latest_previous = clean_tests[-2]
+        current = clean_tests[-1]
+        elapsed_hours = (
+            current.sampled_at - latest_previous.sampled_at
+        ).total_seconds() / 3600.0
+        reason = _fc_demand_selection_not_ready_reason(
+            clean_tests,
+            config=config,
         )
-    if elapsed_hours < config.minimum_test_interval_hours:
         return FcDemandPlan(
             status=_base_status(
                 config,
                 ready=False,
-                reason="FC tests are closer than the configured minimum interval",
-                previous=previous,
+                reason=reason,
+                previous=latest_previous,
                 current=current,
-                elapsed_days=elapsed_hours / 24.0,
+                elapsed_days=(
+                    elapsed_hours / 24.0 if elapsed_hours > 0 else None
+                ),
             )
         )
 
+    previous = selection.previous
+    current = selection.current
+    elapsed_hours = selection.elapsed_hours
     elapsed_days = elapsed_hours / 24.0
     automated_chlorine_oz = max(0.0, automated_chlorine_oz)
 
@@ -350,6 +393,9 @@ def estimate_fc_demand_plan(
         current_sampled_at=current.sampled_at,
         current_fc_ppm=current.free_chlorine,
         elapsed_days=elapsed_days,
+        demand_window_days=config.demand_window_days,
+        max_demand_window_days=config.max_demand_window_days,
+        demand_window_source=selection.demand_window_source,
         automated_chlorine_oz=automated_chlorine_oz,
         manual_hypo_oz=manual_hypo_oz,
         added_fc_ppm=added_fc_ppm,
@@ -378,6 +424,83 @@ def estimate_fc_demand_plan(
         )
 
     return FcDemandPlan(status=status, adjustment=adjustment)
+
+
+def _clean_fc_tests(fc_tests: Sequence[FcTestPoint]) -> tuple[FcTestPoint, ...]:
+    return tuple(
+        sorted(
+            (
+                FcTestPoint(sampled_at=test.sampled_at, free_chlorine=float(test.free_chlorine))
+                for test in fc_tests
+                if test.free_chlorine >= 0
+            ),
+            key=lambda item: item.sampled_at,
+        )
+    )
+
+
+def _select_fc_demand_test(
+    clean_tests: tuple[FcTestPoint, ...],
+    *,
+    config: FcDemandConfig,
+) -> FcDemandTestSelection | None:
+    if len(clean_tests) < 2:
+        return None
+
+    current = clean_tests[-1]
+    candidates: list[tuple[float, FcTestPoint]] = []
+    for test in clean_tests[:-1]:
+        elapsed_hours = (current.sampled_at - test.sampled_at).total_seconds() / 3600.0
+        if elapsed_hours <= 0:
+            continue
+        if elapsed_hours < config.minimum_test_interval_hours:
+            continue
+
+        elapsed_days = elapsed_hours / 24.0
+        if elapsed_days <= config.max_demand_window_days:
+            candidates.append((elapsed_days, test))
+
+    if not candidates:
+        return None
+
+    target_or_older = [
+        (elapsed_days, test)
+        for elapsed_days, test in candidates
+        if elapsed_days >= config.demand_window_days
+    ]
+    if target_or_older:
+        elapsed_days, selected = min(target_or_older, key=lambda item: item[0])
+        source = "target_window"
+    else:
+        elapsed_days, selected = max(candidates, key=lambda item: item[0])
+        source = "oldest_available"
+
+    return FcDemandTestSelection(
+        previous=selected,
+        current=current,
+        elapsed_hours=elapsed_days * 24.0,
+        demand_window_source=source,
+    )
+
+
+def _fc_demand_selection_not_ready_reason(
+    clean_tests: tuple[FcTestPoint, ...],
+    *,
+    config: FcDemandConfig,
+) -> str:
+    current = clean_tests[-1]
+    elapsed_hours = [
+        (current.sampled_at - test.sampled_at).total_seconds() / 3600.0
+        for test in clean_tests[:-1]
+    ]
+    if not any(elapsed > 0 for elapsed in elapsed_hours):
+        return "latest FC tests are not in chronological order"
+    if not any(elapsed >= config.minimum_test_interval_hours for elapsed in elapsed_hours):
+        return "FC tests are closer than the configured minimum interval"
+    return (
+        "need an FC test within "
+        f"{config.max_demand_window_days:g} days of the latest FC test"
+    )
 
 
 def fc_ppm_from_fl_oz(
@@ -436,6 +559,8 @@ def _base_status(
         current_sampled_at=current.sampled_at if current is not None else None,
         current_fc_ppm=current.free_chlorine if current is not None else None,
         elapsed_days=elapsed_days,
+        demand_window_days=config.demand_window_days,
+        max_demand_window_days=config.max_demand_window_days,
     )
 
 

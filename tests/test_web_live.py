@@ -224,8 +224,32 @@ async def test_build_live_snapshot_logs_loggable_measurements(tmp_path: Path) ->
         hours=1.0,
         limit=10,
     )
+    delivered_history = build_history_payload(
+        app,
+        sensor_id=SensorId.CHLORINE_DAILY_DELIVERED_OZ,
+        hours=24.0,
+        limit=10,
+    )
+    daily_chlorine_history = build_history_payload(
+        app,
+        sensor_id=SensorId.DAILY_SODIUM_HYPOCHLORITE_ADDED_OZ,
+        hours=24.0,
+        limit=10,
+    )
+    daily_chlorine_7d_history = build_history_payload(
+        app,
+        sensor_id=SensorId.DAILY_SODIUM_HYPOCHLORITE_ADDED_OZ_7D_AVG,
+        hours=24.0,
+        limit=10,
+    )
+    daily_acid_history = build_history_payload(
+        app,
+        sensor_id=SensorId.DAILY_MURIATIC_ACID_ADDED_OZ,
+        hours=24.0,
+        limit=10,
+    )
 
-    assert snapshot["tick"]["logged_measurement_count"] == 8
+    assert snapshot["tick"]["logged_measurement_count"] == 15
     assert len(history["points"]) == 1
     assert history["points"][0]["sensor_id"] == SensorId.PUMP_OUTPUT_PSI.value
     assert len(flow_history["points"]) == 1
@@ -234,6 +258,11 @@ async def test_build_live_snapshot_logs_loggable_measurements(tmp_path: Path) ->
     assert dynamic_head_history["points"][0]["sensor_id"] == SensorId.PUMP_DYNAMIC_HEAD_PSI.value
     assert len(return_flow_history["points"]) == 1
     assert return_flow_history["points"][0]["sensor_id"] == SensorId.RETURN_FLOW_GPM.value
+    assert delivered_history["points"][0]["value"] == 0.0
+    assert delivered_history["points"][0]["metadata"]["snapshot_boundary"] == "reset"
+    assert daily_chlorine_history["points"][0]["value"] == 0.0
+    assert daily_chlorine_7d_history["points"][0]["value"] == 0.0
+    assert daily_acid_history["points"][0]["value"] == 0.0
 
 
 @pytest.mark.asyncio
@@ -362,6 +391,16 @@ def test_format_measurement_uses_domain_units() -> None:
             )
         )
         == "6132 Wh/m2"
+    )
+    assert (
+        format_measurement(
+            Measurement(
+                sensor_id=SensorId.DAILY_SODIUM_HYPOCHLORITE_ADDED_OZ,
+                value=12.25,
+                unit="fl oz",
+            )
+        )
+        == "12.2 fl oz"
     )
 
 

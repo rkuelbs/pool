@@ -27,6 +27,7 @@ from poolctl.domain.models import (
     ActuatorId,
     ActuatorState,
     ActuatorStateSample,
+    ChemicalAddition,
     ChemicalType,
     CommandSource,
     LabTest,
@@ -64,6 +65,8 @@ from poolctl.services.fc_demand import (
     FcDemandStatus,
     FcTestPoint,
     estimate_fc_demand_plan,
+    fc_demand_test_selection,
+    fc_ppm_from_fl_oz,
 )
 from poolctl.services.measurement_logging import (
     MeasurementLogger,
@@ -101,6 +104,33 @@ CHLORINATION_CONTROL_SENSOR_IDS = frozenset(
         SensorId.CHLORINE_DAILY_DELIVERED_OZ,
     }
 )
+DAILY_MOVING_AVERAGE_WINDOWS = (7, 28)
+DAILY_MOVING_AVERAGE_SENSOR_IDS = {
+    SensorId.DAILY_SODIUM_HYPOCHLORITE_ADDED_OZ: {
+        7: SensorId.DAILY_SODIUM_HYPOCHLORITE_ADDED_OZ_7D_AVG,
+        28: SensorId.DAILY_SODIUM_HYPOCHLORITE_ADDED_OZ_28D_AVG,
+    },
+    SensorId.DAILY_MURIATIC_ACID_ADDED_OZ: {
+        7: SensorId.DAILY_MURIATIC_ACID_ADDED_OZ_7D_AVG,
+        28: SensorId.DAILY_MURIATIC_ACID_ADDED_OZ_28D_AVG,
+    },
+    SensorId.DAILY_ORP_AVG: {
+        7: SensorId.DAILY_ORP_AVG_7D_AVG,
+        28: SensorId.DAILY_ORP_AVG_28D_AVG,
+    },
+    SensorId.DAILY_WATER_TEMP_AVG: {
+        7: SensorId.DAILY_WATER_TEMP_AVG_7D_AVG,
+        28: SensorId.DAILY_WATER_TEMP_AVG_28D_AVG,
+    },
+    SensorId.DAILY_PH_AVG: {
+        7: SensorId.DAILY_PH_AVG_7D_AVG,
+        28: SensorId.DAILY_PH_AVG_28D_AVG,
+    },
+    SensorId.DAILY_UV_INDEX_DOSE: {
+        7: SensorId.DAILY_UV_INDEX_DOSE_7D_AVG,
+        28: SensorId.DAILY_UV_INDEX_DOSE_28D_AVG,
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -257,6 +287,7 @@ class PoolControllerApp:
     chlorine_delivery_segment_runtime_s: float = 0.0
     chlorine_delivery_segment_delivered_oz: float = 0.0
     chlorine_delivery_snapshot_points: tuple[tuple[datetime, str], ...] = ()
+    chlorine_delivery_reset_logged_local_day: str | None = None
     dosing_prime_until: datetime | None = None
     dosing_prime_started_at: datetime | None = None
     dosing_prime_mode: str = "prime"
@@ -370,6 +401,7 @@ class PoolControllerApp:
             observed_at=self.clock.now()
         )
         logged_measurement_count += self._log_measurements(daily_summary_measurements)
+        self._queue_due_chlorine_delivery_reset_snapshot(self.clock.now())
 
         # These are controller state signals rather than physical sensors. They
         # are logged so history can show duty cycle, daily dose, and FC-demand
@@ -964,6 +996,28 @@ class PoolControllerApp:
             boundary="start",
         )
 
+    def _queue_due_chlorine_delivery_reset_snapshot(self, now: datetime) -> None:
+        if self.measurement_logger is None:
+            return
+
+        local_day_start = _local_day_start(
+            now,
+            timezone_name=self.pump_timer_config.timezone,
+        )
+        local_day = local_day_start.date().isoformat()
+        if self.chlorine_delivery_reset_logged_local_day == local_day:
+            return
+
+        object.__setattr__(
+            self,
+            "chlorine_delivery_reset_logged_local_day",
+            local_day,
+        )
+        self._queue_chlorine_delivery_snapshot(
+            observed_at=local_day_start.astimezone(timezone.utc),
+            boundary="reset",
+        )
+
     def _queue_chlorine_delivery_snapshot(
         self,
         *,
@@ -1139,19 +1193,35 @@ class PoolControllerApp:
                     chlorine_strength_percent=(
                         self.fc_demand_config.chlorine_strength_percent
                     ),
+                    demand_window_days=self.fc_demand_config.demand_window_days,
+                    max_demand_window_days=(
+                        self.fc_demand_config.max_demand_window_days
+                    ),
                 )
             )
 
         fc_history = self.measurement_logger.lab_value_history(
             field="free_chlorine",
-            limit=2,
+            limit=50,
         )
         fc_tests = tuple(
             FcTestPoint(sampled_at=sampled_at, free_chlorine=value)
             for sampled_at, value in fc_history
         )
-        since = fc_tests[0].sampled_at if len(fc_tests) >= 2 else None
-        until = fc_tests[-1].sampled_at if len(fc_tests) >= 2 else None
+        selected_fc_interval = fc_demand_test_selection(
+            self.fc_demand_config,
+            fc_tests,
+        )
+        since = (
+            selected_fc_interval.previous.sampled_at
+            if selected_fc_interval is not None
+            else None
+        )
+        until = (
+            selected_fc_interval.current.sampled_at
+            if selected_fc_interval is not None
+            else None
+        )
         delivery_summary = self.measurement_logger.chlorine_delivery_summary(
             since=since,
             until=until,
@@ -1208,6 +1278,29 @@ class PoolControllerApp:
         )
         measurements: list[Measurement] = []
 
+        orp_summary = self.measurement_logger.measurement_value_summary(
+            sensor_id=SensorId.RAW_ORP,
+            since=start_utc,
+            until=end_utc,
+            qualities=(Quality.GOOD,),
+        )
+        if orp_summary is not None:
+            measurements.append(
+                _daily_summary_measurement(
+                    sensor_id=SensorId.DAILY_ORP_AVG,
+                    observed_at=summary_observed_at,
+                    local_day=local_day,
+                    timezone_name=self.pump_timer_config.timezone,
+                    start_utc=start_utc,
+                    end_utc=end_utc,
+                    summary=orp_summary,
+                    aggregation="avg",
+                    value=orp_summary.avg_value,
+                    unit=orp_summary.unit or "mV",
+                    source="raw_orp",
+                )
+            )
+
         water_summary = self.measurement_logger.measurement_value_summary(
             sensor_id=SensorId.ORP_TEMP,
             since=start_utc,
@@ -1260,6 +1353,29 @@ class PoolControllerApp:
                 )
             )
 
+        ph_summary = self.measurement_logger.measurement_value_summary(
+            sensor_id=SensorId.RAW_PH,
+            since=start_utc,
+            until=end_utc,
+            qualities=(Quality.GOOD,),
+        )
+        if ph_summary is not None:
+            measurements.append(
+                _daily_summary_measurement(
+                    sensor_id=SensorId.DAILY_PH_AVG,
+                    observed_at=summary_observed_at,
+                    local_day=local_day,
+                    timezone_name=self.pump_timer_config.timezone,
+                    start_utc=start_utc,
+                    end_utc=end_utc,
+                    summary=ph_summary,
+                    aggregation="avg",
+                    value=ph_summary.avg_value,
+                    unit=ph_summary.unit or "pH",
+                    source="raw_ph",
+                )
+            )
+
         uv_summary = self.measurement_logger.weather_value_summary(
             field="uv_index",
             since=start_utc,
@@ -1303,6 +1419,226 @@ class PoolControllerApp:
                     source="weather.shortwave_radiation",
                 )
             )
+
+        measurements.append(
+            self._daily_sodium_hypochlorite_added_measurement(
+                local_day=local_day,
+                start_utc=start_utc,
+                end_utc=end_utc,
+                observed_at=end_utc,
+            )
+        )
+        measurements.append(
+            self._daily_muriatic_acid_added_measurement(
+                local_day=local_day,
+                start_utc=start_utc,
+                end_utc=end_utc,
+                observed_at=end_utc,
+            )
+        )
+        measurements.extend(
+            self._daily_moving_average_measurements(
+                source_measurements=tuple(measurements),
+                local_day=local_day,
+                timezone_name=self.pump_timer_config.timezone,
+            )
+        )
+
+        return tuple(measurements)
+
+    def _daily_sodium_hypochlorite_added_measurement(
+        self,
+        *,
+        local_day: str,
+        start_utc: datetime,
+        end_utc: datetime,
+        observed_at: datetime,
+    ) -> Measurement:
+        if self.measurement_logger is None:
+            automated_summary = None
+            manual_additions: tuple[ChemicalAddition, ...] = ()
+        else:
+            automated_summary = self.measurement_logger.chlorine_delivery_summary(
+                since=start_utc,
+                until=end_utc - timedelta(microseconds=1),
+            )
+            manual_additions = tuple(
+                addition
+                for addition in self.measurement_logger.chemical_addition_history(
+                    since=start_utc,
+                    until=end_utc,
+                    limit=1000,
+                )
+                if (
+                    addition.chemical == ChemicalType.SODIUM_HYPOCHLORITE
+                    and addition.added_at < end_utc
+                )
+            )
+
+        automated_oz = (
+            max(0.0, automated_summary.delivered_oz)
+            if automated_summary is not None
+            else 0.0
+        )
+        automated_runtime_seconds = (
+            max(0.0, automated_summary.runtime_seconds)
+            if automated_summary is not None
+            else 0.0
+        )
+        manual_hypo_oz = sum(addition.amount_fl_oz for addition in manual_additions)
+        automated_added_fc_ppm = fc_ppm_from_fl_oz(
+            automated_oz,
+            strength_percent=self.fc_demand_config.chlorine_strength_percent,
+            pool_volume_gal=self.fc_demand_config.pool_volume_gal,
+        )
+        manual_added_fc_ppm = sum(
+            fc_ppm_from_fl_oz(
+                addition.amount_fl_oz,
+                strength_percent=addition.strength_percent,
+                pool_volume_gal=self.fc_demand_config.pool_volume_gal,
+            )
+            for addition in manual_additions
+        )
+        total_oz = automated_oz + manual_hypo_oz
+
+        return Measurement(
+            id=f"{SensorId.DAILY_SODIUM_HYPOCHLORITE_ADDED_OZ.value}:{local_day}",
+            sensor_id=SensorId.DAILY_SODIUM_HYPOCHLORITE_ADDED_OZ,
+            observed_at=observed_at,
+            kind=MeasurementKind.ESTIMATED,
+            value=round(total_oz, 4),
+            unit="fl oz",
+            quality=Quality.GOOD,
+            metadata={
+                "driver": "daily_chlorine_summary",
+                "source": "chlorine_delivery,chemical_additions",
+                "aggregation": "sum",
+                "local_day": local_day,
+                "timezone": self.pump_timer_config.timezone,
+                "interval_start_utc": start_utc.isoformat(),
+                "interval_end_utc": end_utc.isoformat(),
+                "automated_delivery_oz": automated_oz,
+                "automated_runtime_seconds": automated_runtime_seconds,
+                "manual_sodium_hypochlorite_oz": manual_hypo_oz,
+                "manual_addition_count": len(manual_additions),
+                "automated_added_fc_ppm": automated_added_fc_ppm,
+                "manual_added_fc_ppm": manual_added_fc_ppm,
+                "total_added_fc_ppm": automated_added_fc_ppm + manual_added_fc_ppm,
+                "pool_volume_gal": self.fc_demand_config.pool_volume_gal,
+                "automated_chlorine_strength_percent": (
+                    self.fc_demand_config.chlorine_strength_percent
+                ),
+            },
+        )
+
+    def _daily_muriatic_acid_added_measurement(
+        self,
+        *,
+        local_day: str,
+        start_utc: datetime,
+        end_utc: datetime,
+        observed_at: datetime,
+    ) -> Measurement:
+        if self.measurement_logger is None:
+            additions: tuple[ChemicalAddition, ...] = ()
+        else:
+            additions = tuple(
+                addition
+                for addition in self.measurement_logger.chemical_addition_history(
+                    since=start_utc,
+                    until=end_utc,
+                    limit=1000,
+                )
+                if addition.chemical == ChemicalType.MURIATIC_ACID
+                and addition.added_at < end_utc
+            )
+        total_oz = sum(addition.amount_fl_oz for addition in additions)
+
+        return Measurement(
+            id=f"{SensorId.DAILY_MURIATIC_ACID_ADDED_OZ.value}:{local_day}",
+            sensor_id=SensorId.DAILY_MURIATIC_ACID_ADDED_OZ,
+            observed_at=observed_at,
+            kind=MeasurementKind.ESTIMATED,
+            value=round(total_oz, 4),
+            unit="fl oz",
+            quality=Quality.GOOD,
+            metadata={
+                "driver": "daily_chemical_summary",
+                "source": "chemical_additions",
+                "aggregation": "sum",
+                "local_day": local_day,
+                "timezone": self.pump_timer_config.timezone,
+                "interval_start_utc": start_utc.isoformat(),
+                "interval_end_utc": end_utc.isoformat(),
+                "manual_muriatic_acid_oz": total_oz,
+                "manual_addition_count": len(additions),
+            },
+        )
+
+    def _daily_moving_average_measurements(
+        self,
+        *,
+        source_measurements: tuple[Measurement, ...],
+        local_day: str,
+        timezone_name: str,
+    ) -> tuple[Measurement, ...]:
+        if self.measurement_logger is None:
+            return ()
+
+        current_by_sensor = {
+            measurement.sensor_id: measurement
+            for measurement in source_measurements
+            if measurement.sensor_id in DAILY_MOVING_AVERAGE_SENSOR_IDS
+        }
+        measurements: list[Measurement] = []
+        for source_sensor_id, target_by_window in DAILY_MOVING_AVERAGE_SENSOR_IDS.items():
+            current = current_by_sensor.get(source_sensor_id)
+            if current is None:
+                continue
+
+            for window_days in DAILY_MOVING_AVERAGE_WINDOWS:
+                target_sensor_id = target_by_window[window_days]
+                since = current.observed_at - timedelta(days=window_days - 1)
+                previous_records = self.measurement_logger.history(
+                    sensor_id=source_sensor_id,
+                    since=since,
+                    until=current.observed_at - timedelta(microseconds=1),
+                    limit=window_days,
+                    qualities=(Quality.GOOD,),
+                )
+                source_values = [record.value for record in previous_records]
+                source_values.append(current.value)
+                source_count = len(source_values)
+                if source_count <= 0:
+                    continue
+
+                avg_value = sum(source_values) / source_count
+                measurements.append(
+                    Measurement(
+                        id=f"{target_sensor_id.value}:{local_day}",
+                        sensor_id=target_sensor_id,
+                        observed_at=current.observed_at,
+                        kind=MeasurementKind.ESTIMATED,
+                        value=round(avg_value, 4),
+                        unit=current.unit,
+                        quality=Quality.GOOD,
+                        source_measurement_ids=[
+                            *(record.measurement_id for record in previous_records),
+                            current.id,
+                        ],
+                        metadata={
+                            "driver": "daily_moving_average_summary",
+                            "source": source_sensor_id.value,
+                            "aggregation": "moving_avg",
+                            "window_days": window_days,
+                            "source_sample_count": source_count,
+                            "local_day": local_day,
+                            "timezone": timezone_name,
+                            "window_start": since.isoformat(),
+                            "window_end": current.observed_at.isoformat(),
+                        },
+                    )
+                )
 
         return tuple(measurements)
 
@@ -1365,13 +1701,17 @@ class PoolControllerApp:
                 local_day_start = _local_day_start(
                     snapshot_observed_at,
                     timezone_name=self.pump_timer_config.timezone,
-                )
+                ).astimezone(timezone.utc)
                 daily_delivery = self.measurement_logger.chlorine_delivery_summary(
                     since=local_day_start,
                     until=snapshot_observed_at,
                 )
                 measurements.append(
                     Measurement(
+                        id=(
+                            f"{SensorId.CHLORINE_DAILY_DELIVERED_OZ.value}:"
+                            f"{boundary}:{snapshot_observed_at.isoformat()}"
+                        ),
                         sensor_id=SensorId.CHLORINE_DAILY_DELIVERED_OZ,
                         observed_at=snapshot_observed_at,
                         kind=MeasurementKind.ESTIMATED,
@@ -1427,6 +1767,13 @@ class PoolControllerApp:
                         "previous_fc_ppm": fc_demand_status.previous_fc_ppm,
                         "current_fc_ppm": fc_demand_status.current_fc_ppm,
                         "elapsed_days": fc_demand_status.elapsed_days,
+                        "demand_window_days": fc_demand_status.demand_window_days,
+                        "max_demand_window_days": (
+                            fc_demand_status.max_demand_window_days
+                        ),
+                        "demand_window_source": (
+                            fc_demand_status.demand_window_source
+                        ),
                         "added_fc_ppm": fc_demand_status.added_fc_ppm,
                         "consumed_fc_ppm": fc_demand_status.consumed_fc_ppm,
                         "maintenance_dose_oz_per_day": (
@@ -2199,6 +2546,9 @@ def _fc_demand_trend_measurements(
         "actual_fc_demand_ppm_per_day": actual_demand,
         "previous_base_fc_demand_ppm_per_day": previous_base,
         "base_ema_alpha": FC_DEMAND_BASE_EMA_ALPHA,
+        "demand_window_days": status.demand_window_days,
+        "max_demand_window_days": status.max_demand_window_days,
+        "demand_window_source": status.demand_window_source,
         "modifier_model": "not_configured",
         "water_temp_source": SensorId.ORP_TEMP.value,
         "uv_modifier_ppm_per_day": 0.0,

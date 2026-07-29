@@ -21,9 +21,12 @@ from poolctl.domain.models import (
     ActuatorId,
     ActuatorState,
     ActuatorStateSample,
+    ChemicalAddition,
+    ChemicalType,
     CommandSource,
     LabTest,
     Measurement,
+    MeasurementKind,
     Quality,
     SensorId,
 )
@@ -426,14 +429,16 @@ async def test_tick_logs_chlorine_delivery_when_dosing_pulse_finishes(
     assert len(duty_records) == 3
     assert round(duty_records[-1].value, 3) == 3.636
     assert duty_records[-1].unit == "percent"
-    assert len(cumulative_records) == 2
+    assert len(cumulative_records) == 3
     assert [record.observed_at for record in cumulative_records] == [
+        datetime(2026, 5, 21, tzinfo=timezone.utc),
         start,
         start + timedelta(seconds=60),
     ]
-    assert [round(record.value, 3) for record in cumulative_records] == [0.0, 1.0]
+    assert [round(record.value, 3) for record in cumulative_records] == [0.0, 0.0, 1.0]
     assert cumulative_records[-1].unit == "fl oz"
-    assert cumulative_records[0].metadata["snapshot_boundary"] == "start"
+    assert cumulative_records[0].metadata["snapshot_boundary"] == "reset"
+    assert cumulative_records[1].metadata["snapshot_boundary"] == "start"
     assert cumulative_records[-1].metadata["snapshot_boundary"] == "end"
 
     await clock.advance(1589.9)
@@ -444,7 +449,7 @@ async def test_tick_logs_chlorine_delivery_when_dosing_pulse_finishes(
         limit=10,
     )
 
-    assert len(cumulative_records) == 3
+    assert len(cumulative_records) == 4
     assert cumulative_records[-1].observed_at == start + timedelta(seconds=1650)
     assert round(cumulative_records[-1].value, 3) == 1.0
     assert cumulative_records[-1].metadata["snapshot_boundary"] == "start"
@@ -520,7 +525,7 @@ async def test_chlorination_control_history_is_throttled_between_state_changes(
             sensor_id=SensorId.CHLORINE_DAILY_DELIVERED_OZ,
             limit=10,
         )
-    ) == 1
+    ) == 2
 
     await clock.advance(29.0)
     await app.tick()
@@ -535,7 +540,7 @@ async def test_chlorination_control_history_is_throttled_between_state_changes(
         sensor_id=SensorId.CHLORINE_DAILY_DELIVERED_OZ,
         limit=10,
     )
-    assert len(cumulative_records) == 1
+    assert len(cumulative_records) == 2
     assert round(cumulative_records[-1].value, 3) == 0.0
     assert cumulative_records[-1].metadata["snapshot_boundary"] == "start"
 
@@ -546,7 +551,7 @@ async def test_chlorination_control_history_is_throttled_between_state_changes(
         sensor_id=SensorId.CHLORINE_DAILY_DELIVERED_OZ,
         limit=10,
     )
-    assert len(cumulative_records) == 2
+    assert len(cumulative_records) == 3
     assert round(cumulative_records[-1].value, 3) == 1.0
     assert cumulative_records[-1].metadata["snapshot_boundary"] == "end"
 
@@ -573,6 +578,130 @@ def test_chlorine_delivery_accounting_stops_at_auto_off_time() -> None:
     )
 
     assert runtime_end == auto_off_at
+
+
+def test_daily_sodium_hypochlorite_summary_totals_automated_and_manual_additions(
+    tmp_path: Path,
+) -> None:
+    clock = make_clock()
+    config = {
+        "runtime": {
+            "stage": "sensor_logging",
+            "driver_profile": "simulated",
+            "enabled_layers": ["logging"],
+            "enabled_actuators": [],
+            "enabled_sensor_groups": [],
+        },
+        "logging": {
+            "database_path": str(tmp_path / "daily-chlorine.sqlite3"),
+        },
+        "pump_timer": {"timezone": "UTC", "schedules": []},
+        "fc_demand": {
+            "enabled": True,
+            "pool_volume_gal": 10000.0,
+            "chlorine_strength_percent": 12.0,
+        },
+    }
+    app = build_app_from_mapping(config, clock=clock)
+    assert app.measurement_logger is not None
+    app.measurement_logger.log_measurements(
+        tuple(
+            Measurement(
+                id=f"{SensorId.DAILY_SODIUM_HYPOCHLORITE_ADDED_OZ.value}:2026-05-{14 + index:02d}",
+                sensor_id=SensorId.DAILY_SODIUM_HYPOCHLORITE_ADDED_OZ,
+                observed_at=datetime(2026, 5, 15 + index, tzinfo=timezone.utc),
+                kind=MeasurementKind.ESTIMATED,
+                value=float(index + 1),
+                unit="fl oz",
+                quality=Quality.GOOD,
+            )
+            for index in range(6)
+        )
+        + tuple(
+            Measurement(
+                id=f"{SensorId.DAILY_MURIATIC_ACID_ADDED_OZ.value}:2026-05-{14 + index:02d}",
+                sensor_id=SensorId.DAILY_MURIATIC_ACID_ADDED_OZ,
+                observed_at=datetime(2026, 5, 15 + index, tzinfo=timezone.utc),
+                kind=MeasurementKind.ESTIMATED,
+                value=2.0,
+                unit="fl oz",
+                quality=Quality.GOOD,
+            )
+            for index in range(6)
+        )
+    )
+    app.measurement_logger.log_chlorine_delivery(
+        observed_at=datetime(2026, 5, 20, 8, tzinfo=timezone.utc),
+        runtime_seconds=90.0,
+        delivered_oz=1.5,
+    )
+    app.measurement_logger.log_chemical_addition(
+        ChemicalAddition(
+            added_at=datetime(2026, 5, 20, 9, tzinfo=timezone.utc),
+            chemical=ChemicalType.SODIUM_HYPOCHLORITE,
+            amount=10.0,
+            unit="fl_oz",
+            amount_fl_oz=10.0,
+            strength_percent=12.0,
+        )
+    )
+    app.measurement_logger.log_chemical_addition(
+        ChemicalAddition(
+            added_at=datetime(2026, 5, 20, 10, tzinfo=timezone.utc),
+            chemical=ChemicalType.MURIATIC_ACID,
+            amount=4.0,
+            unit="fl_oz",
+            amount_fl_oz=4.0,
+            strength_percent=31.45,
+        )
+    )
+    app.measurement_logger.log_chemical_addition(
+        ChemicalAddition(
+            added_at=datetime(2026, 5, 21, tzinfo=timezone.utc),
+            chemical=ChemicalType.SODIUM_HYPOCHLORITE,
+            amount=99.0,
+            unit="fl_oz",
+            amount_fl_oz=99.0,
+            strength_percent=12.0,
+        )
+    )
+
+    measurements = app._daily_environment_measurements(
+        observed_at=datetime(2026, 5, 21, 12, tzinfo=timezone.utc),
+    )
+    daily_chlorine = next(
+        measurement
+        for measurement in measurements
+        if measurement.sensor_id == SensorId.DAILY_SODIUM_HYPOCHLORITE_ADDED_OZ
+    )
+    daily_acid = next(
+        measurement
+        for measurement in measurements
+        if measurement.sensor_id == SensorId.DAILY_MURIATIC_ACID_ADDED_OZ
+    )
+    chlorine_7d = next(
+        measurement
+        for measurement in measurements
+        if measurement.sensor_id
+        == SensorId.DAILY_SODIUM_HYPOCHLORITE_ADDED_OZ_7D_AVG
+    )
+    acid_7d = next(
+        measurement
+        for measurement in measurements
+        if measurement.sensor_id == SensorId.DAILY_MURIATIC_ACID_ADDED_OZ_7D_AVG
+    )
+
+    assert daily_chlorine.observed_at == datetime(2026, 5, 21, tzinfo=timezone.utc)
+    assert daily_chlorine.value == 11.5
+    assert daily_chlorine.metadata["automated_delivery_oz"] == 1.5
+    assert daily_chlorine.metadata["manual_sodium_hypochlorite_oz"] == 10.0
+    assert daily_chlorine.metadata["manual_addition_count"] == 1
+    assert daily_acid.value == 4.0
+    assert daily_acid.metadata["manual_addition_count"] == 1
+    assert chlorine_7d.value == 4.6429
+    assert chlorine_7d.metadata["source_sample_count"] == 7
+    assert acid_7d.value == 2.2857
+    assert acid_7d.metadata["source_sample_count"] == 7
 
 
 @pytest.mark.asyncio
@@ -1066,7 +1195,7 @@ async def test_tick_logs_daily_environment_summaries_from_orp_temp_and_weather(
     first = await app.tick()
     second = await app.tick()
 
-    assert first.logged_measurement_count == 5
+    assert first.logged_measurement_count == 16
     assert second.logged_measurement_count == 0
     min_records = app.measurement_logger.history(
         sensor_id=SensorId.DAILY_WATER_TEMP_MIN,
@@ -1088,6 +1217,26 @@ async def test_tick_logs_daily_environment_summaries_from_orp_temp_and_weather(
         sensor_id=SensorId.DAILY_SHORTWAVE_RADIATION_DOSE,
         limit=10,
     )
+    daily_chlorine_records = app.measurement_logger.history(
+        sensor_id=SensorId.DAILY_SODIUM_HYPOCHLORITE_ADDED_OZ,
+        limit=10,
+    )
+    daily_acid_records = app.measurement_logger.history(
+        sensor_id=SensorId.DAILY_MURIATIC_ACID_ADDED_OZ,
+        limit=10,
+    )
+    water_avg_7d_records = app.measurement_logger.history(
+        sensor_id=SensorId.DAILY_WATER_TEMP_AVG_7D_AVG,
+        limit=10,
+    )
+    uv_28d_records = app.measurement_logger.history(
+        sensor_id=SensorId.DAILY_UV_INDEX_DOSE_28D_AVG,
+        limit=10,
+    )
+    delivered_reset_records = app.measurement_logger.history(
+        sensor_id=SensorId.CHLORINE_DAILY_DELIVERED_OZ,
+        limit=10,
+    )
 
     assert len(min_records) == 1
     assert min_records[0].observed_at == datetime(2026, 5, 20, 12, 0, tzinfo=timezone.utc)
@@ -1098,6 +1247,26 @@ async def test_tick_logs_daily_environment_summaries_from_orp_temp_and_weather(
     assert uv_records[0].unit == "index-hour"
     assert shortwave_records[0].value == 400.0
     assert shortwave_records[0].unit == "Wh/m2"
+    assert daily_chlorine_records[0].observed_at == datetime(
+        2026,
+        5,
+        21,
+        tzinfo=timezone.utc,
+    )
+    assert daily_chlorine_records[0].value == 0.0
+    assert daily_acid_records[0].value == 0.0
+    assert water_avg_7d_records[0].value == 75.3333
+    assert water_avg_7d_records[0].metadata["source_sample_count"] == 1
+    assert uv_28d_records[0].value == 4.0
+    assert uv_28d_records[0].metadata["window_days"] == 28
+    assert delivered_reset_records[0].observed_at == datetime(
+        2026,
+        5,
+        21,
+        tzinfo=timezone.utc,
+    )
+    assert delivered_reset_records[0].value == 0.0
+    assert delivered_reset_records[0].metadata["snapshot_boundary"] == "reset"
 
 
 def test_raspberry_pi_profile_builds_modbus_relay_actuators_from_config() -> None:

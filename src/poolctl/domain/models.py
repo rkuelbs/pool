@@ -68,6 +68,26 @@ class SensorId(str, Enum):
     DAILY_WATER_TEMP_MAX = "daily_water_temp_max"
     DAILY_UV_INDEX_DOSE = "daily_uv_index_dose"
     DAILY_SHORTWAVE_RADIATION_DOSE = "daily_shortwave_radiation_dose"
+    DAILY_SODIUM_HYPOCHLORITE_ADDED_OZ = "daily_sodium_hypochlorite_added_oz"
+    DAILY_SODIUM_HYPOCHLORITE_ADDED_OZ_7D_AVG = (
+        "daily_sodium_hypochlorite_added_oz_7d_avg"
+    )
+    DAILY_SODIUM_HYPOCHLORITE_ADDED_OZ_28D_AVG = (
+        "daily_sodium_hypochlorite_added_oz_28d_avg"
+    )
+    DAILY_MURIATIC_ACID_ADDED_OZ = "daily_muriatic_acid_added_oz"
+    DAILY_MURIATIC_ACID_ADDED_OZ_7D_AVG = "daily_muriatic_acid_added_oz_7d_avg"
+    DAILY_MURIATIC_ACID_ADDED_OZ_28D_AVG = "daily_muriatic_acid_added_oz_28d_avg"
+    DAILY_ORP_AVG = "daily_orp_avg"
+    DAILY_ORP_AVG_7D_AVG = "daily_orp_avg_7d_avg"
+    DAILY_ORP_AVG_28D_AVG = "daily_orp_avg_28d_avg"
+    DAILY_WATER_TEMP_AVG_7D_AVG = "daily_water_temp_avg_7d_avg"
+    DAILY_WATER_TEMP_AVG_28D_AVG = "daily_water_temp_avg_28d_avg"
+    DAILY_PH_AVG = "daily_ph_avg"
+    DAILY_PH_AVG_7D_AVG = "daily_ph_avg_7d_avg"
+    DAILY_PH_AVG_28D_AVG = "daily_ph_avg_28d_avg"
+    DAILY_UV_INDEX_DOSE_7D_AVG = "daily_uv_index_dose_7d_avg"
+    DAILY_UV_INDEX_DOSE_28D_AVG = "daily_uv_index_dose_28d_avg"
 
     RAW_ORP = "raw_orp"
     ORP_TEMP = "orp_temp"

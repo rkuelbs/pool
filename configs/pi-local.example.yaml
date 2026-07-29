@@ -42,6 +42,8 @@ fc_demand:
   target_fc_ppm: 5.0
   chlorine_strength_percent: 12.0
   minimum_test_interval_hours: 12.0
+  demand_window_days: 7.0
+  max_demand_window_days: 14.0
   max_daily_dose_oz: 96.0
 
 # Optional site-specific paths. Leave these out if pi-prod.yaml is correct.

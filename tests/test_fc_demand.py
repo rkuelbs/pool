@@ -137,6 +137,38 @@ def test_high_fc_creates_next_day_eligible_time_delay_without_changing_duty() ->
     assert round(plan.adjustment.delay_eligible_seconds, 3) == 12600.0
 
 
+def test_fc_demand_uses_weekish_test_window_instead_of_latest_adjacent_test() -> None:
+    config = FcDemandConfig(
+        enabled=True,
+        mode=ControlMode.RECOMMEND,
+        target_fc_ppm=4.0,
+        pool_volume_gal=10000.0,
+        chlorine_strength_percent=12.0,
+        demand_window_days=7.0,
+        max_demand_window_days=14.0,
+    )
+
+    plan = estimate_fc_demand_plan(
+        config=config,
+        now=at(22, 1),
+        pump_timer_config=timer_config(),
+        chlorination_config=ChlorinationConfig(no_dose_last_minutes=10.0),
+        fc_tests=(
+            FcTestPoint(sampled_at=at(14, 12), free_chlorine=4.0),
+            FcTestPoint(sampled_at=at(20, 12), free_chlorine=5.8),
+            FcTestPoint(sampled_at=at(21, 12), free_chlorine=3.5),
+        ),
+        automated_chlorine_oz=70.0,
+        sodium_hypochlorite_additions=(),
+    )
+
+    assert plan.status.ready is True
+    assert plan.status.previous_sampled_at == at(14, 12)
+    assert round(plan.status.elapsed_days or 0.0, 3) == 7.0
+    assert plan.status.demand_window_source == "target_window"
+    assert round(plan.status.daily_demand_ppm or 0.0, 3) == 1.009
+
+
 def test_manual_sodium_hypochlorite_additions_count_toward_fc_added() -> None:
     config = FcDemandConfig(enabled=True, mode=ControlMode.RECOMMEND)
     addition = ChemicalAddition(

@@ -41,6 +41,22 @@ const SENSOR_LABELS = {
   daily_water_temp_max: "Daily water temp max",
   daily_uv_index_dose: "Daily UV dose",
   daily_shortwave_radiation_dose: "Daily shortwave dose",
+  daily_sodium_hypochlorite_added_oz: "Daily sodium hypochlorite added",
+  daily_sodium_hypochlorite_added_oz_7d_avg: "Sodium hypochlorite 7d avg",
+  daily_sodium_hypochlorite_added_oz_28d_avg: "Sodium hypochlorite 28d avg",
+  daily_muriatic_acid_added_oz: "Daily muriatic acid added",
+  daily_muriatic_acid_added_oz_7d_avg: "Muriatic acid 7d avg",
+  daily_muriatic_acid_added_oz_28d_avg: "Muriatic acid 28d avg",
+  daily_orp_avg: "Daily ORP avg",
+  daily_orp_avg_7d_avg: "ORP 7d avg",
+  daily_orp_avg_28d_avg: "ORP 28d avg",
+  daily_water_temp_avg_7d_avg: "Water temp 7d avg",
+  daily_water_temp_avg_28d_avg: "Water temp 28d avg",
+  daily_ph_avg: "Daily pH avg",
+  daily_ph_avg_7d_avg: "pH 7d avg",
+  daily_ph_avg_28d_avg: "pH 28d avg",
+  daily_uv_index_dose_7d_avg: "UV dose 7d avg",
+  daily_uv_index_dose_28d_avg: "UV dose 28d avg",
   lab_ph: "pH (tested)",
   lab_free_chlorine: "Free Chlorine (tested)",
   lab_alkalinity: "Alkalinity (tested)",
@@ -101,8 +117,24 @@ const HISTORY_SENSOR_ORDER = [
   "daily_water_temp_min",
   "daily_water_temp_avg",
   "daily_water_temp_max",
+  "daily_water_temp_avg_7d_avg",
+  "daily_water_temp_avg_28d_avg",
+  "daily_orp_avg",
+  "daily_orp_avg_7d_avg",
+  "daily_orp_avg_28d_avg",
+  "daily_ph_avg",
+  "daily_ph_avg_7d_avg",
+  "daily_ph_avg_28d_avg",
   "daily_uv_index_dose",
+  "daily_uv_index_dose_7d_avg",
+  "daily_uv_index_dose_28d_avg",
   "daily_shortwave_radiation_dose",
+  "daily_sodium_hypochlorite_added_oz",
+  "daily_sodium_hypochlorite_added_oz_7d_avg",
+  "daily_sodium_hypochlorite_added_oz_28d_avg",
+  "daily_muriatic_acid_added_oz",
+  "daily_muriatic_acid_added_oz_7d_avg",
+  "daily_muriatic_acid_added_oz_28d_avg",
   "lab_ph",
   "lab_free_chlorine",
   "lab_alkalinity",
@@ -875,8 +907,12 @@ function renderFcDemandStatus(fcDemand, dosingPrime) {
     const demand = Number(payload.daily_demand_ppm);
     const dose = Number(payload.recommended_daily_dose_oz);
     const delay = Number(payload.delay_eligible_minutes_today);
+    const elapsed = Number(payload.elapsed_days);
     const mode = String(payload.mode || "observe_only").replaceAll("_", " ");
     const pieces = [`FC demand: ${Number.isFinite(demand) ? demand.toFixed(2) : "--"} ppm/day`];
+    if (Number.isFinite(elapsed) && elapsed > 0) {
+      pieces.push(`over ${elapsed.toFixed(1)}d`);
+    }
     pieces.push(`rec ${Number.isFinite(dose) ? dose.toFixed(1) : "--"} oz/day`);
     if (Number.isFinite(delay) && delay > 0) {
       pieces.push(`delay ${delay.toFixed(0)} min`);
@@ -3406,8 +3442,20 @@ function renderFcDemandConfig(payload) {
   const target = document.getElementById("fcDemandTargetFcPpm");
   const strength = document.getElementById("fcDemandChlorineStrengthPercent");
   const minInterval = document.getElementById("fcDemandMinimumTestIntervalHours");
+  const demandWindow = document.getElementById("fcDemandDemandWindowDays");
+  const maxDemandWindow = document.getElementById("fcDemandMaxDemandWindowDays");
   const maxDose = document.getElementById("fcDemandMaxDailyDoseOz");
-  if (!enabled || !mode || !poolVolume || !target || !strength || !minInterval || !maxDose) {
+  if (
+    !enabled ||
+    !mode ||
+    !poolVolume ||
+    !target ||
+    !strength ||
+    !minInterval ||
+    !demandWindow ||
+    !maxDemandWindow ||
+    !maxDose
+  ) {
     return;
   }
   enabled.checked = payload.enabled === true;
@@ -3416,6 +3464,8 @@ function renderFcDemandConfig(payload) {
   target.value = String(payload.target_fc_ppm ?? 4.0);
   strength.value = String(payload.chlorine_strength_percent ?? 12.0);
   minInterval.value = String(payload.minimum_test_interval_hours ?? 12.0);
+  demandWindow.value = String(payload.demand_window_days ?? 7.0);
+  maxDemandWindow.value = String(payload.max_demand_window_days ?? 14.0);
   maxDose.value = String(payload.max_daily_dose_oz ?? 256.0);
 }
 
@@ -3427,6 +3477,8 @@ function collectFcDemandConfig() {
     target_fc_ppm: Number(document.getElementById("fcDemandTargetFcPpm").value),
     chlorine_strength_percent: Number(document.getElementById("fcDemandChlorineStrengthPercent").value),
     minimum_test_interval_hours: Number(document.getElementById("fcDemandMinimumTestIntervalHours").value),
+    demand_window_days: Number(document.getElementById("fcDemandDemandWindowDays").value),
+    max_demand_window_days: Number(document.getElementById("fcDemandMaxDemandWindowDays").value),
     max_daily_dose_oz: Number(document.getElementById("fcDemandMaxDailyDoseOz").value),
   };
 }
@@ -3811,6 +3863,7 @@ function renderLabTestFcDemandFeedback(fcDemand) {
   const demand = Number(fcDemand.daily_demand_ppm);
   const recommended = Number(fcDemand.recommended_daily_dose_oz);
   const effective = Number(fcDemand.effective_daily_dose_oz);
+  const elapsed = Number(fcDemand.elapsed_days);
   const catchUp = Number(fcDemand.catch_up_dose_oz_next_day);
   const skipDays = Number(fcDemand.skip_days);
   const delay = Number(fcDemand.delay_eligible_minutes_today);
@@ -3819,6 +3872,9 @@ function renderLabTestFcDemandFeedback(fcDemand) {
     `FC demand ${Number.isFinite(demand) ? demand.toFixed(2) : "--"} ppm/day`,
     `recommended ${Number.isFinite(recommended) ? recommended.toFixed(1) : "--"} oz/day`,
   ];
+  if (Number.isFinite(elapsed) && elapsed > 0) {
+    pieces.push(`window ${elapsed.toFixed(1)} days`);
+  }
 
   if (Number.isFinite(catchUp) && catchUp > 0) {
     pieces.push(`catch-up ${catchUp.toFixed(1)} oz on ${adjustmentDate}`);

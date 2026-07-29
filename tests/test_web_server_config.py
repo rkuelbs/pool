@@ -239,6 +239,8 @@ def test_fc_demand_update_applies_live_and_persists(tmp_path: Path) -> None:
         "target_fc_ppm": 4.0,
         "chlorine_strength_percent": 12.0,
         "minimum_test_interval_hours": 12.0,
+        "demand_window_days": 7.0,
+        "max_demand_window_days": 14.0,
         "max_daily_dose_oz": 256.0,
     }
     path = tmp_path / "pool.yaml"
@@ -255,6 +257,8 @@ def test_fc_demand_update_applies_live_and_persists(tmp_path: Path) -> None:
             "target_fc_ppm": 5.0,
             "chlorine_strength_percent": 12.5,
             "minimum_test_interval_hours": 24.0,
+            "demand_window_days": 6.0,
+            "max_demand_window_days": 12.0,
             "max_daily_dose_oz": 300.0,
         },
     )
@@ -263,10 +267,14 @@ def test_fc_demand_update_applies_live_and_persists(tmp_path: Path) -> None:
     assert result["applied_live"] is True
     assert result["mode"] == "automatic"
     assert app.fc_demand_config.pool_volume_gal == 14500.0
+    assert app.fc_demand_config.demand_window_days == 6.0
+    assert app.fc_demand_config.max_demand_window_days == 12.0
     assert serialize_fc_demand_config(app)["target_fc_ppm"] == 5.0
     saved = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert saved["fc_demand"]["mode"] == "automatic"
     assert saved["fc_demand"]["pool_volume_gal"] == 14500.0
+    assert saved["fc_demand"]["demand_window_days"] == 6.0
+    assert saved["fc_demand"]["max_demand_window_days"] == 12.0
 
 
 def test_start_chlorination_prime_sets_runtime_timer() -> None:
