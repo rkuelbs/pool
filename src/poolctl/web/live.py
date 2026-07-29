@@ -215,6 +215,7 @@ async def build_live_snapshot(app: PoolControllerApp) -> dict[str, Any]:
             else None
         ),
         "dosing_prime": app.dosing_prime_status(),
+        "supplemental_chlorine_dose": app.supplemental_chlorine_dose_status(),
         "safety": safety_payload(app),
         "timer_override": timer_override_payload(
             app.active_timer_override() or app.active_sample_timer_override()

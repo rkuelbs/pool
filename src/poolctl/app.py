@@ -9,6 +9,7 @@ control, chlorination, acquisition, safety, logging, MQTT, and notifications.
 
 from __future__ import annotations
 
+import math
 import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
@@ -183,6 +184,90 @@ class TimerOverrideState:
 
 
 @dataclass(frozen=True)
+class SupplementalChlorineDoseState:
+    """
+    Runtime state for a one-shot extra liquid-chlorine dose.
+    """
+
+    requested_dose_oz: float
+    planned_dose_oz: float
+    started_at: datetime
+    dosing_until: datetime
+    circulate_until: datetime
+    pump_runtime_s: float
+    pulse_seconds: float
+    pulse_count: int
+    duty_cycle: float
+    cycle_period_s: float
+    no_dose_last_seconds: float
+    min_cycle_on_seconds: float
+    min_cycle_on_seconds_overridden: bool
+
+    def is_active(self, now: datetime) -> bool:
+        return now < self.circulate_until
+
+    def phase(self, now: datetime) -> str:
+        if now < self.dosing_until:
+            return "dosing"
+        if now < self.circulate_until:
+            return "circulating"
+        return "complete"
+
+    def desired_state(self, now: datetime) -> ActuatorState:
+        if self.phase(now) != "dosing":
+            return ActuatorState.OFF
+
+        cycle_index = self.pulse_index(now)
+        if cycle_index is None:
+            return ActuatorState.OFF
+
+        cycle_position_s = self.cycle_position_seconds(now)
+        if cycle_position_s is None:
+            return ActuatorState.OFF
+
+        return (
+            ActuatorState.ON
+            if cycle_position_s < self.pulse_seconds
+            else ActuatorState.OFF
+        )
+
+    def pulse_index(self, now: datetime) -> int | None:
+        if self.phase(now) != "dosing":
+            return None
+
+        elapsed_s = max(0.0, (now - self.started_at).total_seconds())
+        cycle_index = int(elapsed_s // self.cycle_period_s)
+        if cycle_index >= self.pulse_count:
+            return None
+
+        return cycle_index
+
+    def cycle_position_seconds(self, now: datetime) -> float | None:
+        cycle_index = self.pulse_index(now)
+        if cycle_index is None:
+            return None
+
+        elapsed_s = max(0.0, (now - self.started_at).total_seconds())
+        return elapsed_s - cycle_index * self.cycle_period_s
+
+    def on_pulse_seconds(self, now: datetime) -> float | None:
+        if self.desired_state(now) != ActuatorState.ON:
+            return None
+
+        cycle_position_s = self.cycle_position_seconds(now)
+        if cycle_position_s is None:
+            return None
+
+        remaining_pulse_s = self.pulse_seconds - cycle_position_s
+        remaining_dosing_s = max(0.0, (self.dosing_until - now).total_seconds())
+        remaining_s = min(remaining_pulse_s, remaining_dosing_s)
+        if remaining_s <= 0:
+            return None
+
+        return quantize_relay_flash_seconds(remaining_s)
+
+
+@dataclass(frozen=True)
 class ChemistrySamplingRefreshConfig:
     """
     Periodically run pump flow so chemistry loop sensors can become valid.
@@ -296,6 +381,8 @@ class PoolControllerApp:
     dosing_prime_safety_bypass: bool = True
     dosing_prime_delivery_exclude_started_at: datetime | None = None
     dosing_prime_delivery_exclude_until: datetime | None = None
+    supplemental_chlorine_dose: SupplementalChlorineDoseState | None = None
+    supplemental_chlorine_last_on_cycle_index: int | None = None
     chlorination_control_last_logged_at: datetime | None = None
     chlorination_control_last_signature: tuple[Any, ...] | None = None
     daily_environment_last_checked_at: datetime | None = None
@@ -597,8 +684,174 @@ class PoolControllerApp:
             "command": _command_result_payload(result) if result is not None else None,
         }
 
+    async def stop_supplemental_chlorine_dose(self) -> dict[str, Any]:
+        now = self.clock.now()
+        was_active = self.active_supplemental_chlorine_dose() is not None
+        logged_delivery_count = self._log_chlorine_delivery_since_last_tick(now)
+        object.__setattr__(self, "supplemental_chlorine_dose", None)
+        object.__setattr__(self, "supplemental_chlorine_last_on_cycle_index", None)
+
+        result: ActuatorCommandResult | None = None
+        if (
+            self.router.actuator_states.get(ActuatorId.CHLORINE_DOSING_PUMP)
+            == ActuatorState.ON
+        ):
+            result = await self.router.route(
+                ActuatorCommand(
+                    actuator_id=ActuatorId.CHLORINE_DOSING_PUMP,
+                    created_at=now,
+                    state=ActuatorState.OFF,
+                    requested_by=CommandSource.LOCAL_GUI,
+                    reason="stop supplemental chlorine dose",
+                    metadata={"controller": "supplemental_chlorine_dose"},
+                )
+            )
+        logged_delivery_count += self._flush_chlorine_delivery_if_inactive()
+
+        return {
+            "stopped": True,
+            "was_active": was_active,
+            "logged_chlorine_delivery_count": logged_delivery_count,
+            "supplemental_chlorine_dose": self.supplemental_chlorine_dose_status(),
+            "command": _command_result_payload(result) if result is not None else None,
+        }
+
     def dosing_pump_diagnostic_active(self) -> bool:
         return self.dosing_prime_status()["active"] is True
+
+    def start_supplemental_chlorine_dose(
+        self,
+        *,
+        dose_oz: float,
+    ) -> dict[str, Any]:
+        if dose_oz <= 0:
+            raise ValueError("dose_oz must be > 0")
+        if self.pump_timer is None:
+            raise ValueError("supplemental chlorine dose requires the pump_timer layer")
+        if self.chlorination_controller is None:
+            raise ValueError(
+                "supplemental chlorine dose requires the chlorination layer"
+            )
+        if not self.chlorination_config.enabled:
+            raise ValueError("chlorination must be enabled for a supplemental dose")
+        if self.dosing_pump_diagnostic_active():
+            raise ValueError("stop the dosing pump diagnostic before adding a dose")
+        if self.active_supplemental_chlorine_dose() is not None:
+            raise ValueError("a supplemental chlorine dose is already active")
+
+        now = self.clock.now()
+        target_runtime_s = (
+            float(dose_oz)
+            / self.chlorination_config.pump_output_oz_per_min
+            * 60.0
+        )
+        pulse_count = max(
+            1,
+            math.ceil(target_runtime_s / self.chlorination_config.cycle_on_seconds),
+        )
+        pulse_seconds = quantize_relay_flash_seconds(target_runtime_s / pulse_count)
+
+        duty_cycle = self.chlorination_config.max_duty_cycle
+        cycle_period_s = pulse_seconds / duty_cycle
+        pump_runtime_s = pulse_seconds * pulse_count
+        dosing_duration_s = cycle_period_s * pulse_count
+        no_dose_last_seconds = self.chlorination_config.no_dose_last_minutes * 60.0
+        planned_dose_oz = (
+            pump_runtime_s
+            / 60.0
+            * self.chlorination_config.pump_output_oz_per_min
+        )
+        state = SupplementalChlorineDoseState(
+            requested_dose_oz=float(dose_oz),
+            planned_dose_oz=round(planned_dose_oz, 4),
+            started_at=now,
+            dosing_until=now + timedelta(seconds=dosing_duration_s),
+            circulate_until=now
+            + timedelta(seconds=dosing_duration_s + no_dose_last_seconds),
+            pump_runtime_s=pump_runtime_s,
+            pulse_seconds=pulse_seconds,
+            pulse_count=pulse_count,
+            duty_cycle=duty_cycle,
+            cycle_period_s=cycle_period_s,
+            no_dose_last_seconds=no_dose_last_seconds,
+            min_cycle_on_seconds=self.chlorination_config.min_cycle_on_seconds,
+            min_cycle_on_seconds_overridden=(
+                pulse_seconds < self.chlorination_config.min_cycle_on_seconds
+            ),
+        )
+        self._log_chlorine_delivery_since_last_tick(now)
+        self._flush_chlorine_delivery_segment()
+        object.__setattr__(self, "supplemental_chlorine_dose", state)
+        object.__setattr__(self, "supplemental_chlorine_last_on_cycle_index", None)
+        return self.supplemental_chlorine_dose_status()
+
+    def active_supplemental_chlorine_dose(
+        self,
+    ) -> SupplementalChlorineDoseState | None:
+        state = self.supplemental_chlorine_dose
+        if state is None:
+            return None
+        if state.is_active(self.clock.now()):
+            return state
+
+        object.__setattr__(self, "supplemental_chlorine_dose", None)
+        object.__setattr__(self, "supplemental_chlorine_last_on_cycle_index", None)
+        return None
+
+    def supplemental_chlorine_dose_status(self) -> dict[str, Any]:
+        state = self.active_supplemental_chlorine_dose()
+        if state is None:
+            return {
+                "active": False,
+                "phase": "idle",
+                "desired_state": ActuatorState.OFF.value,
+                "requested_dose_oz": 0.0,
+                "planned_dose_oz": 0.0,
+                "remaining_s": 0.0,
+                "dosing_remaining_s": 0.0,
+                "circulation_remaining_s": 0.0,
+                "duty_cycle": 0.0,
+                "pulse_seconds": 0.0,
+                "pulse_count": 0,
+                "cycle_period_s": 0.0,
+                "pump_runtime_s": 0.0,
+                "no_dose_last_seconds": 0.0,
+                "min_cycle_on_seconds": 0.0,
+                "min_cycle_on_seconds_overridden": False,
+                "started_at": None,
+                "dosing_until": None,
+                "circulate_until": None,
+            }
+
+        now = self.clock.now()
+        phase = state.phase(now)
+        return {
+            "active": True,
+            "phase": phase,
+            "desired_state": state.desired_state(now).value,
+            "requested_dose_oz": state.requested_dose_oz,
+            "planned_dose_oz": state.planned_dose_oz,
+            "remaining_s": max(0.0, (state.circulate_until - now).total_seconds()),
+            "dosing_remaining_s": max(0.0, (state.dosing_until - now).total_seconds()),
+            "circulation_remaining_s": (
+                max(0.0, (state.circulate_until - now).total_seconds())
+                if phase == "circulating"
+                else 0.0
+            ),
+            "duty_cycle": state.duty_cycle,
+            "pulse_seconds": state.pulse_seconds,
+            "pulse_count": state.pulse_count,
+            "cycle_period_s": state.cycle_period_s,
+            "pump_runtime_s": state.pump_runtime_s,
+            "no_dose_last_seconds": state.no_dose_last_seconds,
+            "min_cycle_on_seconds": state.min_cycle_on_seconds,
+            "min_cycle_on_seconds_overridden": (
+                state.min_cycle_on_seconds_overridden
+            ),
+            "started_at": state.started_at.isoformat(),
+            "dosing_until": state.dosing_until.isoformat(),
+            "circulate_until": state.circulate_until.isoformat(),
+        }
 
     def _start_dosing_pump_diagnostic(
         self,
@@ -804,10 +1057,28 @@ class PoolControllerApp:
             return ()
 
         now = self.clock.now()
+        supplemental_dose = self.active_supplemental_chlorine_dose()
+        supplemental_override = (
+            PumpTimerOverride(
+                pump_motor=ActuatorState.ON,
+                pump_speed=ActuatorState.LOW,
+                booster_state=ActuatorState.OFF,
+                reason="supplemental chlorine dose circulation",
+            )
+            if supplemental_dose is not None
+            else None
+        )
         manual_override = self.active_timer_override()
         sampling_override = self.active_sample_timer_override()
         selected_override = (
-            manual_override
+            TimerOverrideState(
+                override=supplemental_override,
+                set_at=supplemental_dose.started_at,
+                until=supplemental_dose.circulate_until,
+                source="supplemental_chlorine_dose",
+            )
+            if supplemental_dose is not None and supplemental_override is not None
+            else manual_override
             if manual_override is not None
             else sampling_override
         )
@@ -927,6 +1198,128 @@ class PoolControllerApp:
             logged_delivery_count += self._flush_chlorine_delivery_if_inactive()
             return tuple(results), status, logged_delivery_count
 
+        supplemental_dose = self.active_supplemental_chlorine_dose()
+        if supplemental_dose is not None:
+            phase = supplemental_dose.phase(now)
+            safety_locked_out = self.router.safety_gate.locked_out
+            pump_running = (
+                self.router.actuator_states.get(ActuatorId.PUMP_MOTOR)
+                == ActuatorState.ON
+            )
+            desired_state = (
+                ActuatorState.OFF
+                if safety_locked_out or not pump_running
+                else supplemental_dose.desired_state(now)
+            )
+            current_state = self.router.actuator_states.get(
+                ActuatorId.CHLORINE_DOSING_PUMP,
+                ActuatorState.OFF,
+            )
+            current_pulse_index = supplemental_dose.pulse_index(now)
+            needs_on_pulse_command = (
+                desired_state == ActuatorState.ON
+                and current_pulse_index is not None
+                and self.supplemental_chlorine_last_on_cycle_index
+                != current_pulse_index
+            )
+            reason = (
+                "supplemental chlorine dose blocked by safety lockout"
+                if safety_locked_out
+                else "supplemental chlorine dose waiting for pump circulation"
+                if not pump_running
+                else "supplemental chlorine post-dose circulation"
+                if phase == "circulating"
+                else "supplemental chlorine dose active"
+            )
+            status = replace(
+                evaluation.status,
+                desired_state=desired_state,
+                active=desired_state == ActuatorState.ON,
+                reason=reason,
+                daily_dose_oz=evaluation.status.daily_dose_oz,
+                duty_cycle=supplemental_dose.duty_cycle,
+                duty_cycle_window_active=phase == "dosing",
+                requested_runtime_min_per_day=(
+                    supplemental_dose.pump_runtime_s / 60.0
+                ),
+                available_runtime_min_per_day=(
+                    (supplemental_dose.dosing_until - supplemental_dose.started_at)
+                    .total_seconds()
+                    / 60.0
+                ),
+                cycle_on_seconds=supplemental_dose.pulse_seconds,
+                nominal_cycle_on_seconds=supplemental_dose.pulse_seconds,
+                cycle_period_seconds=supplemental_dose.cycle_period_s,
+                cycle_off_seconds=(
+                    supplemental_dose.cycle_period_s
+                    - supplemental_dose.pulse_seconds
+                ),
+                no_dose_last_minutes=(
+                    supplemental_dose.no_dose_last_seconds / 60.0
+                ),
+                current_window_end=supplemental_dose.dosing_until,
+            )
+            if current_state != desired_state or needs_on_pulse_command:
+                pulse_seconds = (
+                    supplemental_dose.on_pulse_seconds(now)
+                    if desired_state == ActuatorState.ON
+                    else None
+                )
+                command = ActuatorCommand(
+                    actuator_id=ActuatorId.CHLORINE_DOSING_PUMP,
+                    created_at=now,
+                    state=desired_state,
+                    requested_by=CommandSource.LOCAL_GUI,
+                    reason=reason,
+                    metadata={
+                        "controller": "supplemental_chlorine_dose",
+                        "phase": phase,
+                        "requested_dose_oz": supplemental_dose.requested_dose_oz,
+                        "planned_dose_oz": supplemental_dose.planned_dose_oz,
+                        "duty_cycle": supplemental_dose.duty_cycle,
+                        "pulse_seconds": supplemental_dose.pulse_seconds,
+                        "pulse_count": supplemental_dose.pulse_count,
+                        "cycle_period_s": supplemental_dose.cycle_period_s,
+                        "min_cycle_on_seconds": (
+                            supplemental_dose.min_cycle_on_seconds
+                        ),
+                        "min_cycle_on_seconds_overridden": (
+                            supplemental_dose.min_cycle_on_seconds_overridden
+                        ),
+                        ACTUATOR_ON_PULSE_SECONDS_METADATA: pulse_seconds,
+                        ACTUATOR_AUTO_OFF_AT_METADATA: (
+                            (now + timedelta(seconds=pulse_seconds)).isoformat()
+                            if pulse_seconds is not None
+                            else None
+                        ),
+                    },
+                )
+                result = await self.router.route(command, measurements=measurements)
+                results.append(result)
+                self._queue_chlorine_delivery_start_snapshot(
+                    command=command,
+                    result=result,
+                )
+                if result.applied and desired_state == ActuatorState.ON:
+                    object.__setattr__(
+                        self,
+                        "supplemental_chlorine_last_on_cycle_index",
+                        current_pulse_index,
+                    )
+                elif result.applied and desired_state == ActuatorState.OFF:
+                    object.__setattr__(
+                        self,
+                        "supplemental_chlorine_last_on_cycle_index",
+                        None,
+                    )
+            if not results and desired_state == ActuatorState.OFF:
+                confirmation = await self._confirm_expired_dosing_flash_off(now)
+                if confirmation is not None:
+                    results.append(confirmation)
+
+            logged_delivery_count += self._flush_chlorine_delivery_if_inactive()
+            return tuple(results), status, logged_delivery_count
+
         for command in evaluation.commands:
             result = await self.router.route(command, measurements=measurements)
             results.append(result)
@@ -988,7 +1381,10 @@ class PoolControllerApp:
             return
         if command.state != ActuatorState.ON:
             return
-        if command.metadata.get("controller") != "open_loop_chlorination":
+        if command.metadata.get("controller") not in {
+            "open_loop_chlorination",
+            "supplemental_chlorine_dose",
+        }:
             return
 
         self._queue_chlorine_delivery_snapshot(

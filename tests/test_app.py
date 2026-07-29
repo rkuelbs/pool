@@ -580,6 +580,227 @@ def test_chlorine_delivery_accounting_stops_at_auto_off_time() -> None:
     assert runtime_end == auto_off_at
 
 
+@pytest.mark.asyncio
+async def test_supplemental_chlorine_dose_runs_pump_low_and_logs_delivery(
+    tmp_path: Path,
+) -> None:
+    clock = make_clock()
+    plant = SimulatedPlant(clock=clock)
+    dosing_driver = PulseAwareDosingActuator(clock)
+    config = {
+        "runtime": {
+            "stage": "open_loop_timer",
+            "driver_profile": "simulated",
+            "enabled_layers": ["pump_timer", "chlorination", "logging"],
+            "enabled_actuators": [
+                "pump_motor",
+                "pump_motor_speed",
+                "booster_pump",
+                "chlorine_dosing_pump",
+            ],
+            "enabled_sensor_groups": [],
+        },
+        "logging": {
+            "database_path": str(tmp_path / "supplemental-chlorine.sqlite3"),
+        },
+        "pump_timer": {"timezone": "UTC", "schedules": []},
+        "chlorination": {
+            "enabled": True,
+            "daily_dose_oz": 0.0,
+            "pump_output_oz_per_min": 1.0,
+            "no_dose_last_minutes": 10.0,
+            "max_duty_cycle": 0.5,
+            "cycle_on_seconds": 60.0,
+            "min_cycle_on_seconds": 5.0,
+        },
+    }
+    actuator_drivers = [
+        driver
+        for driver in build_default_simulated_actuators(plant)
+        if driver.actuator_id != ActuatorId.CHLORINE_DOSING_PUMP
+    ]
+    actuator_drivers.append(dosing_driver)
+    app = build_app_from_mapping(config, clock=clock, actuator_drivers=actuator_drivers)
+
+    status = app.start_supplemental_chlorine_dose(dose_oz=1.0)
+    first = await app.tick()
+    await clock.advance(60.1)
+    second = await app.tick()
+    await clock.advance(60.0)
+    third = await app.tick()
+
+    assert status["active"] is True
+    assert status["planned_dose_oz"] == 1.0
+    assert status["pulse_seconds"] == 60.0
+    assert status["pulse_count"] == 1
+    assert app.router.actuator_states[ActuatorId.PUMP_MOTOR] == ActuatorState.ON
+    assert app.router.actuator_states[ActuatorId.PUMP_MOTOR_SPEED] == ActuatorState.LOW
+    assert first.chlorination_results[0].applied is True
+    assert dosing_driver.commands[0].state == ActuatorState.ON
+    assert dosing_driver.commands[0].metadata["controller"] == "supplemental_chlorine_dose"
+    assert dosing_driver.commands[0].metadata[ACTUATOR_ON_PULSE_SECONDS_METADATA] == 60.0
+    assert second.logged_chlorine_delivery_count == 1
+    assert app.measurement_logger is not None
+    summary = app.measurement_logger.chlorine_delivery_summary()
+    assert round(summary.runtime_seconds, 3) == 60.0
+    assert round(summary.delivered_oz, 3) == 1.0
+
+    cumulative_records = app.measurement_logger.history(
+        sensor_id=SensorId.CHLORINE_DAILY_DELIVERED_OZ,
+        limit=10,
+    )
+    assert [record.metadata["snapshot_boundary"] for record in cumulative_records] == [
+        "reset",
+        "start",
+        "end",
+    ]
+    assert round(cumulative_records[-1].value, 3) == 1.0
+    assert third.chlorination_status is not None
+    assert third.chlorination_status.reason == "supplemental chlorine post-dose circulation"
+    assert app.supplemental_chlorine_dose_status()["phase"] == "circulating"
+    assert app.router.actuator_states[ActuatorId.PUMP_MOTOR] == ActuatorState.ON
+
+    await clock.advance(600.1)
+    await app.tick()
+
+    assert app.supplemental_chlorine_dose_status()["active"] is False
+    assert app.router.actuator_states[ActuatorId.PUMP_MOTOR] == ActuatorState.OFF
+
+
+@pytest.mark.asyncio
+async def test_stopping_supplemental_chlorine_dose_logs_partial_delivery(
+    tmp_path: Path,
+) -> None:
+    clock = make_clock()
+    plant = SimulatedPlant(clock=clock)
+    dosing_driver = PulseAwareDosingActuator(clock)
+    config = {
+        "runtime": {
+            "stage": "open_loop_timer",
+            "driver_profile": "simulated",
+            "enabled_layers": ["pump_timer", "chlorination", "logging"],
+            "enabled_actuators": [
+                "pump_motor",
+                "pump_motor_speed",
+                "booster_pump",
+                "chlorine_dosing_pump",
+            ],
+            "enabled_sensor_groups": [],
+        },
+        "logging": {
+            "database_path": str(tmp_path / "supplemental-stop.sqlite3"),
+        },
+        "pump_timer": {"timezone": "UTC", "schedules": []},
+        "chlorination": {
+            "enabled": True,
+            "daily_dose_oz": 0.0,
+            "pump_output_oz_per_min": 1.0,
+            "no_dose_last_minutes": 10.0,
+            "max_duty_cycle": 0.5,
+            "cycle_on_seconds": 60.0,
+            "min_cycle_on_seconds": 5.0,
+        },
+    }
+    actuator_drivers = [
+        driver
+        for driver in build_default_simulated_actuators(plant)
+        if driver.actuator_id != ActuatorId.CHLORINE_DOSING_PUMP
+    ]
+    actuator_drivers.append(dosing_driver)
+    app = build_app_from_mapping(config, clock=clock, actuator_drivers=actuator_drivers)
+
+    app.start_supplemental_chlorine_dose(dose_oz=1.0)
+    await app.tick()
+    await clock.advance(15.0)
+    result = await app.stop_supplemental_chlorine_dose()
+
+    assert result["stopped"] is True
+    assert result["was_active"] is True
+    assert result["logged_chlorine_delivery_count"] == 1
+    assert result["supplemental_chlorine_dose"]["active"] is False
+    assert dosing_driver.commands[-1].state == ActuatorState.OFF
+    assert app.measurement_logger is not None
+    summary = app.measurement_logger.chlorine_delivery_summary()
+    assert round(summary.runtime_seconds, 3) == 15.0
+    assert round(summary.delivered_oz, 3) == 0.25
+
+
+@pytest.mark.asyncio
+async def test_supplemental_chlorine_dose_hands_off_from_active_scheduled_pulse(
+    tmp_path: Path,
+) -> None:
+    clock = make_clock()
+    plant = SimulatedPlant(clock=clock)
+    dosing_driver = PulseAwareDosingActuator(clock)
+    config = {
+        "runtime": {
+            "stage": "open_loop_timer",
+            "driver_profile": "simulated",
+            "enabled_layers": ["pump_timer", "chlorination", "logging"],
+            "enabled_actuators": [
+                "pump_motor",
+                "pump_motor_speed",
+                "booster_pump",
+                "chlorine_dosing_pump",
+            ],
+            "enabled_sensor_groups": [],
+        },
+        "logging": {
+            "database_path": str(tmp_path / "supplemental-overlap.sqlite3"),
+        },
+        "pump_timer": {
+            "timezone": "UTC",
+            "schedules": [
+                {
+                    "name": "midday_filter",
+                    "start": "12:00",
+                    "end": "14:00",
+                    "pump_speed": "low",
+                    "booster": "off",
+                    "allow_dosing": True,
+                }
+            ],
+        },
+        "chlorination": {
+            "enabled": True,
+            "daily_dose_oz": 4.0,
+            "pump_output_oz_per_min": 1.0,
+            "no_dose_last_minutes": 10.0,
+            "max_duty_cycle": 0.5,
+            "cycle_on_seconds": 60.0,
+            "min_cycle_on_seconds": 5.0,
+        },
+    }
+    actuator_drivers = [
+        driver
+        for driver in build_default_simulated_actuators(plant)
+        if driver.actuator_id != ActuatorId.CHLORINE_DOSING_PUMP
+    ]
+    actuator_drivers.append(dosing_driver)
+    app = build_app_from_mapping(config, clock=clock, actuator_drivers=actuator_drivers)
+
+    await app.tick()
+    assert dosing_driver.commands[-1].metadata["controller"] == "open_loop_chlorination"
+    await clock.advance(10.0)
+    app.start_supplemental_chlorine_dose(dose_oz=1.0)
+    assert app.measurement_logger is not None
+    summary = app.measurement_logger.chlorine_delivery_summary()
+    assert round(summary.runtime_seconds, 3) == 10.0
+    assert round(summary.delivered_oz, 3) == 0.167
+
+    await app.tick()
+
+    assert dosing_driver.commands[-1].state == ActuatorState.ON
+    assert (
+        dosing_driver.commands[-1].metadata["controller"]
+        == "supplemental_chlorine_dose"
+    )
+    assert (
+        dosing_driver.commands[-1].metadata[ACTUATOR_ON_PULSE_SECONDS_METADATA]
+        == 60.0
+    )
+
+
 def test_daily_sodium_hypochlorite_summary_totals_automated_and_manual_additions(
     tmp_path: Path,
 ) -> None:

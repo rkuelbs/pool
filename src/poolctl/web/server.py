@@ -488,6 +488,14 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             self._serve_chlorination_calibration()
             return
 
+        if path == "/api/chlorination/supplemental_dose":
+            self._serve_chlorination_supplemental_dose()
+            return
+
+        if path == "/api/chlorination/supplemental_dose_stop":
+            self._serve_chlorination_supplemental_dose_stop()
+            return
+
         if path == "/api/chlorination/diagnostic_stop":
             self._serve_chlorination_diagnostic_stop()
             return
@@ -945,6 +953,28 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             self._serve_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
             return
 
+        self._serve_json(result)
+
+    def _serve_chlorination_supplemental_dose(self) -> None:
+        try:
+            payload = self._read_json_body()
+            result = self.async_runtime.run_serial(
+                start_chlorination_supplemental_dose_serial(
+                    app=self.app,
+                    payload=payload,
+                )
+            )
+        except ValueError as error:
+            self._serve_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        self._serve_json(result)
+
+    def _serve_chlorination_supplemental_dose_stop(self) -> None:
+        self._discard_request_body()
+        result = self.async_runtime.run_serial(
+            stop_chlorination_supplemental_dose(app=self.app)
+        )
         self._serve_json(result)
 
     def _serve_chlorination_diagnostic_stop(self) -> None:
@@ -2066,6 +2096,38 @@ def start_chlorination_calibration(
             cycle_period_s=float(cycle_period_s),
         ),
     }
+
+
+def start_chlorination_supplemental_dose(
+    *,
+    app: PoolControllerApp,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    dose_oz = payload.get("dose_oz")
+    if not isinstance(dose_oz, int | float):
+        raise ValueError("dose_oz must be a number")
+
+    return {
+        "started": True,
+        "supplemental_chlorine_dose": app.start_supplemental_chlorine_dose(
+            dose_oz=float(dose_oz),
+        ),
+    }
+
+
+async def start_chlorination_supplemental_dose_serial(
+    *,
+    app: PoolControllerApp,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    return start_chlorination_supplemental_dose(app=app, payload=payload)
+
+
+async def stop_chlorination_supplemental_dose(
+    *,
+    app: PoolControllerApp,
+) -> dict[str, Any]:
+    return await app.stop_supplemental_chlorine_dose()
 
 
 async def stop_chlorination_diagnostic(

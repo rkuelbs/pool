@@ -45,6 +45,7 @@ from poolctl.web.server import (
     send_test_notification,
     start_chlorination_calibration,
     start_chlorination_prime,
+    start_chlorination_supplemental_dose,
 )
 
 
@@ -305,6 +306,111 @@ def test_start_chlorination_calibration_sets_runtime_duty_cycle() -> None:
     assert result["prime"]["duty_cycle"] == 0.5
     assert result["prime"]["cycle_period_s"] == 120.0
     assert result["prime"]["safety_bypass"] is True
+
+
+def test_start_chlorination_supplemental_dose_sets_runtime_plan() -> None:
+    config = config_mapping()
+    runtime = dict(config["runtime"])
+    runtime["enabled_layers"] = ["pump_timer", "chlorination"]
+    runtime["enabled_actuators"] = [
+        "pump_motor",
+        "pump_motor_speed",
+        "booster_pump",
+        "chlorine_dosing_pump",
+    ]
+    config["runtime"] = runtime
+    config["chlorination"] = {
+        "enabled": True,
+        "daily_dose_oz": 0.0,
+        "pump_output_oz_per_min": 1.0,
+        "no_dose_last_minutes": 10.0,
+        "max_duty_cycle": 0.5,
+        "cycle_on_seconds": 60.0,
+        "min_cycle_on_seconds": 5.0,
+    }
+    app = build_app_from_mapping(config, clock=make_clock())
+
+    result = start_chlorination_supplemental_dose(
+        app=app,
+        payload={"dose_oz": 1.0},
+    )
+
+    status = result["supplemental_chlorine_dose"]
+    assert result["started"] is True
+    assert status["active"] is True
+    assert status["phase"] == "dosing"
+    assert status["planned_dose_oz"] == 1.0
+    assert status["duty_cycle"] == 0.5
+    assert status["pulse_seconds"] == 60.0
+    assert status["pulse_count"] == 1
+
+
+def test_supplemental_chlorine_dose_splits_runtime_into_equal_pulses() -> None:
+    config = config_mapping()
+    runtime = dict(config["runtime"])
+    runtime["enabled_layers"] = ["pump_timer", "chlorination"]
+    runtime["enabled_actuators"] = [
+        "pump_motor",
+        "pump_motor_speed",
+        "booster_pump",
+        "chlorine_dosing_pump",
+    ]
+    config["runtime"] = runtime
+    config["chlorination"] = {
+        "enabled": True,
+        "daily_dose_oz": 0.0,
+        "pump_output_oz_per_min": 1.0,
+        "no_dose_last_minutes": 10.0,
+        "max_duty_cycle": 0.5,
+        "cycle_on_seconds": 60.0,
+        "min_cycle_on_seconds": 5.0,
+    }
+    app = build_app_from_mapping(config, clock=make_clock())
+
+    result = start_chlorination_supplemental_dose(
+        app=app,
+        payload={"dose_oz": 70.0 / 60.0},
+    )
+
+    status = result["supplemental_chlorine_dose"]
+    assert status["pulse_count"] == 2
+    assert status["pulse_seconds"] == 35.0
+    assert status["planned_dose_oz"] == 1.1667
+    assert status["min_cycle_on_seconds_overridden"] is False
+
+
+def test_supplemental_chlorine_dose_allows_one_off_subminimum_pulse() -> None:
+    config = config_mapping()
+    runtime = dict(config["runtime"])
+    runtime["enabled_layers"] = ["pump_timer", "chlorination"]
+    runtime["enabled_actuators"] = [
+        "pump_motor",
+        "pump_motor_speed",
+        "booster_pump",
+        "chlorine_dosing_pump",
+    ]
+    config["runtime"] = runtime
+    config["chlorination"] = {
+        "enabled": True,
+        "daily_dose_oz": 0.0,
+        "pump_output_oz_per_min": 1.0,
+        "no_dose_last_minutes": 10.0,
+        "max_duty_cycle": 0.5,
+        "cycle_on_seconds": 60.0,
+        "min_cycle_on_seconds": 5.0,
+    }
+    app = build_app_from_mapping(config, clock=make_clock())
+
+    result = start_chlorination_supplemental_dose(
+        app=app,
+        payload={"dose_oz": 0.05},
+    )
+
+    status = result["supplemental_chlorine_dose"]
+    assert status["pulse_count"] == 1
+    assert status["pulse_seconds"] == 3.0
+    assert status["planned_dose_oz"] == 0.05
+    assert status["min_cycle_on_seconds_overridden"] is True
 
 
 def test_runtime_update_writes_yaml_and_reports_restart(tmp_path: Path) -> None:

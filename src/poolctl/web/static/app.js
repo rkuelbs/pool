@@ -257,6 +257,7 @@ let chlorinationConfigLoading = false;
 let fcDemandConfigLoading = false;
 let chlorinationQuickSaving = false;
 let chlorinationPrimeBusy = false;
+let supplementalChlorineDoseBusy = false;
 let timerOverrideBusy = false;
 let healthLoading = false;
 let lastHealthLoadedAt = 0;
@@ -458,6 +459,66 @@ async function stopChlorinationDiagnostic() {
   }
 }
 
+async function startSupplementalChlorineDose(inputId) {
+  if (supplementalChlorineDoseBusy) {
+    return;
+  }
+  const input = document.getElementById(inputId);
+  if (!input) {
+    return;
+  }
+  const doseOz = Number(input.value);
+  if (!Number.isFinite(doseOz) || doseOz <= 0) {
+    setChlorinationQuickStatus("Extra dose must be greater than 0 oz");
+    return;
+  }
+
+  supplementalChlorineDoseBusy = true;
+  setChlorinationQuickStatus("Starting supplemental chlorine dose...");
+  try {
+    const response = await fetch("/api/chlorination/supplemental_dose", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dose_oz: doseOz }),
+    });
+    const payload = await parseApiResponse(response, "supplemental chlorine dose failed");
+    const status = payload.supplemental_chlorine_dose || {};
+    const planned = Number(status.planned_dose_oz);
+    const remaining = Number(status.remaining_s);
+    const plannedText = Number.isFinite(planned) ? `${planned.toFixed(1)} oz` : `${doseOz.toFixed(1)} oz`;
+    const remainingText = Number.isFinite(remaining) ? `, ${formatDurationShort(remaining)} remaining` : "";
+    setChlorinationQuickStatus(`Supplemental chlorine dose started (${plannedText}${remainingText})`);
+    await loadLive();
+  } catch (error) {
+    setChlorinationQuickStatus(error.message);
+  } finally {
+    supplementalChlorineDoseBusy = false;
+  }
+}
+
+async function stopSupplementalChlorineDose() {
+  if (supplementalChlorineDoseBusy) {
+    return;
+  }
+
+  supplementalChlorineDoseBusy = true;
+  setChlorinationQuickStatus("Stopping supplemental chlorine dose...");
+  try {
+    const response = await fetch("/api/chlorination/supplemental_dose_stop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    await parseApiResponse(response, "supplemental chlorine stop failed");
+    setChlorinationQuickStatus("Supplemental chlorine dose stopped");
+    await loadLive();
+  } catch (error) {
+    setChlorinationQuickStatus(error.message);
+  } finally {
+    supplementalChlorineDoseBusy = false;
+  }
+}
+
 function setChlorinationPrimeStatus(message) {
   setChlorinationQuickStatus(message);
   setChlorinationConfigStatus(message);
@@ -583,7 +644,7 @@ function render(payload) {
   renderConfigDebugInfo(payload);
   renderFreezeStatus(payload.safety);
   renderCsiStatus(payload.sensors || {});
-  renderChlorinationStatus(payload.chlorination);
+  renderChlorinationStatus(payload.chlorination, payload.supplemental_chlorine_dose);
   renderFcDemandStatus(payload.fc_demand, payload.dosing_prime);
   renderTimerOverride(payload.timer_override);
   renderEvents(payload.tick);
@@ -633,7 +694,7 @@ async function refreshTopStatus(force) {
     renderConfigDebugInfo(payload);
     renderFreezeStatus(payload.safety);
     renderCsiStatus(payload.sensors || {});
-    renderChlorinationStatus(payload.chlorination);
+    renderChlorinationStatus(payload.chlorination, payload.supplemental_chlorine_dose);
     renderFcDemandStatus(payload.fc_demand, payload.dosing_prime);
     renderTimerOverride(payload.timer_override);
     lastTopStatusLoadedAt = now;
@@ -843,8 +904,9 @@ function renderCsiStatus(sensors) {
   }
 }
 
-function renderChlorinationStatus(chlorination) {
+function renderChlorinationStatus(chlorination, supplementalDose) {
   const payload = chlorination || {};
+  const supplemental = supplementalDose || {};
   const dose = Number(payload.daily_dose_oz);
   const doseText = Number.isFinite(dose) ? `Dose: ${dose.toFixed(1)} oz/day` : "Dose: -- oz/day";
   const duty = Number(payload.duty_cycle_percent);
@@ -863,7 +925,15 @@ function renderChlorinationStatus(chlorination) {
   const stateText = payload.active ? "ON" : "OFF";
   const layerText = payload.layer_enabled === false ? "layer off" : String(payload.reason || "idle");
   const warning = payload.warning ? ` | ${payload.warning}` : "";
-  const statusText = `Chlorination: ${stateText} | ${layerText}${warning}`;
+  let statusText = `Chlorination: ${stateText} | ${layerText}${warning}`;
+  if (supplemental.active) {
+    const phase = supplemental.phase === "circulating" ? "circulating" : "dosing";
+    const planned = Number(supplemental.planned_dose_oz);
+    const remaining = Number(supplemental.remaining_s);
+    const dosePart = Number.isFinite(planned) ? `${planned.toFixed(1)} oz` : "-- oz";
+    const remainingPart = Number.isFinite(remaining) ? ` | ${formatDurationShort(remaining)} left` : "";
+    statusText = `Extra chlorine ${phase} | ${dosePart}${remainingPart}`;
+  }
 
   [
     "chlorinationDoseDisplay",
@@ -4161,6 +4231,34 @@ function initializeChlorinationQuickControls() {
         saveQuickChlorinationDose(inputId);
       }
     });
+  });
+
+  [
+    ["supplementalChlorineDoseStart", "supplementalChlorineDoseInput"],
+    ["mobileSupplementalChlorineDoseStart", "mobileSupplementalChlorineDoseInput"],
+  ].forEach(([buttonId, inputId]) => {
+    const button = document.getElementById(buttonId);
+    const input = document.getElementById(inputId);
+    if (!button || !input) {
+      return;
+    }
+    button.addEventListener("click", () => startSupplementalChlorineDose(inputId));
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        startSupplementalChlorineDose(inputId);
+      }
+    });
+  });
+
+  [
+    "supplementalChlorineDoseStop",
+    "mobileSupplementalChlorineDoseStop",
+  ].forEach((buttonId) => {
+    const button = document.getElementById(buttonId);
+    if (!button) {
+      return;
+    }
+    button.addEventListener("click", stopSupplementalChlorineDose);
   });
 }
 

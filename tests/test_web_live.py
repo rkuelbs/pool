@@ -169,6 +169,7 @@ async def test_build_live_snapshot_includes_runtime_sensors_and_actuators() -> N
     assert snapshot["chlorination"]["layer_enabled"] is False
     assert snapshot["chlorination"]["daily_dose_oz"] == 0.0
     assert snapshot["chlorination"]["active"] is False
+    assert snapshot["supplemental_chlorine_dose"]["active"] is False
     assert snapshot["flows"]["pump_flow_gpm"]["display"] == "0.0 gpm"
     assert snapshot["flows"]["pump_dynamic_head_psi"]["display"] == "0.0 psi"
     assert snapshot["flows"]["return_flow_gpm"]["value"] == 0.0

@@ -281,8 +281,9 @@ rolling filter.
 ## Dashboard Pages
 
 - Live: schematic or mobile list view, current sensor/actuator state, quick
-  pump controls, chlorination dose target, FC-demand status, safety status, CPU
-  temperature/load/fan status on Pi, and runtime loop timing.
+  pump controls, chlorination dose target, supplemental chlorine dose action,
+  FC-demand status, safety status, CPU temperature/load/fan status on Pi, and
+  runtime loop timing.
 - History: measurement/weather/test-result/chemical-addition charts with
   selectable series, hover readouts, automatic rollup resolution, past-window
   navigation, calendar/time jump, CSV export, water-test and chemical-addition
@@ -411,6 +412,25 @@ runtime is excluded from logged chlorine delivery, daily chlorine totals, and
 FC-demand estimator addition math. The bypass is intentionally narrow; hard
 safety faults such as overpressure still remain part of the runtime safety
 loop.
+
+The Live page Quick Controls also has an `Add Chlorine` action for a one-time
+supplemental sodium-hypochlorite dose. Enter the extra fluid ounces to add; the
+runtime forces the filter pump on at low speed, doses at the configured
+`max_duty_cycle`, then keeps the pump running for `no_dose_last_minutes` after
+the final dosing pulse. This is normal pool dosing, not a diagnostic run: it
+does not bypass safety, and delivered runtime is included in logged chlorine
+delivery, daily sodium-hypochlorite totals, and FC-demand addition math.
+Supplemental dose planning distributes total dosing runtime into equal pulses
+instead of leaving a short final remainder; for example, a 70-second dosing
+runtime with `cycle_on_seconds: 60.0` becomes two 35-second pulses. Because this
+is a one-shot operator action rather than a low-duty-cycle all-day schedule, it
+may use a pulse shorter than `min_cycle_on_seconds`; the relay pulse is still
+quantized to 100 ms and the quantized runtime is what gets logged. If a
+supplemental dose overlaps a normal scheduled pump run or dosing pulse, the
+supplemental run temporarily owns the pump at low speed, records any already
+delivered scheduled chlorine up to the handoff, and then resumes the schedule
+after post-dose circulation completes. `Stop Extra Dose` cancels the remaining
+supplemental run and logs any partial chlorine already injected.
 
 The History page can graph chlorination control signals:
 
