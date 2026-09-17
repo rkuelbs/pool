@@ -101,6 +101,7 @@ class SensorId(str, Enum):
     CPU_LOAD_PERCENT = "cpu_load_percent"
     CPU_FAN_RPM = "cpu_fan_rpm"
     TANK_LEVEL = "tank_level"
+    CHLORINE_TANK_LEVEL_GAL = "chlorine_tank_level_gal"
 
 
 class ActuatorId(str, Enum):
@@ -338,6 +339,7 @@ class LabTest(BaseModel):
     salt: float | None = None
     borates: float | None = None
     water_temp: float | None = None
+    chlorine_tank_level_gal: float | None = Field(default=None, ge=0)
 
     notes: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -370,6 +372,22 @@ class ChemicalAddition(BaseModel):
     unit: str = "fl_oz"
     amount_fl_oz: float = Field(gt=0)
     strength_percent: float = Field(gt=0)
+
+    notes: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ChlorineTankRefill(BaseModel):
+    """
+    Represents sodium hypochlorite added to the storage tank, not the pool.
+    """
+
+    id: str = Field(default_factory=lambda: str(uuid4()))
+
+    added_at: datetime
+    entered_at: datetime = Field(default_factory=utc_now)
+
+    amount_gal: float = Field(gt=0)
 
     notes: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)

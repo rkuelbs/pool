@@ -282,8 +282,8 @@ rolling filter.
 
 - Live: schematic or mobile list view, current sensor/actuator state, quick
   pump controls, chlorination dose target, supplemental chlorine dose action,
-  FC-demand status, safety status, CPU temperature/load/fan status on Pi, and
-  runtime loop timing.
+  FC-demand status, safety status, estimated chlorine tank gallons/days
+  remaining, CPU temperature/load/fan status on Pi, and runtime loop timing.
 - History: measurement/weather/test-result/chemical-addition charts with
   selectable series, hover readouts, automatic rollup resolution, past-window
   navigation, calendar/time jump, CSV export, water-test and chemical-addition
@@ -404,6 +404,13 @@ instead of commanding unreliable tiny pulses.
 
 Changing `daily_dose_oz` from the dashboard applies the new duty cycle going
 forward. The controller does not try to make up for earlier parts of the day.
+When a chlorine tank level test has been entered, the dashboard estimates
+remaining tank gallons from that baseline minus logged dosing delivery plus any
+recorded tank refills. The top status strip displays `Chlorine Remaining X
+gallons, Y days`, where days are computed from the current effective daily dose.
+The status is green above 7 days remaining, yellow above 3 days, and red at 3
+days or less. If no tank level or nonzero daily dose is available, the indicator
+stays neutral.
 The Config page has diagnostic dosing-pump buttons:
 
 - `Prime Dosing Pump 30s`: runs the dosing pump continuously for 30 seconds.

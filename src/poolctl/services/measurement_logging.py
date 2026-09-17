@@ -20,6 +20,7 @@ from typing import Any
 from poolctl.domain.models import (
     ChemicalAddition,
     ChemicalType,
+    ChlorineTankRefill,
     LabTest,
     Measurement,
     MeasurementKind,
@@ -133,6 +134,12 @@ class MeasurementRollupRecord:
 class ChlorineDeliverySummary:
     runtime_seconds: float = 0.0
     delivered_oz: float = 0.0
+
+
+@dataclass(frozen=True)
+class ChlorineTankRefillSummary:
+    amount_gal: float = 0.0
+    count: int = 0
 
 
 @dataclass(frozen=True)
@@ -348,10 +355,11 @@ class MeasurementLogger:
                     salt,
                     borates,
                     water_temp,
+                    chlorine_tank_level_gal,
                     notes,
                     metadata_json
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     test.id,
@@ -368,6 +376,7 @@ class MeasurementLogger:
                     test.salt,
                     test.borates,
                     test.water_temp,
+                    test.chlorine_tank_level_gal,
                     test.notes,
                     json.dumps(test.metadata, sort_keys=True),
                 ),
@@ -406,6 +415,31 @@ class MeasurementLogger:
                 ),
             )
         return addition.id
+
+    def log_chlorine_tank_refill(self, refill: ChlorineTankRefill) -> str:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO chlorine_tank_refills (
+                    id,
+                    added_at,
+                    entered_at,
+                    amount_gal,
+                    notes,
+                    metadata_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    refill.id,
+                    refill.added_at.isoformat(),
+                    refill.entered_at.isoformat(),
+                    refill.amount_gal,
+                    refill.notes,
+                    json.dumps(refill.metadata, sort_keys=True),
+                ),
+            )
+        return refill.id
 
     def log_chlorine_delivery(
         self,
@@ -551,6 +585,7 @@ class MeasurementLogger:
             "salt",
             "borates",
             "water_temp",
+            "chlorine_tank_level_gal",
         }
         for field in fields:
             if field not in allowed:
@@ -614,6 +649,7 @@ class MeasurementLogger:
                     salt,
                     borates,
                     water_temp,
+                    chlorine_tank_level_gal,
                     notes,
                     metadata_json
                 FROM lab_tests
@@ -625,6 +661,56 @@ class MeasurementLogger:
             ).fetchall()
         tests = tuple(_lab_test_from_row(row) for row in rows)
         return tuple(reversed(tests))
+
+    def latest_chlorine_tank_level_test(
+        self,
+        *,
+        before: datetime | None = None,
+        until: datetime | None = None,
+    ) -> LabTest | None:
+        if before is not None and until is not None:
+            raise ValueError("before and until are mutually exclusive")
+
+        clauses = ["chlorine_tank_level_gal IS NOT NULL"]
+        parameters: list[str] = []
+        if before is not None:
+            clauses.append("sampled_at < ?")
+            parameters.append(before.isoformat())
+        if until is not None:
+            clauses.append("sampled_at <= ?")
+            parameters.append(until.isoformat())
+        where_clause = " AND ".join(clauses)
+
+        with self._connect() as connection:
+            row = connection.execute(
+                f"""
+                SELECT
+                    id,
+                    sampled_at,
+                    entered_at,
+                    ph,
+                    free_chlorine,
+                    combined_chlorine,
+                    total_chlorine,
+                    alkalinity,
+                    cya,
+                    calcium_hardness,
+                    tds,
+                    salt,
+                    borates,
+                    water_temp,
+                    chlorine_tank_level_gal,
+                    notes,
+                    metadata_json
+                FROM lab_tests
+                WHERE {where_clause}
+                ORDER BY sampled_at DESC, entered_at DESC
+                LIMIT 1
+                """,
+                parameters,
+            ).fetchone()
+
+        return None if row is None else _lab_test_from_row(row)
 
     def lab_value_history(
         self,
@@ -646,6 +732,7 @@ class MeasurementLogger:
             "tds",
             "salt",
             "borates",
+            "chlorine_tank_level_gal",
         }
         if field not in allowed:
             raise ValueError(f"unsupported lab field: {field}")
@@ -682,6 +769,82 @@ class MeasurementLogger:
             if row["value"] is not None
         )
         return tuple(reversed(descending))
+
+    def chlorine_tank_refill_history(
+        self,
+        *,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int = 100,
+    ) -> tuple[ChlorineTankRefill, ...]:
+        if limit < 1:
+            raise ValueError("limit must be at least 1")
+
+        clauses = ["1=1"]
+        parameters: list[str | int] = []
+        if since is not None:
+            clauses.append("added_at >= ?")
+            parameters.append(since.isoformat())
+        if until is not None:
+            clauses.append("added_at <= ?")
+            parameters.append(until.isoformat())
+        parameters.append(limit)
+        where_clause = " AND ".join(clauses)
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT
+                    id,
+                    added_at,
+                    entered_at,
+                    amount_gal,
+                    notes,
+                    metadata_json
+                FROM chlorine_tank_refills
+                WHERE {where_clause}
+                ORDER BY added_at DESC
+                LIMIT ?
+                """,
+                parameters,
+            ).fetchall()
+        refills = tuple(_chlorine_tank_refill_from_row(row) for row in rows)
+        return tuple(reversed(refills))
+
+    def chlorine_tank_refill_summary(
+        self,
+        *,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> ChlorineTankRefillSummary:
+        clauses = ["1=1"]
+        parameters: list[str] = []
+        if since is not None:
+            clauses.append("added_at >= ?")
+            parameters.append(since.isoformat())
+        if until is not None:
+            clauses.append("added_at <= ?")
+            parameters.append(until.isoformat())
+        where_clause = " AND ".join(clauses)
+
+        with self._connect() as connection:
+            row = connection.execute(
+                f"""
+                SELECT
+                    COALESCE(SUM(amount_gal), 0.0) AS amount_gal,
+                    COUNT(*) AS refill_count
+                FROM chlorine_tank_refills
+                WHERE {where_clause}
+                """,
+                parameters,
+            ).fetchone()
+
+        if row is None:
+            return ChlorineTankRefillSummary()
+        return ChlorineTankRefillSummary(
+            amount_gal=float(row["amount_gal"]),
+            count=int(row["refill_count"]),
+        )
 
     def chemical_addition_history(
         self,
@@ -927,6 +1090,7 @@ class MeasurementLogger:
                     salt REAL,
                     borates REAL,
                     water_temp REAL,
+                    chlorine_tank_level_gal REAL,
                     notes TEXT,
                     metadata_json TEXT NOT NULL
                 )
@@ -939,6 +1103,12 @@ class MeasurementLogger:
                 """
             )
             self._ensure_column(connection, "lab_tests", "tds", "REAL")
+            self._ensure_column(
+                connection,
+                "lab_tests",
+                "chlorine_tank_level_gal",
+                "REAL",
+            )
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS chemical_additions (
@@ -965,6 +1135,24 @@ class MeasurementLogger:
                 """
                 CREATE INDEX IF NOT EXISTS idx_chemical_additions_chemical_time
                 ON chemical_additions (chemical, added_at)
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chlorine_tank_refills (
+                    id TEXT PRIMARY KEY,
+                    added_at TEXT NOT NULL,
+                    entered_at TEXT NOT NULL,
+                    amount_gal REAL NOT NULL,
+                    notes TEXT,
+                    metadata_json TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_chlorine_tank_refills_added
+                ON chlorine_tank_refills (added_at)
                 """
             )
             connection.execute(
@@ -1138,6 +1326,7 @@ def _lab_test_from_row(row: sqlite3.Row) -> LabTest:
         salt=_optional_float(row["salt"]),
         borates=_optional_float(row["borates"]),
         water_temp=_optional_float(row["water_temp"]),
+        chlorine_tank_level_gal=_optional_float(row["chlorine_tank_level_gal"]),
         notes=str(row["notes"]) if row["notes"] is not None else None,
         metadata=_metadata_from_json(str(row["metadata_json"])),
     )
@@ -1153,6 +1342,17 @@ def _chemical_addition_from_row(row: sqlite3.Row) -> ChemicalAddition:
         unit=str(row["unit"]),
         amount_fl_oz=float(row["amount_fl_oz"]),
         strength_percent=float(row["strength_percent"]),
+        notes=str(row["notes"]) if row["notes"] is not None else None,
+        metadata=_metadata_from_json(str(row["metadata_json"])),
+    )
+
+
+def _chlorine_tank_refill_from_row(row: sqlite3.Row) -> ChlorineTankRefill:
+    return ChlorineTankRefill(
+        id=str(row["id"]),
+        added_at=_parse_datetime(str(row["added_at"])),
+        entered_at=_parse_datetime(str(row["entered_at"])),
+        amount_gal=float(row["amount_gal"]),
         notes=str(row["notes"]) if row["notes"] is not None else None,
         metadata=_metadata_from_json(str(row["metadata_json"])),
     )

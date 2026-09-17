@@ -10,7 +10,15 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from poolctl.domain.models import ChemicalAddition, ChemicalType, LabTest, Measurement, Quality, SensorId
+from poolctl.domain.models import (
+    ChemicalAddition,
+    ChemicalType,
+    ChlorineTankRefill,
+    LabTest,
+    Measurement,
+    Quality,
+    SensorId,
+)
 from poolctl.services.measurement_logging import (
     MeasurementLogger,
     MeasurementLoggingConfig,
@@ -179,6 +187,7 @@ def test_measurement_logger_persists_lab_tests(tmp_path: Path) -> None:
         free_chlorine=3.2,
         alkalinity=95.0,
         tds=1200.0,
+        chlorine_tank_level_gal=8.5,
         notes="weekly strip + drop test",
     )
     logger.log_lab_test(test)
@@ -189,6 +198,7 @@ def test_measurement_logger_persists_lab_tests(tmp_path: Path) -> None:
     assert records[0].ph == 7.45
     assert records[0].free_chlorine == 3.2
     assert records[0].tds == 1200.0
+    assert records[0].chlorine_tank_level_gal == 8.5
     assert records[0].notes == "weekly strip + drop test"
 
 
@@ -258,6 +268,38 @@ def test_measurement_logger_summarizes_chlorine_delivery(tmp_path: Path) -> None
     assert total.delivered_oz == 1.5
 
 
+def test_measurement_logger_persists_and_summarizes_chlorine_tank_refills(
+    tmp_path: Path,
+) -> None:
+    logger = MeasurementLogger(
+        MeasurementLoggingConfig(database_path=tmp_path / "measurements.sqlite3")
+    )
+    now = datetime(2026, 5, 22, 12, 0, tzinfo=timezone.utc)
+    refill = ChlorineTankRefill(
+        added_at=now,
+        amount_gal=2.5,
+        notes="two jugs",
+    )
+
+    logger.log_chlorine_tank_refill(refill)
+    records = logger.chlorine_tank_refill_history(
+        since=now - timedelta(hours=1),
+        until=now + timedelta(hours=1),
+        limit=10,
+    )
+    summary = logger.chlorine_tank_refill_summary(
+        since=now - timedelta(hours=1),
+        until=now + timedelta(hours=1),
+    )
+
+    assert len(records) == 1
+    assert records[0].id == refill.id
+    assert records[0].amount_gal == 2.5
+    assert records[0].notes == "two jugs"
+    assert summary.amount_gal == 2.5
+    assert summary.count == 1
+
+
 def test_measurement_logger_latest_lab_values_uses_latest_non_null_per_field(
     tmp_path: Path,
 ) -> None:
@@ -267,13 +309,16 @@ def test_measurement_logger_latest_lab_values_uses_latest_non_null_per_field(
     now = datetime(2026, 5, 22, 12, 0, tzinfo=timezone.utc)
     logger.log_lab_test(LabTest(sampled_at=now - timedelta(days=2), alkalinity=90.0))
     logger.log_lab_test(LabTest(sampled_at=now - timedelta(days=1), calcium_hardness=250.0))
-    logger.log_lab_test(LabTest(sampled_at=now, tds=1400.0))
+    logger.log_lab_test(LabTest(sampled_at=now, tds=1400.0, chlorine_tank_level_gal=7.25))
 
-    values = logger.latest_lab_values(fields=("alkalinity", "calcium_hardness", "tds"))
+    values = logger.latest_lab_values(
+        fields=("alkalinity", "calcium_hardness", "tds", "chlorine_tank_level_gal")
+    )
 
     assert values["alkalinity"] == 90.0
     assert values["calcium_hardness"] == 250.0
     assert values["tds"] == 1400.0
+    assert values["chlorine_tank_level_gal"] == 7.25
 
 
 def test_measurement_logger_lab_value_history_returns_time_ordered_non_null_points(

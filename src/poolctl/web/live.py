@@ -8,6 +8,7 @@ into dictionaries with display strings, colors, status flags, and history data.
 
 from __future__ import annotations
 
+import math
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -67,6 +68,7 @@ SENSOR_LABELS = {
     SensorId.CPU_LOAD_PERCENT: "CPU load",
     SensorId.CPU_FAN_RPM: "CPU fan",
     SensorId.TANK_LEVEL: "Tank level",
+    SensorId.CHLORINE_TANK_LEVEL_GAL: "Chlorine tank level",
 }
 
 LAB_HISTORY_SERIES: dict[str, dict[str, Any]] = {
@@ -181,6 +183,17 @@ async def build_live_snapshot(app: PoolControllerApp) -> dict[str, Any]:
     snapshot_measurements = dict(latest_measurements)
     if tick.csi_measurement is not None:
         snapshot_measurements[tick.csi_measurement.sensor_id] = tick.csi_measurement
+    chlorine_tank_measurement = app.chlorine_tank_level_measurement(
+        observed_at=tick.observed_at,
+        source="live_snapshot",
+    )
+    if chlorine_tank_measurement is not None:
+        snapshot_measurements[chlorine_tank_measurement.sensor_id] = chlorine_tank_measurement
+    daily_dose_oz = (
+        tick.chlorination_status.daily_dose_oz
+        if tick.chlorination_status is not None
+        else app.chlorination_config.daily_dose_oz
+    )
     return {
         "observed_at": tick.observed_at.isoformat(),
         "runtime": {
@@ -208,6 +221,10 @@ async def build_live_snapshot(app: PoolControllerApp) -> dict[str, Any]:
             tick.chlorination_status.as_payload()
             if tick.chlorination_status is not None
             else None
+        ),
+        "chlorine_supply": chlorine_supply_payload(
+            tank_measurement=chlorine_tank_measurement,
+            daily_dose_oz=daily_dose_oz,
         ),
         "fc_demand": (
             tick.fc_demand_status.as_payload()
@@ -303,6 +320,70 @@ async def build_live_snapshot(app: PoolControllerApp) -> dict[str, Any]:
             ],
         },
     }
+
+
+def chlorine_supply_payload(
+    *,
+    tank_measurement: Measurement | None,
+    daily_dose_oz: float,
+) -> dict[str, Any]:
+    remaining_gal = None
+    days_remaining = None
+    reason = None
+
+    if tank_measurement is None:
+        reason = "enter a chlorine tank level test to estimate remaining supply"
+    else:
+        remaining_gal = max(0.0, float(tank_measurement.value))
+        if not math.isfinite(remaining_gal):
+            remaining_gal = None
+            reason = "chlorine tank estimate is unavailable"
+
+    dose = float(daily_dose_oz)
+    if not math.isfinite(dose) or dose <= 0:
+        if reason is None:
+            reason = "daily chlorine dose is zero"
+    elif remaining_gal is not None:
+        days_remaining = remaining_gal * 128.0 / dose
+
+    status = chlorine_supply_status(days_remaining)
+    remaining_display = (
+        f"{remaining_gal:.2f} gallons"
+        if remaining_gal is not None
+        else "-- gallons"
+    )
+    remaining_gal_display = (
+        f"{remaining_gal:.2f} gal"
+        if remaining_gal is not None
+        else "-- gal"
+    )
+    days_display = (
+        f"{days_remaining:.1f} days"
+        if days_remaining is not None
+        else "-- days"
+    )
+    return {
+        "available": remaining_gal is not None,
+        "remaining_gal": remaining_gal,
+        "remaining_gal_display": remaining_gal_display,
+        "days_remaining": days_remaining,
+        "days_remaining_display": days_display,
+        "daily_dose_oz": dose,
+        "status": status,
+        "status_label": SENSOR_STATUS_LABELS[status],
+        "display": f"Chlorine Remaining {remaining_display}, {days_display}",
+        "reason": reason,
+    }
+
+
+def chlorine_supply_status(days_remaining: float | None) -> str:
+    if days_remaining is None or not math.isfinite(days_remaining):
+        return "unknown"
+    if days_remaining > 7.0:
+        return "normal"
+    if days_remaining > 3.0:
+        return "caution"
+    return "alarm"
 
 
 def build_history_payload(
@@ -656,6 +737,9 @@ def format_measurement(measurement: Measurement) -> str:
 
     if measurement.unit == "fl oz":
         return f"{value:.1f} fl oz"
+
+    if measurement.unit == "gal":
+        return f"{value:.2f} gal"
 
     if measurement.unit == "pH":
         return f"{value:.2f}"

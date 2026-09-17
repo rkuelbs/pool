@@ -23,6 +23,7 @@ from poolctl.domain.models import (
     ActuatorStateSample,
     ChemicalAddition,
     ChemicalType,
+    ChlorineTankRefill,
     CommandSource,
     LabTest,
     Measurement,
@@ -923,6 +924,59 @@ def test_daily_sodium_hypochlorite_summary_totals_automated_and_manual_additions
     assert chlorine_7d.metadata["source_sample_count"] == 7
     assert acid_7d.value == 2.2857
     assert acid_7d.metadata["source_sample_count"] == 7
+
+
+def test_chlorine_tank_estimate_uses_latest_level_refills_and_delivery(
+    tmp_path: Path,
+) -> None:
+    clock = make_clock()
+    config = {
+        "runtime": {
+            "stage": "sensor_logging",
+            "driver_profile": "simulated",
+            "enabled_layers": ["logging"],
+            "enabled_actuators": [],
+            "enabled_sensor_groups": [],
+        },
+        "logging": {
+            "database_path": str(tmp_path / "chlorine_tank.sqlite3"),
+        },
+    }
+    app = build_app_from_mapping(config, clock=clock)
+    assert app.measurement_logger is not None
+
+    baseline_at = datetime(2026, 5, 20, 12, tzinfo=timezone.utc)
+    app.measurement_logger.log_lab_test(
+        LabTest(sampled_at=baseline_at, chlorine_tank_level_gal=10.0)
+    )
+    app.measurement_logger.log_chlorine_delivery(
+        observed_at=baseline_at + timedelta(hours=1),
+        runtime_seconds=60.0,
+        delivered_oz=128.0,
+    )
+    app.measurement_logger.log_chlorine_tank_refill(
+        ChlorineTankRefill(
+            added_at=baseline_at + timedelta(hours=2),
+            amount_gal=2.5,
+        )
+    )
+
+    estimate = app.chlorine_tank_estimate(
+        observed_at=baseline_at + timedelta(hours=3),
+    )
+    measurement = app.chlorine_tank_level_measurement(
+        observed_at=baseline_at + timedelta(hours=3),
+        source="test",
+    )
+
+    assert estimate is not None
+    assert estimate.level_gal == 11.5
+    assert estimate.delivered_gal == 1.0
+    assert estimate.refilled_gal == 2.5
+    assert measurement is not None
+    assert measurement.sensor_id == SensorId.CHLORINE_TANK_LEVEL_GAL
+    assert measurement.value == 11.5
+    assert measurement.unit == "gal"
 
 
 @pytest.mark.asyncio

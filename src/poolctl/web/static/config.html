@@ -14,8 +14,11 @@
           <p id="runtimeLine">Live view</p>
         </div>
         <div class="status-strip">
-          <span id="safetyBadge" class="badge">Starting</span>
-          <span id="cpuTempBadge" class="badge hidden">CPU Temp: --</span>
+          <div class="badge-row">
+            <span id="safetyBadge" class="badge">Starting</span>
+            <span id="chlorineSupplyBadge" class="badge unknown">Chlorine Remaining -- gallons, -- days</span>
+            <span id="cpuTempBadge" class="badge hidden">CPU Temp: --</span>
+          </div>
           <span id="cpuLoadLine" class="timestamp hidden">CPU Load: --</span>
           <span id="cpuFanLine" class="timestamp hidden">CPU Fan: --</span>
           <span id="loopTimingLine" class="timestamp">Loop: --</span>
@@ -76,7 +79,8 @@
 
             <div class="sensor green tank-level">
               <span>LEVEL</span>
-              <strong data-sensor="tank_level">--</strong>
+              <strong data-sensor="chlorine_tank_level_gal" data-sensor-fallback="tank_level">--</strong>
+              <small id="tankRemainingDays">-- days</small>
             </div>
             <div class="sensor green orp">
               <span>ORP</span>
@@ -496,6 +500,7 @@
           <label>Salt <input id="labSalt" type="number" step="0.1"></label>
           <label>Borates <input id="labBorates" type="number" step="0.1"></label>
           <label>Water Temp <input id="labWaterTemp" type="number" step="0.1"></label>
+          <label>Chlorine Tank Level (gal) <input id="labChlorineTankLevelGal" type="number" step="0.01" min="0"></label>
           <label>Notes <input id="labNotes" type="text"></label>
         </div>
         <div class="timer-actions">
@@ -503,6 +508,7 @@
         </div>
         <div id="labTestStatus" class="history-status">--</div>
         <div id="labTestFcDemandStatus" class="history-status">FC demand: --</div>
+        <div id="labTestTankStatus" class="history-status">Chlorine tank: --</div>
         <div id="labTestList" class="timeline-list">--</div>
       </section>
 

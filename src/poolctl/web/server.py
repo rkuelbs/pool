@@ -41,9 +41,11 @@ from poolctl.domain.models import (
     ActuatorState,
     ChemicalAddition,
     ChemicalType,
+    ChlorineTankRefill,
     CommandSource,
     LabTest,
     Measurement,
+    MeasurementKind,
     SensorId,
 )
 from poolctl.drivers.modbus.registers import ModbusRegisterDeviceConfig
@@ -384,6 +386,10 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             self._serve_chemical_additions()
             return
 
+        if path == "/api/chlorine_tank_refills":
+            self._serve_chlorine_tank_refills()
+            return
+
         if path == "/api/config/runtime":
             self._serve_runtime_config()
             return
@@ -507,6 +513,10 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
 
         if path == "/api/chemical_additions":
             self._serve_add_chemical_addition()
+            return
+
+        if path == "/api/chlorine_tank_refills":
+            self._serve_add_chlorine_tank_refill()
             return
 
         if path == "/api/system/restart":
@@ -668,6 +678,20 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             hours = _float_query_value(query, "hours", 24.0 * 30.0)
             limit = _int_query_value(query, "limit", 200)
             payload = list_chemical_additions(self.app, hours=hours, limit=limit)
+        except ValueError as error:
+            self._serve_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        except Exception as error:
+            self._serve_json({"error": str(error)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+        self._serve_json(payload)
+
+    def _serve_chlorine_tank_refills(self) -> None:
+        try:
+            query = parse_qs(urlparse(self.path).query)
+            hours = _float_query_value(query, "hours", 24.0 * 30.0)
+            limit = _int_query_value(query, "limit", 200)
+            payload = list_chlorine_tank_refills(self.app, hours=hours, limit=limit)
         except ValueError as error:
             self._serve_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
             return
@@ -1005,6 +1029,22 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
         try:
             payload = self._read_json_body()
             result = add_chemical_addition(
+                app=self.app,
+                payload=payload,
+                source="local_gui",
+            )
+        except ValueError as error:
+            self._serve_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        except Exception as error:
+            self._serve_json({"error": str(error)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+        self._serve_json(result)
+
+    def _serve_add_chlorine_tank_refill(self) -> None:
+        try:
+            payload = self._read_json_body()
+            result = add_chlorine_tank_refill(
                 app=self.app,
                 payload=payload,
                 source="local_gui",
@@ -1591,11 +1631,41 @@ def add_lab_test(
     except Exception as error:
         raise ValueError(f"invalid lab test payload: {error}") from error
 
+    chlorine_tank_audit = app.chlorine_tank_injection_audit(test)
+    if chlorine_tank_audit is not None:
+        test = test.model_copy(
+            update={
+                "metadata": {
+                    **test.metadata,
+                    "chlorine_tank": chlorine_tank_audit,
+                }
+            }
+        )
+
     app.measurement_logger.log_lab_test(test)
+    chlorine_tank_estimate = None
+    if test.chlorine_tank_level_gal is not None:
+        app.log_chlorine_tank_level_snapshot(
+            observed_at=test.sampled_at,
+            source="lab_test",
+            kind=MeasurementKind.MANUAL,
+            extra_metadata={
+                "lab_test_id": test.id,
+                "chlorine_tank": chlorine_tank_audit,
+            },
+        )
+        chlorine_tank_estimate = app.chlorine_tank_estimate(
+            observed_at=test.sampled_at,
+        )
+
     fc_demand_plan = app.fc_demand_plan()
     return {
         "saved": True,
         "lab_test": _lab_test_payload(test),
+        "chlorine_tank": {
+            "audit": chlorine_tank_audit,
+            "estimate": _chlorine_tank_estimate_payload(chlorine_tank_estimate),
+        },
         "fc_demand": (
             fc_demand_plan.status.as_payload()
             if fc_demand_plan is not None
@@ -1643,6 +1713,7 @@ def _lab_test_payload(test: LabTest) -> dict[str, Any]:
         "salt": test.salt,
         "borates": test.borates,
         "water_temp": test.water_temp,
+        "chlorine_tank_level_gal": test.chlorine_tank_level_gal,
         "notes": test.notes,
         "metadata": test.metadata,
     }
@@ -1744,6 +1815,108 @@ def _chemical_addition_payload(addition: ChemicalAddition) -> dict[str, Any]:
         "notes": addition.notes,
         "metadata": addition.metadata,
     }
+
+
+def add_chlorine_tank_refill(
+    *,
+    app: PoolControllerApp,
+    payload: dict[str, Any],
+    source: str,
+) -> dict[str, Any]:
+    if app.measurement_logger is None:
+        raise ValueError("measurement logging is not enabled")
+
+    raw = dict(payload)
+    added_at = _datetime_payload_value(
+        raw.get("added_at"),
+        key="added_at",
+        default=app.clock.now(),
+        local_timezone_name=app.pump_timer_config.timezone,
+    ).isoformat()
+    amount_gal = _positive_float(raw.get("amount_gal"), "amount_gal")
+
+    metadata = raw.get("metadata", {})
+    if not isinstance(metadata, dict):
+        raise ValueError("metadata must be an object")
+
+    raw["added_at"] = added_at
+    raw["entered_at"] = app.clock.now().isoformat()
+    raw["amount_gal"] = amount_gal
+    raw["notes"] = _optional_string(raw.get("notes"))
+    raw["metadata"] = {
+        **metadata,
+        "source": source,
+    }
+    raw = {key: value for key, value in raw.items() if value is not None}
+
+    try:
+        refill = ChlorineTankRefill.model_validate(raw)
+    except Exception as error:
+        raise ValueError(f"invalid chlorine tank refill payload: {error}") from error
+
+    app.measurement_logger.log_chlorine_tank_refill(refill)
+    app.log_chlorine_tank_level_snapshot(
+        observed_at=refill.added_at,
+        source="chlorine_tank_refill",
+        extra_metadata={"refill_id": refill.id},
+    )
+    return {
+        "saved": True,
+        "chlorine_tank_refill": _chlorine_tank_refill_payload(refill),
+        "chlorine_tank": {
+            "estimate": _chlorine_tank_estimate_payload(
+                app.chlorine_tank_estimate(observed_at=refill.added_at)
+            ),
+        },
+    }
+
+
+def list_chlorine_tank_refills(
+    app: PoolControllerApp,
+    *,
+    hours: float,
+    limit: int,
+) -> dict[str, Any]:
+    if hours <= 0:
+        raise ValueError("hours must be greater than 0")
+    if limit < 1:
+        raise ValueError("limit must be at least 1")
+
+    if app.measurement_logger is None:
+        return {"chlorine_tank_refills": [], "chlorine_tank": {"estimate": None}}
+
+    refills = app.measurement_logger.chlorine_tank_refill_history(
+        since=app.clock.now() - timedelta(hours=hours),
+        limit=limit,
+    )
+    return {
+        "chlorine_tank_refills": [
+            _chlorine_tank_refill_payload(refill)
+            for refill in refills
+        ],
+        "chlorine_tank": {
+            "estimate": _chlorine_tank_estimate_payload(
+                app.chlorine_tank_estimate()
+            ),
+        },
+    }
+
+
+def _chlorine_tank_refill_payload(refill: ChlorineTankRefill) -> dict[str, Any]:
+    return {
+        "id": refill.id,
+        "added_at": refill.added_at.isoformat(),
+        "entered_at": refill.entered_at.isoformat(),
+        "amount_gal": refill.amount_gal,
+        "notes": refill.notes,
+        "metadata": refill.metadata,
+    }
+
+
+def _chlorine_tank_estimate_payload(estimate: Any) -> dict[str, Any] | None:
+    if estimate is None:
+        return None
+    return estimate.as_payload()
 
 
 def _chemical_type_from_payload(value: Any) -> ChemicalType:

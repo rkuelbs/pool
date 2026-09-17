@@ -91,6 +91,14 @@ h2 {
   gap: 6px;
 }
 
+.badge-row {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
 .badge {
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -1160,6 +1168,10 @@ h2 {
 
   .status-strip {
     align-items: flex-start;
+  }
+
+  .badge-row {
+    justify-content: flex-start;
   }
 
   .side-panel {

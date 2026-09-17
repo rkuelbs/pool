@@ -17,6 +17,7 @@ from poolctl.config_files import load_config_with_overrides
 from poolctl.services.clock import SimulatedClock
 from poolctl.web.server import (
     add_chemical_addition,
+    add_chlorine_tank_refill,
     add_lab_test,
     apply_analog_input_config_update,
     apply_acquisition_config_update,
@@ -31,6 +32,7 @@ from poolctl.web.server import (
     apply_timer_override_update,
     build_health_payload,
     list_chemical_additions,
+    list_chlorine_tank_refills,
     list_lab_tests,
     serialize_acquisition_config,
     serialize_logging_config,
@@ -971,13 +973,72 @@ def test_chemical_addition_api_helpers_store_defaults_and_list(tmp_path: Path) -
     assert listed["chemical_additions"][1]["chemical"] == "muriatic_acid"
 
 
+def test_chlorine_tank_refill_and_level_tests_update_estimate_and_audit(
+    tmp_path: Path,
+) -> None:
+    config = config_mapping()
+    runtime = dict(config["runtime"])  # type: ignore[index]
+    runtime["enabled_layers"] = ["pump_timer", "logging"]
+    config["runtime"] = runtime
+    config["logging"] = {"database_path": str(tmp_path / "tank.sqlite3")}
+    app = build_app_from_mapping(config, clock=make_clock())
+    assert app.measurement_logger is not None
+
+    first = add_lab_test(
+        app=app,
+        payload={
+            "sampled_at": "2026-05-20T12:00:00+00:00",
+            "chlorine_tank_level_gal": 10.0,
+        },
+        source="local_gui",
+    )
+    app.measurement_logger.log_chlorine_delivery(
+        observed_at=datetime(2026, 5, 21, 12, tzinfo=timezone.utc),
+        runtime_seconds=60.0,
+        delivered_oz=128.0,
+    )
+    refill = add_chlorine_tank_refill(
+        app=app,
+        payload={
+            "added_at": "2026-05-21T13:00:00+00:00",
+            "amount_gal": 2.0,
+            "notes": "two gallons",
+        },
+        source="local_gui",
+    )
+    second = add_lab_test(
+        app=app,
+        payload={
+            "sampled_at": "2026-05-22T12:00:00+00:00",
+            "chlorine_tank_level_gal": 10.75,
+        },
+        source="local_gui",
+    )
+    listed = list_chlorine_tank_refills(app, hours=24.0 * 30.0, limit=20)
+
+    assert first["chlorine_tank"]["audit"]["ready"] is False
+    assert first["chlorine_tank"]["estimate"]["level_gal"] == 10.0
+    assert refill["chlorine_tank_refill"]["amount_gal"] == 2.0
+    assert refill["chlorine_tank"]["estimate"]["level_gal"] == 11.0
+    assert second["lab_test"]["chlorine_tank_level_gal"] == 10.75
+    assert second["chlorine_tank"]["audit"]["ready"] is True
+    assert second["chlorine_tank"]["audit"]["expected_level_gal"] == 11.0
+    assert second["chlorine_tank"]["audit"]["injection_error_gal"] == 0.25
+    assert second["chlorine_tank"]["audit"]["injection_error_percent"] == 25.0
+    assert listed["chlorine_tank_refills"][0]["notes"] == "two gallons"
+    assert listed["chlorine_tank"]["estimate"]["level_gal"] == 10.75
+
+
 def test_history_event_forms_use_local_datetime_inputs() -> None:
     static_dir = Path(__file__).parents[1] / "src" / "poolctl" / "web" / "static"
     history_html = (static_dir / "history.html").read_text(encoding="utf-8")
 
     assert 'id="labSampledAt" type="datetime-local"' in history_html
     assert 'id="chemicalAddedAt" type="datetime-local"' in history_html
+    assert 'id="labChlorineTankLevelGal" type="number"' in history_html
+    assert 'id="chlorineTankRefillAmountGal" type="number"' in history_html
 
     for page_name in ("config.html", "live.html", "schedule.html"):
         html = (static_dir / page_name).read_text(encoding="utf-8")
         assert 'id="labSampledAt" type="datetime-local"' in html
+        assert 'id="labChlorineTankLevelGal" type="number"' in html

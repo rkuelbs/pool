@@ -14,6 +14,7 @@ const SENSOR_ORDER = [
   "cpu_load_percent",
   "cpu_fan_rpm",
   "tank_level",
+  "chlorine_tank_level_gal",
 ];
 
 const SENSOR_LABELS = {
@@ -96,6 +97,7 @@ const SENSOR_LABELS = {
   cpu_load_percent: "CPU load",
   cpu_fan_rpm: "CPU fan",
   tank_level: "Tank level",
+  chlorine_tank_level_gal: "Chlorine tank level",
 };
 
 const HISTORY_SENSOR_ORDER = [
@@ -265,6 +267,7 @@ let topStatusLoading = false;
 let lastTopStatusLoadedAt = 0;
 let labTestLoading = false;
 let chemicalAdditionLoading = false;
+let chlorineTankRefillLoading = false;
 let liveMode = "schematic";
 let latestLivePayload = null;
 let configAutoRefreshPaused = false;
@@ -651,10 +654,10 @@ function render(payload) {
   if (PAGE_MODE !== "live") {
     return;
   }
-  renderDiagramSensors(payload.sensors);
+  renderDiagramSensors(payload.sensors, payload.chlorine_supply);
   renderFlowPlaceholders(payload.flows || {});
   renderComponentStates(payload.actuators || {}, payload.sensors || {}, payload.flows || {});
-  renderMobileLive(payload.sensors || {}, payload.actuators || {}, payload.flows || {});
+  renderMobileLive(payload.sensors || {}, payload.actuators || {}, payload.flows || {}, payload.chlorine_supply);
   renderSensorList(payload.sensors);
   renderActuatorList(payload.actuators);
 }
@@ -670,6 +673,7 @@ function renderTopStatus(payload) {
   }
 
   renderSafetyBadge(payload.safety);
+  renderChlorineSupplyBadge(payload.chlorine_supply);
   renderCpuTempBadge(payload.runtime, payload.sensors || {});
   renderCpuLoadLine(payload.runtime, payload.sensors || {});
   renderCpuFanLine(payload.runtime, payload.sensors || {});
@@ -726,6 +730,36 @@ function renderSafetyBadge(safety) {
     return;
   }
   badge.textContent = "Safety OK";
+}
+
+function renderChlorineSupplyBadge(chlorineSupply) {
+  const badge = document.getElementById("chlorineSupplyBadge");
+  if (!badge) {
+    return;
+  }
+
+  badge.classList.remove("ok", "fault", "caution", "alarm", "invalid", "unknown");
+  const status = chlorineSupply && chlorineSupply.status ? chlorineSupply.status : "unknown";
+  if (status === "normal") {
+    badge.classList.add("ok");
+  } else if (status === "caution") {
+    badge.classList.add("caution");
+  } else if (status === "alarm") {
+    badge.classList.add("alarm");
+  } else if (status === "invalid") {
+    badge.classList.add("invalid");
+  } else {
+    badge.classList.add("unknown");
+  }
+  badge.textContent =
+    chlorineSupply && chlorineSupply.display
+      ? chlorineSupply.display
+      : "Chlorine Remaining -- gallons, -- days";
+  if (chlorineSupply && chlorineSupply.reason) {
+    badge.title = chlorineSupply.reason;
+  } else {
+    badge.removeAttribute("title");
+  }
 }
 
 function renderCpuTempBadge(runtime, sensors) {
@@ -1113,7 +1147,7 @@ async function refreshHealth(force) {
   }
 }
 
-function renderDiagramSensors(sensors) {
+function renderDiagramSensors(sensors, chlorineSupply) {
   document.querySelectorAll(".sensor").forEach((box) => {
     box.classList.remove(...SENSOR_STATUS_CLASSES);
     box.dataset.statusPriority = "-1";
@@ -1121,11 +1155,24 @@ function renderDiagramSensors(sensors) {
   });
 
   document.querySelectorAll("[data-sensor]").forEach((node) => {
-    const sensor = sensors[node.dataset.sensor];
+    const sensor = sensors[node.dataset.sensor] || sensors[node.dataset.sensorFallback];
     node.textContent = sensor ? sensor.display : "--";
     node.classList.toggle("quality-suspect", sensor && sensor.quality !== "good");
     applySensorBoxStatus(node.closest(".sensor"), sensor);
   });
+
+  const tankDays = document.getElementById("tankRemainingDays");
+  if (tankDays) {
+    tankDays.textContent =
+      chlorineSupply && chlorineSupply.days_remaining_display
+        ? chlorineSupply.days_remaining_display
+        : "-- days";
+  }
+  const tankBox = document.querySelector(".tank-level");
+  if (tankBox && chlorineSupply && chlorineSupply.status) {
+    tankBox.classList.remove(...SENSOR_STATUS_CLASSES);
+    tankBox.classList.add(sensorStatusClass(chlorineSupply.status));
+  }
 }
 
 function renderFlowPlaceholders(flows) {
@@ -1227,7 +1274,7 @@ function renderFilterComponent(flows) {
   block.classList.add("status-on");
 }
 
-function renderMobileLive(sensors, actuators, flows) {
+function renderMobileLive(sensors, actuators, flows, chlorineSupply) {
   if (!document.getElementById("mobileLivePanel")) {
     return;
   }
@@ -1236,7 +1283,7 @@ function renderMobileLive(sensors, actuators, flows) {
   renderMobileFilterCard(sensors, flows);
   renderMobileBranchesCard(sensors, flows);
   renderMobileChemCard(sensors);
-  renderMobileTankCard(sensors);
+  renderMobileTankCard(sensors, chlorineSupply);
 }
 
 function renderMobilePumpCard(sensors, actuators, flows) {
@@ -1344,9 +1391,20 @@ function renderMobileChemCard(sensors) {
   setNodeText("mobileCsiLine", `CSI: ${sensorDisplay(sensors, "calcium_saturation_index")}`);
 }
 
-function renderMobileTankCard(sensors) {
-  setMobileCardStatus("mobileTankCard", sensorCardStatus(sensorStatus(sensors, "tank_level")));
-  setNodeText("mobileTankLevelLine", `Level: ${sensorDisplay(sensors, "tank_level")}`);
+function renderMobileTankCard(sensors, chlorineSupply) {
+  const sensorId = sensors.chlorine_tank_level_gal ? "chlorine_tank_level_gal" : "tank_level";
+  const supplyStatus = chlorineSupply && chlorineSupply.status ? chlorineSupply.status : sensorStatus(sensors, sensorId);
+  const remaining =
+    chlorineSupply && chlorineSupply.remaining_gal_display
+      ? chlorineSupply.remaining_gal_display
+      : sensorDisplay(sensors, sensorId);
+  const days =
+    chlorineSupply && chlorineSupply.days_remaining_display
+      ? chlorineSupply.days_remaining_display
+      : "-- days";
+  setMobileCardStatus("mobileTankCard", sensorCardStatus(supplyStatus));
+  setNodeText("mobileTankLevelLine", `Remaining: ${remaining}`);
+  setNodeText("mobileTankDaysLine", `Days: ${days}`);
 }
 
 function setNodeText(id, value) {
@@ -1370,6 +1428,11 @@ function flowDisplay(flows, flowId) {
 function sensorStatus(sensors, sensorId) {
   const payload = sensors[sensorId];
   return payload && payload.status ? payload.status : "unknown";
+}
+
+function sensorStatusClass(status) {
+  const className = `status-${status}`;
+  return SENSOR_STATUS_CLASSES.includes(className) ? className : "status-unknown";
 }
 
 function worstSensorCardStatus(statuses) {
@@ -3868,7 +3931,16 @@ async function saveLabTest() {
     const payload = await parseApiResponse(response, "lab test save failed");
     setLabTestStatus("Lab test saved");
     renderLabTestFcDemandFeedback(payload.fc_demand);
+    renderLabTestTankFeedback(payload.chlorine_tank);
     await loadLabTests();
+    if (
+      payload.lab_test &&
+      payload.lab_test.chlorine_tank_level_gal !== null &&
+      payload.lab_test.chlorine_tank_level_gal !== undefined
+    ) {
+      await loadChlorineTankRefills();
+      await refreshHistory(true);
+    }
   } catch (error) {
     setLabTestStatus(error.message);
   }
@@ -3888,6 +3960,7 @@ function collectLabTestPayload() {
     salt: numberOrNull(document.getElementById("labSalt").value),
     borates: numberOrNull(document.getElementById("labBorates").value),
     water_temp: numberOrNull(document.getElementById("labWaterTemp").value),
+    chlorine_tank_level_gal: numberOrNull(document.getElementById("labChlorineTankLevelGal").value),
     notes: stringOrNull(document.getElementById("labNotes").value),
   };
   if (!payload.sampled_at) {
@@ -3914,6 +3987,9 @@ function renderLabTests(tests) {
         `TDS ${formatOptional(test.tds, 0)}`,
         `CYA ${formatOptional(test.cya, 0)}`,
       ];
+      if (test.chlorine_tank_level_gal !== null && test.chlorine_tank_level_gal !== undefined) {
+        parts.push(`Tank ${Number(test.chlorine_tank_level_gal).toFixed(2)} gal`);
+      }
       const notes = test.notes ? ` | ${test.notes}` : "";
       return `[${new Date(test.sampled_at).toLocaleString()}] ${parts.join(" | ")}${notes}`;
     });
@@ -3922,6 +3998,13 @@ function renderLabTests(tests) {
 
 function setLabTestStatus(message) {
   document.getElementById("labTestStatus").textContent = message;
+}
+
+function setLabTestTankStatus(message) {
+  const node = document.getElementById("labTestTankStatus");
+  if (node) {
+    node.textContent = message;
+  }
 }
 
 function renderLabTestFcDemandFeedback(fcDemand) {
@@ -3976,10 +4059,154 @@ function renderLabTestFcDemandFeedback(fcDemand) {
   node.textContent = pieces.join(" | ");
 }
 
+function renderLabTestTankFeedback(chlorineTank) {
+  const node = document.getElementById("labTestTankStatus");
+  if (!node) {
+    return;
+  }
+  if (!chlorineTank) {
+    node.textContent = "Chlorine tank: --";
+    return;
+  }
+
+  const estimate = chlorineTank.estimate || null;
+  const audit = chlorineTank.audit || null;
+  const pieces = [];
+  if (estimate) {
+    pieces.push(`level ${Number(estimate.level_gal).toFixed(2)} gal`);
+  }
+  if (audit && audit.ready) {
+    const error = Number(audit.injection_error_gal);
+    const percent = Number(audit.injection_error_percent);
+    const sign = Number.isFinite(error) && error > 0 ? "+" : "";
+    const percentText = Number.isFinite(percent) ? `, ${percent.toFixed(1)}%` : "";
+    pieces.push(`injection error ${sign}${Number.isFinite(error) ? error.toFixed(3) : "--"} gal${percentText}`);
+  } else if (audit && audit.reason) {
+    pieces.push(audit.reason);
+  }
+  node.textContent = pieces.length ? `Chlorine tank: ${pieces.join(" | ")}` : "Chlorine tank: --";
+}
+
 function initializeLabTestControls() {
   document.getElementById("labTestReload").addEventListener("click", loadLabTests);
   document.getElementById("labTestSave").addEventListener("click", saveLabTest);
   loadLabTests();
+}
+
+async function loadChlorineTankRefills() {
+  if (chlorineTankRefillLoading) {
+    return;
+  }
+  const list = document.getElementById("chlorineTankRefillList");
+  if (!list) {
+    return;
+  }
+  chlorineTankRefillLoading = true;
+  try {
+    const response = await fetch("/api/chlorine_tank_refills?hours=720&limit=100", { cache: "no-store" });
+    const payload = await parseApiResponse(response, "chlorine tank refills load failed");
+    renderChlorineTankRefills(payload.chlorine_tank_refills || []);
+    renderChlorineTankEstimate(payload.chlorine_tank && payload.chlorine_tank.estimate);
+    setChlorineTankRefillStatus("Chlorine tank refills loaded");
+  } catch (error) {
+    setChlorineTankRefillStatus(error.message);
+  } finally {
+    chlorineTankRefillLoading = false;
+  }
+}
+
+async function saveChlorineTankRefill() {
+  setChlorineTankRefillStatus("Saving chlorine tank refill...");
+  try {
+    const response = await fetch("/api/chlorine_tank_refills", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(collectChlorineTankRefillPayload()),
+    });
+    const payload = await parseApiResponse(response, "chlorine tank refill save failed");
+    setChlorineTankRefillStatus("Chlorine tank refill saved");
+    renderChlorineTankEstimate(payload.chlorine_tank && payload.chlorine_tank.estimate);
+    clearChlorineTankRefillInputs();
+    await loadChlorineTankRefills();
+    await refreshHistory(true);
+  } catch (error) {
+    setChlorineTankRefillStatus(error.message);
+  }
+}
+
+function collectChlorineTankRefillPayload() {
+  const payload = {
+    added_at: datetimeLocalIsoString("chlorineTankRefillAddedAt", "Tank refill added at"),
+    amount_gal: numberOrNull(document.getElementById("chlorineTankRefillAmountGal").value),
+    notes: stringOrNull(document.getElementById("chlorineTankRefillNotes").value),
+  };
+  if (!payload.added_at) {
+    delete payload.added_at;
+  }
+  return payload;
+}
+
+function renderChlorineTankRefills(refills) {
+  const list = document.getElementById("chlorineTankRefillList");
+  if (!list) {
+    return;
+  }
+  if (!refills.length) {
+    list.textContent = "No chlorine tank refills recorded";
+    return;
+  }
+  const lines = refills
+    .slice()
+    .reverse()
+    .map((refill) => {
+      const amount = Number(refill.amount_gal);
+      const amountText = Number.isFinite(amount) ? `${amount.toFixed(2)} gal` : "-- gal";
+      const notes = refill.notes ? ` | ${refill.notes}` : "";
+      return `[${new Date(refill.added_at).toLocaleString()}] ${amountText}${notes}`;
+    });
+  list.textContent = lines.join("\n");
+}
+
+function renderChlorineTankEstimate(estimate) {
+  const node = document.getElementById("chlorineTankEstimateStatus");
+  if (!node) {
+    return;
+  }
+  if (!estimate) {
+    node.textContent = "Estimated tank level: enter a tank level test to start";
+    return;
+  }
+  const level = Number(estimate.level_gal);
+  const delivered = Number(estimate.delivered_gal_since_baseline);
+  const refilled = Number(estimate.refilled_gal_since_baseline);
+  node.textContent =
+    `Estimated tank level: ${Number.isFinite(level) ? level.toFixed(2) : "--"} gal` +
+    ` | delivered ${Number.isFinite(delivered) ? delivered.toFixed(3) : "--"} gal` +
+    ` | refilled ${Number.isFinite(refilled) ? refilled.toFixed(2) : "--"} gal`;
+}
+
+function clearChlorineTankRefillInputs() {
+  document.getElementById("chlorineTankRefillAddedAt").value = "";
+  document.getElementById("chlorineTankRefillAmountGal").value = "";
+  document.getElementById("chlorineTankRefillNotes").value = "";
+}
+
+function setChlorineTankRefillStatus(message) {
+  const node = document.getElementById("chlorineTankRefillStatus");
+  if (node) {
+    node.textContent = message;
+  }
+}
+
+function initializeChlorineTankRefillControls() {
+  const save = document.getElementById("chlorineTankRefillSave");
+  const reload = document.getElementById("chlorineTankRefillReload");
+  if (!save || !reload) {
+    return;
+  }
+  reload.addEventListener("click", loadChlorineTankRefills);
+  save.addEventListener("click", saveChlorineTankRefill);
+  loadChlorineTankRefills();
 }
 
 function chemicalDefaultStrengthPercent(chemical) {
@@ -4375,6 +4602,7 @@ function initializeForPage() {
     initializeHistoryControls();
     initializeFaultTimelineControls();
     initializeLabTestControls();
+    initializeChlorineTankRefillControls();
     initializeChemicalAdditionControls();
     return;
   }

@@ -98,6 +98,7 @@ from poolctl.services.weather import WeatherConfig, WeatherPollResult, WeatherSe
 
 
 FC_DEMAND_BASE_EMA_ALPHA = 0.35
+FLUID_OUNCES_PER_GALLON = 128.0
 DAILY_ENVIRONMENT_SUMMARY_INTERVAL_S = 3600.0
 CHLORINATION_CONTROL_SENSOR_IDS = frozenset(
     {
@@ -265,6 +266,30 @@ class SupplementalChlorineDoseState:
             return None
 
         return quantize_relay_flash_seconds(remaining_s)
+
+
+@dataclass(frozen=True)
+class ChlorineTankEstimate:
+    observed_at: datetime
+    level_gal: float
+    baseline_sampled_at: datetime
+    baseline_level_gal: float
+    delivered_oz: float
+    delivered_gal: float
+    refilled_gal: float
+    refill_count: int
+
+    def as_payload(self) -> dict[str, Any]:
+        return {
+            "observed_at": self.observed_at.isoformat(),
+            "level_gal": self.level_gal,
+            "baseline_sampled_at": self.baseline_sampled_at.isoformat(),
+            "baseline_level_gal": self.baseline_level_gal,
+            "delivered_oz_since_baseline": self.delivered_oz,
+            "delivered_gal_since_baseline": self.delivered_gal,
+            "refilled_gal_since_baseline": self.refilled_gal,
+            "refill_count_since_baseline": self.refill_count,
+        }
 
 
 @dataclass(frozen=True)
@@ -1646,6 +1671,161 @@ class PoolControllerApp:
             sodium_hypochlorite_additions=sodium_hypochlorite_additions,
         )
 
+    def chlorine_tank_estimate(
+        self,
+        *,
+        observed_at: datetime | None = None,
+        include_unflushed_delivery: bool = True,
+    ) -> ChlorineTankEstimate | None:
+        if self.measurement_logger is None:
+            return None
+
+        observed_at = self.clock.now() if observed_at is None else observed_at
+        baseline = self.measurement_logger.latest_chlorine_tank_level_test(
+            until=observed_at,
+        )
+        if baseline is None or baseline.chlorine_tank_level_gal is None:
+            return None
+
+        delivery = self.measurement_logger.chlorine_delivery_summary(
+            since=baseline.sampled_at,
+            until=observed_at,
+        )
+        delivered_oz = max(0.0, delivery.delivered_oz)
+        if (
+            include_unflushed_delivery
+            and self.chlorine_delivery_segment_started_at is not None
+            and observed_at >= self.chlorine_delivery_segment_started_at
+        ):
+            delivered_oz += max(0.0, self.chlorine_delivery_segment_delivered_oz)
+
+        refill_summary = self.measurement_logger.chlorine_tank_refill_summary(
+            since=baseline.sampled_at,
+            until=observed_at,
+        )
+        delivered_gal = delivered_oz / FLUID_OUNCES_PER_GALLON
+        level_gal = baseline.chlorine_tank_level_gal + refill_summary.amount_gal - delivered_gal
+
+        return ChlorineTankEstimate(
+            observed_at=observed_at,
+            level_gal=round(level_gal, 4),
+            baseline_sampled_at=baseline.sampled_at,
+            baseline_level_gal=baseline.chlorine_tank_level_gal,
+            delivered_oz=round(delivered_oz, 4),
+            delivered_gal=round(delivered_gal, 5),
+            refilled_gal=round(refill_summary.amount_gal, 4),
+            refill_count=refill_summary.count,
+        )
+
+    def chlorine_tank_level_measurement(
+        self,
+        *,
+        observed_at: datetime,
+        source: str,
+        kind: MeasurementKind = MeasurementKind.ESTIMATED,
+        extra_metadata: Mapping[str, Any] | None = None,
+    ) -> Measurement | None:
+        estimate = self.chlorine_tank_estimate(observed_at=observed_at)
+        if estimate is None:
+            return None
+
+        metadata = {
+            "driver": "chlorine_tank_estimator",
+            "source": source,
+            **estimate.as_payload(),
+        }
+        if extra_metadata:
+            metadata.update(dict(extra_metadata))
+
+        return Measurement(
+            id=(
+                f"{SensorId.CHLORINE_TANK_LEVEL_GAL.value}:"
+                f"{source}:{observed_at.isoformat()}"
+            ),
+            sensor_id=SensorId.CHLORINE_TANK_LEVEL_GAL,
+            observed_at=observed_at,
+            kind=kind,
+            value=round(estimate.level_gal, 4),
+            unit="gal",
+            quality=Quality.GOOD,
+            metadata=metadata,
+        )
+
+    def log_chlorine_tank_level_snapshot(
+        self,
+        *,
+        observed_at: datetime,
+        source: str,
+        kind: MeasurementKind = MeasurementKind.ESTIMATED,
+        extra_metadata: Mapping[str, Any] | None = None,
+    ) -> int:
+        measurement = self.chlorine_tank_level_measurement(
+            observed_at=observed_at,
+            source=source,
+            kind=kind,
+            extra_metadata=extra_metadata,
+        )
+        if measurement is None:
+            return 0
+
+        return self._log_measurements((measurement,))
+
+    def chlorine_tank_injection_audit(self, test: LabTest) -> dict[str, Any] | None:
+        if self.measurement_logger is None or test.chlorine_tank_level_gal is None:
+            return None
+
+        current_level_gal = test.chlorine_tank_level_gal
+        previous = self.measurement_logger.latest_chlorine_tank_level_test(
+            before=test.sampled_at,
+        )
+        if previous is None or previous.chlorine_tank_level_gal is None:
+            return {
+                "ready": False,
+                "reason": "first tank level reading",
+                "current_sampled_at": test.sampled_at.isoformat(),
+                "current_level_gal": current_level_gal,
+            }
+
+        delivery = self.measurement_logger.chlorine_delivery_summary(
+            since=previous.sampled_at,
+            until=test.sampled_at,
+        )
+        refill_summary = self.measurement_logger.chlorine_tank_refill_summary(
+            since=previous.sampled_at,
+            until=test.sampled_at,
+        )
+        delivered_oz = max(0.0, delivery.delivered_oz)
+        delivered_gal = delivered_oz / FLUID_OUNCES_PER_GALLON
+        previous_level_gal = previous.chlorine_tank_level_gal
+        expected_level_gal = previous_level_gal + refill_summary.amount_gal - delivered_gal
+        inferred_injected_gal = previous_level_gal + refill_summary.amount_gal - current_level_gal
+        injection_error_gal = inferred_injected_gal - delivered_gal
+        injection_error_percent = (
+            (injection_error_gal / delivered_gal) * 100.0
+            if delivered_gal > 0
+            else None
+        )
+
+        return {
+            "ready": True,
+            "previous_sampled_at": previous.sampled_at.isoformat(),
+            "current_sampled_at": test.sampled_at.isoformat(),
+            "previous_level_gal": round(previous_level_gal, 4),
+            "current_level_gal": round(current_level_gal, 4),
+            "refilled_gal": round(refill_summary.amount_gal, 4),
+            "refill_count": refill_summary.count,
+            "delivered_oz": round(delivered_oz, 4),
+            "delivered_gal": round(delivered_gal, 5),
+            "expected_level_gal": round(expected_level_gal, 4),
+            "inferred_injected_gal": round(inferred_injected_gal, 5),
+            "injection_error_gal": round(injection_error_gal, 5),
+            "injection_error_percent": (
+                round(injection_error_percent, 2)
+                if injection_error_percent is not None
+                else None
+            ),
+        }
+
     def _log_measurements(self, measurements: tuple[Measurement, ...]) -> int:
         if self.measurement_logger is None:
             return 0
@@ -2123,6 +2303,13 @@ class PoolControllerApp:
                         },
                     )
                 )
+                tank_measurement = self.chlorine_tank_level_measurement(
+                    observed_at=snapshot_observed_at,
+                    source=f"chlorine_delivery_{boundary}",
+                    extra_metadata={"snapshot_boundary": boundary},
+                )
+                if tank_measurement is not None:
+                    measurements.append(tank_measurement)
 
         if (
             fc_demand_status is not None

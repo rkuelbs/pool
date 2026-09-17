@@ -31,6 +31,7 @@ from poolctl.web.live import (
     build_history_payload,
     build_history_series_payload,
     build_live_snapshot,
+    chlorine_supply_payload,
     format_measurement,
     measurement_status,
 )
@@ -332,6 +333,72 @@ async def test_build_live_snapshot_includes_csi_when_inputs_are_available(
 
 
 @pytest.mark.asyncio
+async def test_build_live_snapshot_includes_chlorine_tank_estimate(
+    tmp_path: Path,
+) -> None:
+    clock = make_clock()
+    config = logging_live_config(str(tmp_path / "tank.sqlite3"))
+    config["chlorination"] = {"daily_dose_oz": 64.0}
+    app = build_app_from_mapping(
+        config,
+        clock=clock,
+    )
+    assert app.measurement_logger is not None
+    now = clock.now()
+    app.measurement_logger.log_lab_test(
+        LabTest(
+            sampled_at=now - timedelta(hours=1),
+            chlorine_tank_level_gal=10.0,
+        )
+    )
+    app.measurement_logger.log_chlorine_delivery(
+        observed_at=now - timedelta(minutes=30),
+        runtime_seconds=60.0,
+        delivered_oz=64.0,
+    )
+
+    snapshot = await build_live_snapshot(app)
+    tank = snapshot["sensors"][SensorId.CHLORINE_TANK_LEVEL_GAL.value]
+
+    assert tank["label"] == "Chlorine tank level"
+    assert tank["value"] == 9.5
+    assert tank["display"] == "9.50 gal"
+    assert snapshot["chlorine_supply"]["remaining_gal"] == 9.5
+    assert snapshot["chlorine_supply"]["days_remaining"] == 19.0
+    assert snapshot["chlorine_supply"]["status"] == "normal"
+    assert snapshot["chlorine_supply"]["display"] == "Chlorine Remaining 9.50 gallons, 19.0 days"
+
+
+@pytest.mark.parametrize(
+    ("daily_dose_oz", "expected_days", "expected_status"),
+    [
+        (128.0, 8.0, "normal"),
+        (256.0, 4.0, "caution"),
+        (512.0, 2.0, "alarm"),
+        (0.0, None, "unknown"),
+    ],
+)
+def test_chlorine_supply_payload_calculates_days_and_status(
+    daily_dose_oz: float,
+    expected_days: float | None,
+    expected_status: str,
+) -> None:
+    payload = chlorine_supply_payload(
+        tank_measurement=Measurement(
+            sensor_id=SensorId.CHLORINE_TANK_LEVEL_GAL,
+            observed_at=make_clock().now(),
+            value=8.0,
+            unit="gal",
+            quality=Quality.GOOD,
+        ),
+        daily_dose_oz=daily_dose_oz,
+    )
+
+    assert payload["days_remaining"] == expected_days
+    assert payload["status"] == expected_status
+
+
+@pytest.mark.asyncio
 async def test_route_command_applies_dashboard_actuator_command() -> None:
     app = build_app_from_mapping(control_config(), clock=make_clock())
 
@@ -376,6 +443,16 @@ def test_format_measurement_uses_domain_units() -> None:
     assert (
         format_measurement(Measurement(sensor_id=SensorId.TANK_LEVEL, value=87.4, unit="percent"))
         == "87%"
+    )
+    assert (
+        format_measurement(
+            Measurement(
+                sensor_id=SensorId.CHLORINE_TANK_LEVEL_GAL,
+                value=9.5,
+                unit="gal",
+            )
+        )
+        == "9.50 gal"
     )
     assert (
         format_measurement(
