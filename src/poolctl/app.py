@@ -85,6 +85,7 @@ from poolctl.services.notifications import (
     NotificationResult,
     NotificationService,
     NotificationsConfig,
+    evaluate_notification_alerts,
 )
 from poolctl.services.pump_timer import PumpTimer, PumpTimerConfig
 from poolctl.services.pump_timer import PumpTimerOverride
@@ -157,6 +158,7 @@ class AppTickResult:
     weather_result: WeatherPollResult = field(default_factory=WeatherPollResult)
     fc_demand_status: FcDemandStatus | None = None
     logged_chlorine_delivery_count: int = 0
+    notification_results: tuple[NotificationResult, ...] = ()
     duration_s: float = 0.0
     control_duration_s: float = 0.0
 
@@ -388,6 +390,7 @@ class PoolControllerApp:
     weather_service: WeatherService | None = None
     notifications_config: NotificationsConfig = field(default_factory=NotificationsConfig)
     notification_service: NotificationService | None = None
+    notification_alert_last_sent_at: dict[str, datetime] = field(default_factory=dict)
     relay_safety_config: RelaySafetyConfig = RelaySafetyConfig()
     relay_startup_safe_off_done: bool = False
     relay_last_reconciled_at: datetime | None = None
@@ -563,6 +566,13 @@ class PoolControllerApp:
             publish_measurements = publish_measurements + (csi_measurement,)
         publish_measurements = publish_measurements + control_measurements
         self._publish_mqtt(publish_measurements)
+        notification_results = self._run_notification_alerts(
+            measurements=self._notification_alert_measurements(
+                latest_measurements=latest_measurements,
+                control_measurements=control_measurements,
+                observed_at=self.clock.now(),
+            )
+        )
 
         return AppTickResult(
             observed_at=self.clock.now(),
@@ -582,6 +592,7 @@ class PoolControllerApp:
                 fc_demand_plan.status if fc_demand_plan is not None else None
             ),
             logged_chlorine_delivery_count=logged_chlorine_delivery_count,
+            notification_results=notification_results,
             duration_s=time.perf_counter() - tick_started_s,
             control_duration_s=control_duration_s,
         )
@@ -616,6 +627,7 @@ class PoolControllerApp:
         Apply updated notification settings to the running app.
         """
         object.__setattr__(self, "notifications_config", config)
+        object.__setattr__(self, "notification_alert_last_sent_at", {})
         object.__setattr__(
             self,
             "notification_service",
@@ -988,6 +1000,7 @@ class PoolControllerApp:
             "provider": self.notifications_config.provider.value,
             "default_title": self.notifications_config.default_title,
             "pushover": self.notifications_config.pushover.as_payload(),
+            "alerts": self.notifications_config.alerts.as_payload(),
         }
 
     def send_notification(
@@ -1007,6 +1020,67 @@ class PoolControllerApp:
                 priority=priority,
             )
         )
+
+    def _notification_alert_measurements(
+        self,
+        *,
+        latest_measurements: Mapping[SensorId, Measurement],
+        control_measurements: Iterable[Measurement],
+        observed_at: datetime,
+    ) -> dict[SensorId, Measurement]:
+        measurements = dict(latest_measurements)
+        for measurement in control_measurements:
+            measurements[measurement.sensor_id] = measurement
+
+        tank_measurement = self.chlorine_tank_level_measurement(
+            observed_at=observed_at,
+            source="notification_alert",
+        )
+        if tank_measurement is not None:
+            measurements[tank_measurement.sensor_id] = tank_measurement
+        return measurements
+
+    def _run_notification_alerts(
+        self,
+        *,
+        measurements: Mapping[SensorId, Measurement],
+    ) -> tuple[NotificationResult, ...]:
+        if not self.notifications_config.enabled:
+            return ()
+
+        service = self.notification_service
+        if service is None:
+            service = NotificationService(self.notifications_config)
+
+        now = self.clock.now()
+        alerts = evaluate_notification_alerts(
+            config=self.notifications_config.alerts,
+            measurements=measurements,
+            now=now,
+            last_sent_at=self.notification_alert_last_sent_at,
+        )
+        if not alerts:
+            return ()
+
+        updated_last_sent_at = dict(self.notification_alert_last_sent_at)
+        results: list[NotificationResult] = []
+        for alert in alerts:
+            results.append(
+                service.send(
+                    NotificationMessage(
+                        title=self.notifications_config.default_title,
+                        message=alert.message(),
+                    )
+                )
+            )
+            updated_last_sent_at[alert.throttle_key] = now
+
+        object.__setattr__(
+            self,
+            "notification_alert_last_sent_at",
+            updated_last_sent_at,
+        )
+        return tuple(results)
 
     def active_timer_override(self) -> TimerOverrideState | None:
         state = self.timer_override

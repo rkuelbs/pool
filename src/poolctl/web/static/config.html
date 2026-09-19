@@ -451,6 +451,40 @@
           <label>Priority <input id="pushoverPriority" type="number" step="1" min="-2" max="2"></label>
           <label>Sound <input id="pushoverSound" type="text" placeholder="blank = default"></label>
         </div>
+        <div class="history-header">
+          <h2>Chlorine Tank Alert</h2>
+        </div>
+        <div class="config-grid">
+          <label><span>Enabled</span><input id="notifyTankAlertEnabled" type="checkbox"></label>
+          <label>Caution below gal <input id="notifyTankCautionBelow" type="number" step="0.01" min="0"></label>
+          <label>Warning below gal <input id="notifyTankWarningBelow" type="number" step="0.01" min="0"></label>
+          <label>Caution repeat min <input id="notifyTankCautionRepeat" type="number" step="1" min="1"></label>
+          <label>Warning repeat min <input id="notifyTankWarningRepeat" type="number" step="1" min="1"></label>
+        </div>
+        <div class="history-header">
+          <h2>pH Alert</h2>
+        </div>
+        <div class="config-grid">
+          <label><span>Enabled</span><input id="notifyPhAlertEnabled" type="checkbox"></label>
+          <label>Caution below <input id="notifyPhCautionBelow" type="number" step="0.01"></label>
+          <label>Caution above <input id="notifyPhCautionAbove" type="number" step="0.01"></label>
+          <label>Warning below <input id="notifyPhWarningBelow" type="number" step="0.01"></label>
+          <label>Warning above <input id="notifyPhWarningAbove" type="number" step="0.01"></label>
+          <label>Caution repeat min <input id="notifyPhCautionRepeat" type="number" step="1" min="1"></label>
+          <label>Warning repeat min <input id="notifyPhWarningRepeat" type="number" step="1" min="1"></label>
+        </div>
+        <div class="history-header">
+          <h2>ORP Alert</h2>
+        </div>
+        <div class="config-grid">
+          <label><span>Enabled</span><input id="notifyOrpAlertEnabled" type="checkbox"></label>
+          <label>Caution below mV <input id="notifyOrpCautionBelow" type="number" step="1"></label>
+          <label>Caution above mV <input id="notifyOrpCautionAbove" type="number" step="1"></label>
+          <label>Warning below mV <input id="notifyOrpWarningBelow" type="number" step="1"></label>
+          <label>Warning above mV <input id="notifyOrpWarningAbove" type="number" step="1"></label>
+          <label>Caution repeat min <input id="notifyOrpCautionRepeat" type="number" step="1" min="1"></label>
+          <label>Warning repeat min <input id="notifyOrpWarningRepeat" type="number" step="1" min="1"></label>
+        </div>
         <div class="timer-actions">
           <button id="notificationsSave" type="button">Save Notifications</button>
           <button id="notificationsTest" type="button">Send Test</button>

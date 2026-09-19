@@ -2449,6 +2449,7 @@ def serialize_notifications_config(app: PoolControllerApp) -> dict[str, Any]:
             "sound": config.pushover.sound,
             "configured": config.pushover.as_payload()["configured"],
         },
+        "alerts": config.alerts.as_payload(),
         "applied_live": True,
     }
 
@@ -2475,6 +2476,7 @@ def apply_notifications_config_update(
             "priority": proposed.pushover.priority,
             "sound": proposed.pushover.sound,
         },
+        "alerts": proposed.alerts.as_payload(),
     }
     _save_config_write_mapping(config_path, local_config_path=local_config_path, data=config_data)
 

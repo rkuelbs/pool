@@ -34,6 +34,7 @@ from poolctl.domain.models import (
 from poolctl.drivers.simulated.actuators import build_default_simulated_actuators
 from poolctl.drivers.simulated.plant import SimulatedPlant
 from poolctl.services.clock import SimulatedClock
+from poolctl.services.notifications import NotificationProvider, NotificationResult
 import poolctl.services.weather as weather_service_module
 
 
@@ -109,6 +110,18 @@ class FixedSensor:
             quality=Quality.GOOD,
             metadata={"driver": self.name},
         )
+
+
+class CapturingNotificationService:
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    def send(self, message: object) -> NotificationResult:
+        self.messages.append(str(getattr(message, "message", "")))
+        return NotificationResult(sent=True, provider=NotificationProvider.PUSHOVER)
+
+    def status_payload(self) -> dict[str, object]:
+        return {"enabled": True, "provider": "pushover"}
 
 
 def make_clock() -> SimulatedClock:
@@ -1775,3 +1788,74 @@ async def test_tick_computes_csi_from_valid_live_temp_ph_and_latest_sparse_lab_v
         limit=10,
     )
     assert len(records) == 1
+
+
+@pytest.mark.asyncio
+async def test_tick_sends_notification_alerts_with_repeat_throttle() -> None:
+    clock = make_clock()
+    ph_sensor = FixedSensor(
+        name="ph_sensor",
+        sensor_id=SensorId.RAW_PH,
+        clock=clock,
+        value=7.9,
+        unit="pH",
+    )
+    config = {
+        "runtime": {
+            "stage": "sensor_logging",
+            "driver_profile": "simulated",
+            "enabled_layers": ["acquisition"],
+            "enabled_actuators": [],
+            "enabled_sensor_groups": ["chemistry_loop"],
+        },
+        "acquisition": {
+            "groups": {
+                "chemistry_loop": {
+                    "sensor_ids": ["raw_ph"],
+                    "read_interval_s": 1.0,
+                    "log_interval_s": 1.0,
+                    "requires_pump_flow": False,
+                    "oversample": {
+                        "sample_count": 1,
+                        "sample_interval_s": 0.0,
+                        "reducer": "last",
+                    },
+                }
+            }
+        },
+        "notifications": {
+            "enabled": True,
+            "provider": "pushover",
+            "default_title": "poolctl test",
+            "alerts": {
+                "ph": {
+                    "enabled": True,
+                    "caution_below": 7.2,
+                    "caution_above": 7.8,
+                    "warning_below": 6.8,
+                    "warning_above": 8.2,
+                    "caution_repeat_minutes": 60.0,
+                    "warning_repeat_minutes": 15.0,
+                }
+            },
+        },
+    }
+    app = build_app_from_mapping(config, clock=clock, sensor_drivers=[ph_sensor])
+    notifications = CapturingNotificationService()
+    object.__setattr__(app, "notification_service", notifications)
+
+    first = await app.tick(force_acquisition=True)
+    ph_sensor._value = 7.1
+    await clock.advance(10 * 60)
+    second = await app.tick(force_acquisition=True)
+    await clock.advance(51 * 60)
+    third = await app.tick(force_acquisition=True)
+
+    assert len(first.notification_results) == 1
+    assert first.notification_results[0].sent is True
+    assert second.notification_results == ()
+    assert len(third.notification_results) == 1
+    assert notifications.messages == [
+        "pH caution: 7.90 is above the caution threshold (7.80)",
+        "pH caution: 7.10 is below the caution threshold (7.20)",
+    ]

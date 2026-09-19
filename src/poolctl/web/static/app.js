@@ -3401,6 +3401,7 @@ async function sendTestNotification() {
 
 function renderNotificationsConfig(payload) {
   const pushover = payload.pushover || {};
+  const alerts = payload.alerts || {};
   document.getElementById("notificationsEnabled").checked = payload.enabled === true;
   document.getElementById("notificationsProvider").value = payload.provider || "pushover";
   document.getElementById("notificationsDefaultTitle").value = payload.default_title || "poolctl";
@@ -3410,6 +3411,9 @@ function renderNotificationsConfig(payload) {
   document.getElementById("pushoverTimeout").value = String(pushover.timeout_s ?? 5.0);
   document.getElementById("pushoverPriority").value = String(pushover.priority ?? 0);
   document.getElementById("pushoverSound").value = pushover.sound || "";
+  renderSignalAlertConfig("notifyTank", alerts.chlorine_tank || {});
+  renderSignalAlertConfig("notifyPh", alerts.ph || {});
+  renderSignalAlertConfig("notifyOrp", alerts.orp || {});
 }
 
 function collectNotificationsConfig() {
@@ -3425,7 +3429,50 @@ function collectNotificationsConfig() {
       priority: Number(document.getElementById("pushoverPriority").value),
       sound: stringOrNull(document.getElementById("pushoverSound").value),
     },
+    alerts: {
+      chlorine_tank: collectSignalAlertConfig("notifyTank", { includeAbove: false }),
+      ph: collectSignalAlertConfig("notifyPh", { includeAbove: true }),
+      orp: collectSignalAlertConfig("notifyOrp", { includeAbove: true }),
+    },
   };
+}
+
+function renderSignalAlertConfig(prefix, config) {
+  const enabled = document.getElementById(`${prefix}AlertEnabled`);
+  if (!enabled) {
+    return;
+  }
+  enabled.checked = config.enabled === true;
+  setOptionalNumberInput(`${prefix}CautionBelow`, config.caution_below);
+  setOptionalNumberInput(`${prefix}CautionAbove`, config.caution_above);
+  setOptionalNumberInput(`${prefix}WarningBelow`, config.warning_below);
+  setOptionalNumberInput(`${prefix}WarningAbove`, config.warning_above);
+  setOptionalNumberInput(`${prefix}CautionRepeat`, config.caution_repeat_minutes ?? 1440.0);
+  setOptionalNumberInput(`${prefix}WarningRepeat`, config.warning_repeat_minutes ?? 240.0);
+}
+
+function collectSignalAlertConfig(prefix, options) {
+  const includeAbove = options && options.includeAbove === true;
+  const payload = {
+    enabled: document.getElementById(`${prefix}AlertEnabled`).checked,
+    caution_below: numberOrNull(document.getElementById(`${prefix}CautionBelow`).value),
+    warning_below: numberOrNull(document.getElementById(`${prefix}WarningBelow`).value),
+    caution_repeat_minutes: Number(document.getElementById(`${prefix}CautionRepeat`).value),
+    warning_repeat_minutes: Number(document.getElementById(`${prefix}WarningRepeat`).value),
+  };
+  if (includeAbove) {
+    payload.caution_above = numberOrNull(document.getElementById(`${prefix}CautionAbove`).value);
+    payload.warning_above = numberOrNull(document.getElementById(`${prefix}WarningAbove`).value);
+  }
+  return payload;
+}
+
+function setOptionalNumberInput(id, value) {
+  const input = document.getElementById(id);
+  if (!input) {
+    return;
+  }
+  input.value = value === null || value === undefined ? "" : String(value);
 }
 
 function setNotificationsStatus(message) {

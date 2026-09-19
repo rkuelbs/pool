@@ -560,6 +560,33 @@ def test_notifications_update_applies_live_and_persists(tmp_path: Path) -> None:
                 "priority": 1,
                 "sound": "bike",
             },
+            "alerts": {
+                "chlorine_tank": {
+                    "enabled": True,
+                    "caution_below": 4.0,
+                    "warning_below": 1.5,
+                    "caution_repeat_minutes": 720.0,
+                    "warning_repeat_minutes": 120.0,
+                },
+                "ph": {
+                    "enabled": True,
+                    "caution_below": 7.2,
+                    "caution_above": 7.8,
+                    "warning_below": 6.9,
+                    "warning_above": 8.1,
+                    "caution_repeat_minutes": 360.0,
+                    "warning_repeat_minutes": 60.0,
+                },
+                "orp": {
+                    "enabled": False,
+                    "caution_below": 600.0,
+                    "caution_above": 800.0,
+                    "warning_below": 400.0,
+                    "warning_above": 900.0,
+                    "caution_repeat_minutes": 1440.0,
+                    "warning_repeat_minutes": 240.0,
+                },
+            },
         },
     )
 
@@ -570,6 +597,8 @@ def test_notifications_update_applies_live_and_persists(tmp_path: Path) -> None:
     saved = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert saved["notifications"]["enabled"] is True
     assert saved["notifications"]["pushover"]["app_token_env"] == "POOL_PUSHOVER_TOKEN"
+    assert saved["notifications"]["alerts"]["chlorine_tank"]["warning_below"] == 1.5
+    assert saved["notifications"]["alerts"]["ph"]["warning_repeat_minutes"] == 60.0
     assert "app_token" not in saved["notifications"]["pushover"]
     assert "user_key" not in saved["notifications"]["pushover"]
 

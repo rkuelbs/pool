@@ -116,6 +116,29 @@ notifications:
     timeout_s: 5.0
     priority: 0
     sound: null
+  alerts:
+    chlorine_tank:
+      enabled: false
+      caution_below: 5.0
+      warning_below: 2.0
+      caution_repeat_minutes: 1440.0
+      warning_repeat_minutes: 240.0
+    ph:
+      enabled: false
+      caution_below: 7.2
+      caution_above: 7.8
+      warning_below: 6.8
+      warning_above: 8.2
+      caution_repeat_minutes: 1440.0
+      warning_repeat_minutes: 240.0
+    orp:
+      enabled: false
+      caution_below: 600.0
+      caution_above: 800.0
+      warning_below: 400.0
+      warning_above: 900.0
+      caution_repeat_minutes: 1440.0
+      warning_repeat_minutes: 240.0
 acquisition:
   groups:
     pressures:

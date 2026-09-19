@@ -15,12 +15,20 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any
+
+from poolctl.domain.models import Measurement, Quality, SensorId
 
 
 class NotificationProvider(str, Enum):
     PUSHOVER = "pushover"
+
+
+class NotificationAlertSeverity(str, Enum):
+    CAUTION = "caution"
+    WARNING = "warning"
 
 
 @dataclass(frozen=True)
@@ -78,16 +86,144 @@ class PushoverConfig:
 
 
 @dataclass(frozen=True)
+class SignalNotificationConfig:
+    enabled: bool = False
+    caution_below: float | None = None
+    caution_above: float | None = None
+    warning_below: float | None = None
+    warning_above: float | None = None
+    caution_repeat_minutes: float = 1440.0
+    warning_repeat_minutes: float = 240.0
+
+    def __post_init__(self) -> None:
+        if self.caution_repeat_minutes <= 0:
+            raise ValueError("caution_repeat_minutes must be > 0")
+        if self.warning_repeat_minutes <= 0:
+            raise ValueError("warning_repeat_minutes must be > 0")
+        if (
+            self.caution_below is not None
+            and self.warning_below is not None
+            and self.warning_below > self.caution_below
+        ):
+            raise ValueError("warning_below must be <= caution_below")
+        if (
+            self.caution_above is not None
+            and self.warning_above is not None
+            and self.warning_above < self.caution_above
+        ):
+            raise ValueError("warning_above must be >= caution_above")
+        if self.enabled and not any(
+            threshold is not None
+            for threshold in (
+                self.caution_below,
+                self.caution_above,
+                self.warning_below,
+                self.warning_above,
+            )
+        ):
+            raise ValueError("enabled notification alert must define at least one threshold")
+
+    @classmethod
+    def from_mapping(
+        cls,
+        data: Mapping[str, Any],
+        *,
+        default: SignalNotificationConfig,
+    ) -> SignalNotificationConfig:
+        return cls(
+            enabled=_bool_value(data, "enabled", default.enabled),
+            caution_below=_optional_float_value(data, "caution_below", default.caution_below),
+            caution_above=_optional_float_value(data, "caution_above", default.caution_above),
+            warning_below=_optional_float_value(data, "warning_below", default.warning_below),
+            warning_above=_optional_float_value(data, "warning_above", default.warning_above),
+            caution_repeat_minutes=_float_value(
+                data,
+                "caution_repeat_minutes",
+                default.caution_repeat_minutes,
+            ),
+            warning_repeat_minutes=_float_value(
+                data,
+                "warning_repeat_minutes",
+                default.warning_repeat_minutes,
+            ),
+        )
+
+    def as_payload(self) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "caution_below": self.caution_below,
+            "caution_above": self.caution_above,
+            "warning_below": self.warning_below,
+            "warning_above": self.warning_above,
+            "caution_repeat_minutes": self.caution_repeat_minutes,
+            "warning_repeat_minutes": self.warning_repeat_minutes,
+        }
+
+
+@dataclass(frozen=True)
+class NotificationAlertConfig:
+    chlorine_tank: SignalNotificationConfig = field(
+        default_factory=lambda: SignalNotificationConfig(
+            caution_below=5.0,
+            warning_below=2.0,
+        )
+    )
+    ph: SignalNotificationConfig = field(
+        default_factory=lambda: SignalNotificationConfig(
+            caution_below=7.2,
+            caution_above=7.8,
+            warning_below=6.8,
+            warning_above=8.2,
+        )
+    )
+    orp: SignalNotificationConfig = field(
+        default_factory=lambda: SignalNotificationConfig(
+            caution_below=600.0,
+            caution_above=800.0,
+            warning_below=400.0,
+            warning_above=900.0,
+        )
+    )
+
+    @classmethod
+    def from_mapping(cls, data: Mapping[str, Any]) -> NotificationAlertConfig:
+        defaults = cls()
+        return cls(
+            chlorine_tank=SignalNotificationConfig.from_mapping(
+                _mapping_value(data, "chlorine_tank", default={}),
+                default=defaults.chlorine_tank,
+            ),
+            ph=SignalNotificationConfig.from_mapping(
+                _mapping_value(data, "ph", default={}),
+                default=defaults.ph,
+            ),
+            orp=SignalNotificationConfig.from_mapping(
+                _mapping_value(data, "orp", default={}),
+                default=defaults.orp,
+            ),
+        )
+
+    def as_payload(self) -> dict[str, Any]:
+        return {
+            "chlorine_tank": self.chlorine_tank.as_payload(),
+            "ph": self.ph.as_payload(),
+            "orp": self.orp.as_payload(),
+        }
+
+
+@dataclass(frozen=True)
 class NotificationsConfig:
     enabled: bool = False
     provider: NotificationProvider = NotificationProvider.PUSHOVER
     default_title: str = "poolctl"
     pushover: PushoverConfig = field(default_factory=PushoverConfig)
+    alerts: NotificationAlertConfig = field(default_factory=NotificationAlertConfig)
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> NotificationsConfig:
         notifications_data = _mapping_value(data, "notifications", default={})
         pushover_data = _mapping_value(notifications_data, "pushover", default={})
+        alerts_data = _mapping_value(notifications_data, "alerts", default={})
         return cls(
             enabled=_bool_value(notifications_data, "enabled", cls.enabled),
             provider=_provider_value(
@@ -101,6 +237,7 @@ class NotificationsConfig:
                 cls.default_title,
             ),
             pushover=PushoverConfig.from_mapping(pushover_data),
+            alerts=NotificationAlertConfig.from_mapping(alerts_data),
         )
 
 
@@ -109,6 +246,32 @@ class NotificationMessage:
     title: str
     message: str
     priority: int | None = None
+
+
+@dataclass(frozen=True)
+class NotificationAlert:
+    sensor_id: SensorId
+    signal_key: str
+    label: str
+    severity: NotificationAlertSeverity
+    direction: str
+    value: float
+    unit: str
+    threshold: float
+    repeat_minutes: float
+
+    @property
+    def throttle_key(self) -> str:
+        return f"{self.signal_key}:{self.severity.value}"
+
+    def message(self) -> str:
+        value = _display_value(self.value, self.unit)
+        threshold = _display_value(self.threshold, self.unit)
+        relation = "below" if self.direction == "below" else "above"
+        return (
+            f"{self.label} {self.severity.value}: {value} is {relation} "
+            f"the {self.severity.value} threshold ({threshold})"
+        )
 
 
 @dataclass(frozen=True)
@@ -151,6 +314,7 @@ class NotificationService:
             "enabled": self.config.enabled,
             "provider": self.config.provider.value,
             "default_title": self.config.default_title,
+            "alerts": self.config.alerts.as_payload(),
         }
         if self.config.provider == NotificationProvider.PUSHOVER:
             payload["pushover"] = self.config.pushover.as_payload()
@@ -229,6 +393,136 @@ class NotificationService:
         )
 
 
+def evaluate_notification_alerts(
+    *,
+    config: NotificationAlertConfig,
+    measurements: Mapping[SensorId, Measurement],
+    now: datetime,
+    last_sent_at: Mapping[str, datetime],
+) -> tuple[NotificationAlert, ...]:
+    alerts: list[NotificationAlert] = []
+    specs = (
+        (
+            "chlorine_tank",
+            "Chlorine tank",
+            SensorId.CHLORINE_TANK_LEVEL_GAL,
+            config.chlorine_tank,
+        ),
+        ("ph", "pH", SensorId.RAW_PH, config.ph),
+        ("orp", "ORP", SensorId.RAW_ORP, config.orp),
+    )
+    for signal_key, label, sensor_id, signal_config in specs:
+        measurement = measurements.get(sensor_id)
+        if measurement is None or measurement.quality != Quality.GOOD:
+            continue
+        alert = active_notification_alert(
+            signal_key=signal_key,
+            label=label,
+            sensor_id=sensor_id,
+            measurement=measurement,
+            config=signal_config,
+        )
+        if alert is None:
+            continue
+        last_sent = last_sent_at.get(alert.throttle_key)
+        if last_sent is None or now - last_sent >= timedelta(minutes=alert.repeat_minutes):
+            alerts.append(alert)
+    return tuple(alerts)
+
+
+def active_notification_alert(
+    *,
+    signal_key: str,
+    label: str,
+    sensor_id: SensorId,
+    measurement: Measurement,
+    config: SignalNotificationConfig,
+) -> NotificationAlert | None:
+    if not config.enabled:
+        return None
+
+    value = float(measurement.value)
+    if config.warning_below is not None and value <= config.warning_below:
+        return _notification_alert(
+            signal_key=signal_key,
+            label=label,
+            sensor_id=sensor_id,
+            measurement=measurement,
+            severity=NotificationAlertSeverity.WARNING,
+            direction="below",
+            threshold=config.warning_below,
+            repeat_minutes=config.warning_repeat_minutes,
+        )
+    if config.warning_above is not None and value >= config.warning_above:
+        return _notification_alert(
+            signal_key=signal_key,
+            label=label,
+            sensor_id=sensor_id,
+            measurement=measurement,
+            severity=NotificationAlertSeverity.WARNING,
+            direction="above",
+            threshold=config.warning_above,
+            repeat_minutes=config.warning_repeat_minutes,
+        )
+    if config.caution_below is not None and value <= config.caution_below:
+        return _notification_alert(
+            signal_key=signal_key,
+            label=label,
+            sensor_id=sensor_id,
+            measurement=measurement,
+            severity=NotificationAlertSeverity.CAUTION,
+            direction="below",
+            threshold=config.caution_below,
+            repeat_minutes=config.caution_repeat_minutes,
+        )
+    if config.caution_above is not None and value >= config.caution_above:
+        return _notification_alert(
+            signal_key=signal_key,
+            label=label,
+            sensor_id=sensor_id,
+            measurement=measurement,
+            severity=NotificationAlertSeverity.CAUTION,
+            direction="above",
+            threshold=config.caution_above,
+            repeat_minutes=config.caution_repeat_minutes,
+        )
+    return None
+
+
+def _notification_alert(
+    *,
+    signal_key: str,
+    label: str,
+    sensor_id: SensorId,
+    measurement: Measurement,
+    severity: NotificationAlertSeverity,
+    direction: str,
+    threshold: float,
+    repeat_minutes: float,
+) -> NotificationAlert:
+    return NotificationAlert(
+        sensor_id=sensor_id,
+        signal_key=signal_key,
+        label=label,
+        severity=severity,
+        direction=direction,
+        value=float(measurement.value),
+        unit=measurement.unit,
+        threshold=threshold,
+        repeat_minutes=repeat_minutes,
+    )
+
+
+def _display_value(value: float, unit: str) -> str:
+    if unit == "pH":
+        return f"{value:.2f}"
+    if unit == "mV":
+        return f"{value:.0f} mV"
+    if unit == "gal":
+        return f"{value:.2f} gal"
+    return f"{value:g} {unit}"
+
+
 def _default_post_form(
     url: str,
     data: Mapping[str, str],
@@ -299,6 +593,19 @@ def _float_value(data: Mapping[str, Any], key: str, default: float) -> float:
     if isinstance(value, int | float):
         return float(value)
     raise ValueError(f"{key} must be a number")
+
+
+def _optional_float_value(
+    data: Mapping[str, Any],
+    key: str,
+    default: float | None,
+) -> float | None:
+    value = data.get(key, default)
+    if value is None:
+        return None
+    if isinstance(value, int | float):
+        return float(value)
+    raise ValueError(f"{key} must be a number or null")
 
 
 def _int_value(data: Mapping[str, Any], key: str, default: int) -> int:

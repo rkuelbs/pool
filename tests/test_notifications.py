@@ -8,11 +8,14 @@ and tests keep disabled/configured cases predictable.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import datetime, timedelta, timezone
 
+from poolctl.domain.models import Measurement, Quality, SensorId
 from poolctl.services.notifications import (
     NotificationMessage,
     NotificationService,
     NotificationsConfig,
+    evaluate_notification_alerts,
 )
 
 
@@ -23,6 +26,8 @@ def test_notifications_config_defaults_to_disabled_pushover() -> None:
     assert config.provider.value == "pushover"
     assert config.pushover.app_token_env == "PUSHOVER_APP_TOKEN"
     assert config.pushover.user_key_env == "PUSHOVER_USER_KEY"
+    assert config.alerts.ph.warning_above == 8.2
+    assert config.alerts.orp.caution_below == 600.0
 
 
 def test_pushover_send_reports_missing_credentials(monkeypatch) -> None:
@@ -113,3 +118,116 @@ def test_notification_service_does_not_leak_environment_values(monkeypatch) -> N
     rendered = str(status)
     assert "secret-token" not in rendered
     assert "secret-user" not in rendered
+
+
+def test_notification_alert_evaluator_applies_warning_and_repeat_throttle() -> None:
+    config = NotificationsConfig.from_mapping(
+        {
+            "notifications": {
+                "alerts": {
+                    "ph": {
+                        "enabled": True,
+                        "caution_below": 7.2,
+                        "caution_above": 7.8,
+                        "warning_below": 6.8,
+                        "warning_above": 8.2,
+                        "caution_repeat_minutes": 60.0,
+                        "warning_repeat_minutes": 15.0,
+                    }
+                }
+            }
+        }
+    )
+    now = datetime(2026, 5, 21, 12, tzinfo=timezone.utc)
+    measurements = {
+        SensorId.RAW_PH: Measurement(
+            sensor_id=SensorId.RAW_PH,
+            observed_at=now,
+            value=8.35,
+            unit="pH",
+            quality=Quality.GOOD,
+        )
+    }
+
+    first = evaluate_notification_alerts(
+        config=config.alerts,
+        measurements=measurements,
+        now=now,
+        last_sent_at={},
+    )
+    throttled = evaluate_notification_alerts(
+        config=config.alerts,
+        measurements=measurements,
+        now=now + timedelta(minutes=10),
+        last_sent_at={"ph:warning": now},
+    )
+    repeated = evaluate_notification_alerts(
+        config=config.alerts,
+        measurements=measurements,
+        now=now + timedelta(minutes=16),
+        last_sent_at={"ph:warning": now},
+    )
+
+    assert len(first) == 1
+    assert first[0].severity.value == "warning"
+    assert first[0].direction == "above"
+    assert first[0].throttle_key == "ph:warning"
+    assert throttled == ()
+    assert len(repeated) == 1
+
+
+def test_notification_alert_evaluator_throttles_ph_caution_across_directions() -> None:
+    config = NotificationsConfig.from_mapping(
+        {
+            "notifications": {
+                "alerts": {
+                    "ph": {
+                        "enabled": True,
+                        "caution_below": 7.2,
+                        "caution_above": 7.8,
+                        "warning_below": 6.8,
+                        "warning_above": 8.2,
+                        "caution_repeat_minutes": 60.0,
+                        "warning_repeat_minutes": 15.0,
+                    }
+                }
+            }
+        }
+    )
+    now = datetime(2026, 5, 21, 12, tzinfo=timezone.utc)
+    high_caution = {
+        SensorId.RAW_PH: Measurement(
+            sensor_id=SensorId.RAW_PH,
+            observed_at=now,
+            value=7.9,
+            unit="pH",
+            quality=Quality.GOOD,
+        )
+    }
+    low_caution = {
+        SensorId.RAW_PH: Measurement(
+            sensor_id=SensorId.RAW_PH,
+            observed_at=now + timedelta(minutes=10),
+            value=7.1,
+            unit="pH",
+            quality=Quality.GOOD,
+        )
+    }
+
+    first = evaluate_notification_alerts(
+        config=config.alerts,
+        measurements=high_caution,
+        now=now,
+        last_sent_at={},
+    )
+    oscillation = evaluate_notification_alerts(
+        config=config.alerts,
+        measurements=low_caution,
+        now=now + timedelta(minutes=10),
+        last_sent_at={"ph:caution": now},
+    )
+
+    assert len(first) == 1
+    assert first[0].direction == "above"
+    assert first[0].throttle_key == "ph:caution"
+    assert oscillation == ()

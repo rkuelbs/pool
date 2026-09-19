@@ -198,8 +198,9 @@ Important sections:
 - `live_view`: dashboard display limits.
 - `weather`: Open-Meteo location, units, and polling settings.
 - `mqtt`: MQTT connection, topics, and permission switches.
-- `notifications`: push notification provider settings. Pushover secrets should
-  live in environment variables, not YAML.
+- `notifications`: push notification provider settings and optional alert rules
+  for chlorine tank level, pH, and ORP. Pushover secrets should live in
+  environment variables, not YAML.
 
 Schedule `start` and `end` values should be quoted strings:
 
@@ -641,7 +642,38 @@ notifications:
     timeout_s: 5.0
     priority: 0
     sound: null
+  alerts:
+    chlorine_tank:
+      enabled: true
+      caution_below: 5.0
+      warning_below: 2.0
+      caution_repeat_minutes: 1440.0
+      warning_repeat_minutes: 240.0
+    ph:
+      enabled: true
+      caution_below: 7.2
+      caution_above: 7.8
+      warning_below: 6.8
+      warning_above: 8.2
+      caution_repeat_minutes: 1440.0
+      warning_repeat_minutes: 240.0
+    orp:
+      enabled: true
+      caution_below: 600.0
+      caution_above: 800.0
+      warning_below: 400.0
+      warning_above: 900.0
+      caution_repeat_minutes: 1440.0
+      warning_repeat_minutes: 240.0
 ```
+
+Alert rules are disabled by default even when the provider block exists in the
+tracked configs. `chlorine_tank` thresholds are gallons remaining from the
+estimated tank level. `ph` thresholds are pH units, and `orp` thresholds are mV.
+Warning thresholds are evaluated before caution thresholds. Each signal has a
+separate caution and warning repeat interval; the throttle key is signal plus
+severity, so pH or ORP values that bounce above and below threshold do not keep
+sending new notifications until the matching repeat interval has elapsed.
 
 On the Pi:
 
