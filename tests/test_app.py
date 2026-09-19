@@ -981,6 +981,12 @@ def test_chlorine_tank_estimate_uses_latest_level_refills_and_delivery(
         observed_at=baseline_at + timedelta(hours=3),
         source="test",
     )
+    days_measurement = app.chlorine_tank_days_remaining_measurement(
+        observed_at=baseline_at + timedelta(hours=3),
+        source="test",
+        daily_dose_oz=128.0,
+        tank_measurement=measurement,
+    )
 
     assert estimate is not None
     assert estimate.level_gal == 11.5
@@ -990,6 +996,11 @@ def test_chlorine_tank_estimate_uses_latest_level_refills_and_delivery(
     assert measurement.sensor_id == SensorId.CHLORINE_TANK_LEVEL_GAL
     assert measurement.value == 11.5
     assert measurement.unit == "gal"
+    assert days_measurement is not None
+    assert days_measurement.sensor_id == SensorId.CHLORINE_TANK_DAYS_REMAINING
+    assert days_measurement.value == 11.5
+    assert days_measurement.unit == "days"
+    assert days_measurement.metadata["remaining_gal"] == 11.5
 
 
 @pytest.mark.asyncio

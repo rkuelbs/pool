@@ -199,8 +199,8 @@ Important sections:
 - `weather`: Open-Meteo location, units, and polling settings.
 - `mqtt`: MQTT connection, topics, and permission switches.
 - `notifications`: push notification provider settings and optional alert rules
-  for chlorine tank level, pH, and ORP. Pushover secrets should live in
-  environment variables, not YAML.
+  for chlorine tank days remaining, pH, and ORP. Pushover keys can be entered
+  on the Config page or supplied through environment variables.
 
 Schedule `start` and `end` values should be quoted strings:
 
@@ -623,12 +623,13 @@ Pushover setup:
 1. Create a Pushover account and install the mobile app.
 2. Create a Pushover application/API token from your Pushover dashboard.
 3. Copy your Pushover user key.
-4. Put the secrets on the Pi in `/etc/poolctl/poolctl.env`.
+4. Enter the app token and user key in the Config page, or put them on the Pi
+   in `/etc/poolctl/poolctl.env`.
 5. Enable notifications in the Config page or YAML.
 6. Press `Send Test` on the Config page.
 
-The project keeps secrets out of the repo. `pi-prod.yaml` stores only the names
-of the environment variables:
+`pi-prod.yaml` stores only the names of the environment variables by default,
+but the Config page can save direct keys to the active writable config:
 
 ```yaml
 notifications:
@@ -636,6 +637,8 @@ notifications:
   provider: pushover
   default_title: poolctl
   pushover:
+    app_token: null
+    user_key: null
     app_token_env: PUSHOVER_APP_TOKEN
     user_key_env: PUSHOVER_USER_KEY
     api_url: https://api.pushover.net/1/messages.json
@@ -645,8 +648,8 @@ notifications:
   alerts:
     chlorine_tank:
       enabled: true
-      caution_below: 5.0
-      warning_below: 2.0
+      caution_below: 7.0
+      warning_below: 3.0
       caution_repeat_minutes: 1440.0
       warning_repeat_minutes: 240.0
     ph:
@@ -668,12 +671,18 @@ notifications:
 ```
 
 Alert rules are disabled by default even when the provider block exists in the
-tracked configs. `chlorine_tank` thresholds are gallons remaining from the
-estimated tank level. `ph` thresholds are pH units, and `orp` thresholds are mV.
+tracked configs. `chlorine_tank` thresholds are days remaining, computed from
+the estimated tank gallons and the current effective daily dose; tank
+notifications include both days and gallons in the message. `ph` thresholds are
+pH units, and `orp` thresholds are mV.
 Warning thresholds are evaluated before caution thresholds. Each signal has a
 separate caution and warning repeat interval; the throttle key is signal plus
 severity, so pH or ORP values that bounce above and below threshold do not keep
 sending new notifications until the matching repeat interval has elapsed.
+
+The Config page has direct `Pushover app token` and `Pushover user key` fields
+that round-trip like other config fields. Leave them blank to use
+`app_token_env` and `user_key_env` instead.
 
 On the Pi:
 

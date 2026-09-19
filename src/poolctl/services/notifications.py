@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -56,11 +57,21 @@ class PushoverConfig:
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> PushoverConfig:
+        app_token_env = _string_value(data, "app_token_env", cls.app_token_env)
+        user_key_env = _string_value(data, "user_key_env", cls.user_key_env)
+        app_token = _optional_string_value(data, "app_token")
+        user_key = _optional_string_value(data, "user_key")
+        if _looks_like_pushover_secret(app_token_env):
+            app_token = app_token or app_token_env
+            app_token_env = cls.app_token_env
+        if _looks_like_pushover_secret(user_key_env):
+            user_key = user_key or user_key_env
+            user_key_env = cls.user_key_env
         return cls(
-            app_token_env=_string_value(data, "app_token_env", cls.app_token_env),
-            user_key_env=_string_value(data, "user_key_env", cls.user_key_env),
-            app_token=_optional_string_value(data, "app_token"),
-            user_key=_optional_string_value(data, "user_key"),
+            app_token_env=app_token_env,
+            user_key_env=user_key_env,
+            app_token=app_token,
+            user_key=user_key,
             api_url=_string_value(data, "api_url", cls.api_url),
             timeout_s=_float_value(data, "timeout_s", cls.timeout_s),
             priority=_int_value(data, "priority", cls.priority),
@@ -82,6 +93,8 @@ class PushoverConfig:
             "priority": self.priority,
             "sound": self.sound,
             "configured": bool(token and user_key),
+            "app_token_configured": bool(self.app_token),
+            "user_key_configured": bool(self.user_key),
         }
 
 
@@ -164,8 +177,8 @@ class SignalNotificationConfig:
 class NotificationAlertConfig:
     chlorine_tank: SignalNotificationConfig = field(
         default_factory=lambda: SignalNotificationConfig(
-            caution_below=5.0,
-            warning_below=2.0,
+            caution_below=7.0,
+            warning_below=3.0,
         )
     )
     ph: SignalNotificationConfig = field(
@@ -259,6 +272,7 @@ class NotificationAlert:
     unit: str
     threshold: float
     repeat_minutes: float
+    context: Mapping[str, Any] = field(default_factory=dict)
 
     @property
     def throttle_key(self) -> str:
@@ -268,6 +282,18 @@ class NotificationAlert:
         value = _display_value(self.value, self.unit)
         threshold = _display_value(self.threshold, self.unit)
         relation = "below" if self.direction == "below" else "above"
+        if self.signal_key == "chlorine_tank" and self.unit == "days":
+            gallons = _optional_float(self.context.get("remaining_gal"))
+            gallons_text = (
+                f" ({_display_value(gallons, 'gal')})"
+                if gallons is not None
+                else ""
+            )
+            return (
+                f"{self.label} {self.severity.value}: {value} remaining"
+                f"{gallons_text} is {relation} the {self.severity.value} "
+                f"threshold ({threshold})"
+            )
         return (
             f"{self.label} {self.severity.value}: {value} is {relation} "
             f"the {self.severity.value} threshold ({threshold})"
@@ -404,8 +430,8 @@ def evaluate_notification_alerts(
     specs = (
         (
             "chlorine_tank",
-            "Chlorine tank",
-            SensorId.CHLORINE_TANK_LEVEL_GAL,
+            "Chlorine tank supply",
+            SensorId.CHLORINE_TANK_DAYS_REMAINING,
             config.chlorine_tank,
         ),
         ("ph", "pH", SensorId.RAW_PH, config.ph),
@@ -510,6 +536,7 @@ def _notification_alert(
         unit=measurement.unit,
         threshold=threshold,
         repeat_minutes=repeat_minutes,
+        context=dict(measurement.metadata),
     )
 
 
@@ -520,7 +547,15 @@ def _display_value(value: float, unit: str) -> str:
         return f"{value:.0f} mV"
     if unit == "gal":
         return f"{value:.2f} gal"
+    if unit == "days":
+        return f"{value:.1f} days"
     return f"{value:g} {unit}"
+
+
+def _optional_float(value: Any) -> float | None:
+    if isinstance(value, int | float):
+        return float(value)
+    return None
 
 
 def _default_post_form(
@@ -586,6 +621,14 @@ def _optional_string_value(data: Mapping[str, Any], key: str) -> str | None:
         text = value.strip()
         return text or None
     raise ValueError(f"{key} must be a string")
+
+
+def _looks_like_pushover_secret(value: str) -> bool:
+    return (
+        re.fullmatch(r"[A-Za-z0-9]{30}", value) is not None
+        and any(character.islower() for character in value)
+        and any(character.isdigit() for character in value)
+    )
 
 
 def _float_value(data: Mapping[str, Any], key: str, default: float) -> float:

@@ -119,8 +119,8 @@ notifications:
   alerts:
     chlorine_tank:
       enabled: false
-      caution_below: 5.0
-      warning_below: 2.0
+      caution_below: 7.0
+      warning_below: 3.0
       caution_repeat_minutes: 1440.0
       warning_repeat_minutes: 240.0
     ph:

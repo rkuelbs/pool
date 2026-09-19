@@ -102,6 +102,7 @@ class SensorId(str, Enum):
     CPU_FAN_RPM = "cpu_fan_rpm"
     TANK_LEVEL = "tank_level"
     CHLORINE_TANK_LEVEL_GAL = "chlorine_tank_level_gal"
+    CHLORINE_TANK_DAYS_REMAINING = "chlorine_tank_days_remaining"
 
 
 class ActuatorId(str, Enum):

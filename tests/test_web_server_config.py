@@ -603,6 +603,82 @@ def test_notifications_update_applies_live_and_persists(tmp_path: Path) -> None:
     assert "user_key" not in saved["notifications"]["pushover"]
 
 
+def test_notifications_update_round_trips_direct_credentials_and_allows_clearing(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "pool.yaml"
+    path.write_text(yaml.safe_dump(config_mapping(), sort_keys=False), encoding="utf-8")
+    app = build_app_from_mapping(config_mapping(), clock=make_clock())
+
+    first = apply_notifications_config_update(
+        app=app,
+        config_path=path,
+        payload={
+            "enabled": True,
+            "provider": "pushover",
+            "default_title": "poolctl",
+            "pushover": {
+                "app_token": "direct-token",
+                "user_key": "direct-user",
+                "app_token_env": "PUSHOVER_APP_TOKEN",
+                "user_key_env": "PUSHOVER_USER_KEY",
+                "api_url": "https://api.pushover.net/1/messages.json",
+                "timeout_s": 5.0,
+                "priority": 0,
+                "sound": None,
+            },
+            "alerts": {
+                "chlorine_tank": {
+                    "enabled": True,
+                    "caution_below": 7.0,
+                    "warning_below": 3.0,
+                    "caution_repeat_minutes": 1440.0,
+                    "warning_repeat_minutes": 240.0,
+                }
+            },
+        },
+    )
+    cleared = apply_notifications_config_update(
+        app=app,
+        config_path=path,
+        payload={
+            "enabled": True,
+            "provider": "pushover",
+            "default_title": "poolctl",
+            "pushover": {
+                "app_token": None,
+                "user_key": None,
+                "app_token_env": "PUSHOVER_APP_TOKEN",
+                "user_key_env": "PUSHOVER_USER_KEY",
+                "api_url": "https://api.pushover.net/1/messages.json",
+                "timeout_s": 5.0,
+                "priority": 0,
+                "sound": None,
+            },
+            "alerts": {
+                "chlorine_tank": {
+                    "enabled": True,
+                    "caution_below": 7.0,
+                    "warning_below": 3.0,
+                    "caution_repeat_minutes": 1440.0,
+                    "warning_repeat_minutes": 240.0,
+                }
+            },
+        },
+    )
+
+    saved = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert first["pushover"]["configured"] is True
+    assert first["pushover"]["app_token_configured"] is True
+    assert first["pushover"]["app_token"] == "direct-token"
+    assert first["pushover"]["user_key"] == "direct-user"
+    assert cleared["pushover"]["configured"] is False
+    assert cleared["pushover"]["app_token"] is None
+    assert cleared["pushover"]["user_key"] is None
+    assert "app_token" not in saved["notifications"]["pushover"]
+    assert "user_key" not in saved["notifications"]["pushover"]
+
+
 def test_send_test_notification_reports_disabled_when_not_enabled() -> None:
     app = build_app_from_mapping(config_mapping(), clock=make_clock())
 
@@ -1071,3 +1147,9 @@ def test_history_event_forms_use_local_datetime_inputs() -> None:
         html = (static_dir / page_name).read_text(encoding="utf-8")
         assert 'id="labSampledAt" type="datetime-local"' in html
         assert 'id="labChlorineTankLevelGal" type="number"' in html
+
+    config_html = (static_dir / "config.html").read_text(encoding="utf-8")
+    assert 'id="pushoverAppToken" type="text"' in config_html
+    assert 'id="pushoverUserKey" type="text"' in config_html
+    assert "Caution below days" in config_html
+    assert "Warning below days" in config_html

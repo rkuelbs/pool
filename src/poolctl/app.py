@@ -571,6 +571,11 @@ class PoolControllerApp:
                 latest_measurements=latest_measurements,
                 control_measurements=control_measurements,
                 observed_at=self.clock.now(),
+                daily_dose_oz=(
+                    chlorination_status.daily_dose_oz
+                    if chlorination_status is not None
+                    else self.chlorination_config.daily_dose_oz
+                ),
             )
         )
 
@@ -1027,6 +1032,7 @@ class PoolControllerApp:
         latest_measurements: Mapping[SensorId, Measurement],
         control_measurements: Iterable[Measurement],
         observed_at: datetime,
+        daily_dose_oz: float,
     ) -> dict[SensorId, Measurement]:
         measurements = dict(latest_measurements)
         for measurement in control_measurements:
@@ -1038,6 +1044,14 @@ class PoolControllerApp:
         )
         if tank_measurement is not None:
             measurements[tank_measurement.sensor_id] = tank_measurement
+            days_measurement = self.chlorine_tank_days_remaining_measurement(
+                observed_at=observed_at,
+                source="notification_alert",
+                daily_dose_oz=daily_dose_oz,
+                tank_measurement=tank_measurement,
+            )
+            if days_measurement is not None:
+                measurements[days_measurement.sensor_id] = days_measurement
         return measurements
 
     def _run_notification_alerts(
@@ -1823,6 +1837,51 @@ class PoolControllerApp:
             unit="gal",
             quality=Quality.GOOD,
             metadata=metadata,
+        )
+
+    def chlorine_tank_days_remaining_measurement(
+        self,
+        *,
+        observed_at: datetime,
+        source: str,
+        daily_dose_oz: float,
+        tank_measurement: Measurement | None = None,
+    ) -> Measurement | None:
+        if tank_measurement is None:
+            tank_measurement = self.chlorine_tank_level_measurement(
+                observed_at=observed_at,
+                source=source,
+            )
+        if tank_measurement is None or tank_measurement.quality != Quality.GOOD:
+            return None
+
+        remaining_gal = max(0.0, float(tank_measurement.value))
+        dose = float(daily_dose_oz)
+        if not math.isfinite(remaining_gal) or not math.isfinite(dose) or dose <= 0:
+            return None
+
+        days_remaining = remaining_gal * FLUID_OUNCES_PER_GALLON / dose
+        if not math.isfinite(days_remaining):
+            return None
+
+        return Measurement(
+            id=(
+                f"{SensorId.CHLORINE_TANK_DAYS_REMAINING.value}:"
+                f"{source}:{observed_at.isoformat()}"
+            ),
+            sensor_id=SensorId.CHLORINE_TANK_DAYS_REMAINING,
+            observed_at=observed_at,
+            kind=MeasurementKind.ESTIMATED,
+            value=round(days_remaining, 4),
+            unit="days",
+            quality=Quality.GOOD,
+            metadata={
+                "driver": "chlorine_tank_estimator",
+                "source": source,
+                "remaining_gal": round(remaining_gal, 4),
+                "daily_dose_oz": dose,
+                "tank_measurement_id": tank_measurement.id,
+            },
         )
 
     def log_chlorine_tank_level_snapshot(

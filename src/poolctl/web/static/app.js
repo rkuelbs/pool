@@ -3405,6 +3405,8 @@ function renderNotificationsConfig(payload) {
   document.getElementById("notificationsEnabled").checked = payload.enabled === true;
   document.getElementById("notificationsProvider").value = payload.provider || "pushover";
   document.getElementById("notificationsDefaultTitle").value = payload.default_title || "poolctl";
+  document.getElementById("pushoverAppToken").value = pushover.app_token || "";
+  document.getElementById("pushoverUserKey").value = pushover.user_key || "";
   document.getElementById("pushoverAppTokenEnv").value = pushover.app_token_env || "PUSHOVER_APP_TOKEN";
   document.getElementById("pushoverUserKeyEnv").value = pushover.user_key_env || "PUSHOVER_USER_KEY";
   document.getElementById("pushoverApiUrl").value = pushover.api_url || "https://api.pushover.net/1/messages.json";
@@ -3417,18 +3419,23 @@ function renderNotificationsConfig(payload) {
 }
 
 function collectNotificationsConfig() {
+  const appToken = document.getElementById("pushoverAppToken").value.trim();
+  const userKey = document.getElementById("pushoverUserKey").value.trim();
+  const pushover = {
+    app_token: stringOrNull(appToken),
+    user_key: stringOrNull(userKey),
+    app_token_env: document.getElementById("pushoverAppTokenEnv").value.trim() || "PUSHOVER_APP_TOKEN",
+    user_key_env: document.getElementById("pushoverUserKeyEnv").value.trim() || "PUSHOVER_USER_KEY",
+    api_url: document.getElementById("pushoverApiUrl").value.trim() || "https://api.pushover.net/1/messages.json",
+    timeout_s: Number(document.getElementById("pushoverTimeout").value),
+    priority: Number(document.getElementById("pushoverPriority").value),
+    sound: stringOrNull(document.getElementById("pushoverSound").value),
+  };
   return {
     enabled: document.getElementById("notificationsEnabled").checked,
     provider: document.getElementById("notificationsProvider").value,
     default_title: document.getElementById("notificationsDefaultTitle").value.trim() || "poolctl",
-    pushover: {
-      app_token_env: document.getElementById("pushoverAppTokenEnv").value.trim() || "PUSHOVER_APP_TOKEN",
-      user_key_env: document.getElementById("pushoverUserKeyEnv").value.trim() || "PUSHOVER_USER_KEY",
-      api_url: document.getElementById("pushoverApiUrl").value.trim() || "https://api.pushover.net/1/messages.json",
-      timeout_s: Number(document.getElementById("pushoverTimeout").value),
-      priority: Number(document.getElementById("pushoverPriority").value),
-      sound: stringOrNull(document.getElementById("pushoverSound").value),
-    },
+    pushover,
     alerts: {
       chlorine_tank: collectSignalAlertConfig("notifyTank", { includeAbove: false }),
       ph: collectSignalAlertConfig("notifyPh", { includeAbove: true }),

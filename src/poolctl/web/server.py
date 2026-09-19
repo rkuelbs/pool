@@ -2441,6 +2441,8 @@ def serialize_notifications_config(app: PoolControllerApp) -> dict[str, Any]:
         "provider": config.provider.value,
         "default_title": config.default_title,
         "pushover": {
+            "app_token": config.pushover.app_token,
+            "user_key": config.pushover.user_key,
             "app_token_env": config.pushover.app_token_env,
             "user_key_env": config.pushover.user_key_env,
             "api_url": config.pushover.api_url,
@@ -2448,6 +2450,8 @@ def serialize_notifications_config(app: PoolControllerApp) -> dict[str, Any]:
             "priority": config.pushover.priority,
             "sound": config.pushover.sound,
             "configured": config.pushover.as_payload()["configured"],
+            "app_token_configured": bool(config.pushover.app_token),
+            "user_key_configured": bool(config.pushover.user_key),
         },
         "alerts": config.alerts.as_payload(),
         "applied_live": True,
@@ -2461,21 +2465,42 @@ def apply_notifications_config_update(
     local_config_path: Path | None = None,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
-    proposed = NotificationsConfig.from_mapping({"notifications": payload})
+    proposed_payload = deepcopy(payload)
+    pushover_payload = proposed_payload.setdefault("pushover", {})
+    if not isinstance(pushover_payload, dict):
+        raise ValueError("pushover must be a mapping")
+    if (
+        "app_token" not in pushover_payload
+        and app.notifications_config.pushover.app_token is not None
+    ):
+        pushover_payload["app_token"] = app.notifications_config.pushover.app_token
+    if (
+        "user_key" not in pushover_payload
+        and app.notifications_config.pushover.user_key is not None
+    ):
+        pushover_payload["user_key"] = app.notifications_config.pushover.user_key
+
+    proposed = NotificationsConfig.from_mapping({"notifications": proposed_payload})
 
     config_data = _load_config_write_mapping(config_path, local_config_path=local_config_path)
+    pushover_data: dict[str, Any] = {
+        "app_token_env": proposed.pushover.app_token_env,
+        "user_key_env": proposed.pushover.user_key_env,
+        "api_url": proposed.pushover.api_url,
+        "timeout_s": proposed.pushover.timeout_s,
+        "priority": proposed.pushover.priority,
+        "sound": proposed.pushover.sound,
+    }
+    if proposed.pushover.app_token is not None:
+        pushover_data["app_token"] = proposed.pushover.app_token
+    if proposed.pushover.user_key is not None:
+        pushover_data["user_key"] = proposed.pushover.user_key
+
     config_data["notifications"] = {
         "enabled": proposed.enabled,
         "provider": proposed.provider.value,
         "default_title": proposed.default_title,
-        "pushover": {
-            "app_token_env": proposed.pushover.app_token_env,
-            "user_key_env": proposed.pushover.user_key_env,
-            "api_url": proposed.pushover.api_url,
-            "timeout_s": proposed.pushover.timeout_s,
-            "priority": proposed.pushover.priority,
-            "sound": proposed.pushover.sound,
-        },
+        "pushover": pushover_data,
         "alerts": proposed.alerts.as_payload(),
     }
     _save_config_write_mapping(config_path, local_config_path=local_config_path, data=config_data)
