@@ -35,6 +35,7 @@ SENSOR_LABELS = {
     SensorId.CHLORINATION_DUTY_CYCLE_PERCENT: "Dosing duty cycle",
     SensorId.FC_DEMAND_PPM_PER_DAY: "FC demand",
     SensorId.BASE_FC_DEMAND_PPM_PER_DAY: "Base FC demand",
+    SensorId.FC_DEMAND_WEATHER_ADJUSTMENT_PPM_PER_DAY: "FC demand weather adjustment",
     SensorId.PREDICTED_FC_DEMAND_PPM_PER_DAY: "Predicted FC demand",
     SensorId.FC_DEMAND_RESIDUAL_PPM_PER_DAY: "FC demand residual",
     SensorId.DAILY_WATER_TEMP_MIN: "Daily water temp min",

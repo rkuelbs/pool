@@ -471,10 +471,13 @@ The History page can graph chlorination control signals:
   valid consecutive FC-test observation, logged once per distinct observation.
 - `Base FC demand`: recent weighted maintenance-demand estimate from the latest
   usable observations. This is the Phase 1 feed-forward demand estimate.
-- `Predicted FC demand` and `FC demand residual`: prediction available before
-  the latest observation and actual-minus-predicted error. Phase 1 uses only the
-  weighted FC-test/addition history, with no pH, ORP, UV, weather, or
-  temperature modifier.
+- `FC demand weather adjustment`: Phase 1 weather modifier in ppm/day. It is
+  intentionally logged as `0.0` today so Phase 2 can add forecast weather and
+  water-temperature effects without changing the learned baseline field.
+- `Predicted FC demand` and `FC demand residual`: final predicted demand
+  (`baseline + weather adjustment`) and actual-minus-predicted error. Phase 1
+  uses only the weighted FC-test/addition history, with no pH, ORP, UV, weather,
+  or temperature modifier.
 - `Daily ORP avg`, `Daily water temp min/avg/max`, and `Daily pH avg`: daily
   summaries from `raw_orp`, `orp_temp`, and `raw_ph`. The water-temperature
   minimum is logged because it may better represent pool water than daytime
@@ -520,6 +523,8 @@ fc_demand:
   chlorine_strength_percent: 12.0
   minimum_test_interval_hours: 12.0
   max_observation_interval_days: 7.0
+  preferred_test_start_hour: 18
+  preferred_test_end_hour: 23
   recent_observation_count: 5
   observation_weights:
   - 0.35
@@ -554,19 +559,37 @@ controller's desired state.
 ## FC-Demand Estimator
 
 `fc_demand` is a discrete daily adaptive feed-forward controller for the
-open-loop chlorination target. It learns a maintenance dose from manual FC tests
-plus logged chlorine additions/delivery, then optionally adds a one-day signed
-FC target correction. It deliberately does not use ORP, pH, weather, UV, or
-water temperature as control inputs in Phase 1. Those signals are still logged
-for later analysis.
+open-loop chlorination target. It learns a maintenance dose from reference
+manual DPD FC tests plus logged chlorine additions/delivery, then optionally
+adds a one-day signed FC target correction. It deliberately does not use ORP,
+pH, weather, UV, air temperature, or water temperature as control inputs in
+Phase 1. Those signals are still logged for later analysis.
 
 The low-level `ChlorinationController` remains responsible only for delivering
 an ounces-per-day target through eligible dosing windows, duty-cycle timing,
 relay flash pulses, safety checks, and delivery logging. FC-demand automatic
 mode passes a `ChlorinationPlanAdjustment`; it does not command relays directly.
 
-The controller builds demand observations from consecutive valid manual
-free-chlorine tests. For each adjacent pair:
+Manual DPD tests are normalized inside the FC-demand service as high-confidence
+FC observations with `source = manual_dpd`. Future lower-confidence or frequent
+sources such as WaterGuru or an inline FC sensor can be mapped into the same
+observation boundary, but they are not active integrations today.
+
+The controller classifies normalized FC observations using the configured local
+control timezone:
+
+- Reference/control test: local sample time is in
+  `[preferred_test_start_hour, preferred_test_end_hour)`. Defaults are
+  `18:00 <= sample < 23:00`. Reference tests drive maintenance learning and
+  one-time next-control-day target feedback.
+- Ad-hoc test: local sample time is outside that window. Ad-hoc tests are stored
+  and shown in history/status, but Phase 1 treats them as analysis-only. They do
+  not displace the recent reference observations and do not trigger normal
+  next-day FC feedback. Phase 2 can use them for within-day demand and
+  weather/solar modeling.
+
+The controller builds demand observations from consecutive valid reference
+free-chlorine tests. For each adjacent reference pair:
 
 - Ignore pairs closer than `minimum_test_interval_hours`.
 - Ignore pairs longer than `max_observation_interval_days` (default 7 days).
@@ -599,14 +622,22 @@ observations are available, the leading weights are renormalized. For example,
 with two observations the effective weights are `0.35 / (0.35 + 0.25)` and
 `0.25 / (0.35 + 0.25)`.
 
-The weighted maintenance demand is converted to fluid ounces/day using the same
-pool-volume and chlorine-strength math. The learned maintenance dose is rate
-limited by `max_maintenance_change_percent` (default 15%) from the previously
-computed learned target, reconstructed deterministically from FC-test and
-addition history. `max_daily_dose_oz` is still the final hard cap.
+The weighted maintenance demand is the Phase 1
+`baseline_demand_ppm_per_day`. The Phase 1
+`weather_adjustment_ppm_per_day` is always exactly `0.0`, and
+`predicted_demand_ppm_per_day = baseline_demand_ppm_per_day`. This intentionally
+keeps weather, UV, air temperature, and water temperature out of the control law
+today while preserving a clean Phase 2 hook for forecast modifiers.
 
-FC target feedback is symmetric and applies only once. When the latest manual FC
-test is new, the next local control day applies:
+The predicted demand is converted to fluid ounces/day using the same pool-volume
+and chlorine-strength math. The learned maintenance dose is rate limited by
+`max_maintenance_change_percent` (default 15%) from the previously computed
+learned target, reconstructed deterministically from FC-test and addition
+history. Status also reports the rate-limited baseline equivalent in ppm/day.
+`max_daily_dose_oz` is still the final hard cap.
+
+FC target feedback is symmetric and applies only once. When the latest
+reference FC test is new, the next local control day applies:
 
 ```text
 feedback FC ppm = fc_feedback_gain * (target_fc_ppm - latest FC ppm)
@@ -627,19 +658,22 @@ maintenance dose only.
 - `approve_required`: reserved for a future approval workflow.
 - `automatic`: pass the effective daily dose into the chlorination controller.
 
-The live status/API reports the latest FC test and age, target FC, latest
-observed demand, weighted maintenance demand, maintenance dose, feedback ppm/oz,
-whether feedback is active today, recommended/effective dose, observation count,
-learning confidence, mode, and capping/rate-limit warnings. Confidence is based
-on usable observation count: `learning` for fewer than 2, `low` for 2,
-`medium` for 3-4, and `high` for 5 or more.
+The live status/API reports the latest FC value/time regardless of source or
+timing, latest reference FC value/time, whether the latest observation is
+reference or ad-hoc, current preferred test window, target FC, latest observed
+demand, baseline demand, rate-limited baseline demand, weather adjustment,
+predicted demand, maintenance dose, feedback ppm/oz, whether feedback is active
+today, recommended/effective dose, observation count, learning confidence, mode,
+and capping/rate-limit warnings. Confidence is based on usable reference
+observation count: `learning` for fewer than 2, `low` for 2, `medium` for 3-4,
+and `high` for 5 or more.
 
 Weather, UV, ORP, pH, and water-temperature summaries continue to be logged for
-Phase 2 analysis. The current `Predicted FC demand` history signal means the
-weighted maintenance prediction that was available before the latest
-observation; `FC demand residual` is actual observed demand minus that
-prediction. Phase 2 will evaluate correlations between observed FC demand and
-weather/water-temperature history before adding modifiers to the control law.
+Phase 2 analysis. The current `Predicted FC demand` history signal means
+`baseline + weather_adjustment`, and the Phase 1 weather adjustment is exactly
+zero. Phase 2 will evaluate correlations between observed FC demand,
+ad-hoc/daytime FC tests, weather, solar radiation, and water-temperature history
+before adding modifiers to the control law.
 
 ## Pushover Notifications
 

@@ -1032,13 +1032,13 @@ async def test_tick_logs_fc_demand_estimate_when_ready(tmp_path: Path) -> None:
     assert app.measurement_logger is not None
     app.measurement_logger.log_lab_test(
         LabTest(
-            sampled_at=datetime(2026, 5, 20, 12, 0, tzinfo=timezone.utc),
+            sampled_at=datetime(2026, 5, 19, 20, 0, tzinfo=timezone.utc),
             free_chlorine=4.0,
         )
     )
     app.measurement_logger.log_lab_test(
         LabTest(
-            sampled_at=datetime(2026, 5, 21, 12, 0, tzinfo=timezone.utc),
+            sampled_at=datetime(2026, 5, 20, 20, 0, tzinfo=timezone.utc),
             free_chlorine=3.0,
         )
     )
@@ -1051,6 +1051,10 @@ async def test_tick_logs_fc_demand_estimate_when_ready(tmp_path: Path) -> None:
     )
     base_records = app.measurement_logger.history(
         sensor_id=SensorId.BASE_FC_DEMAND_PPM_PER_DAY,
+        limit=10,
+    )
+    weather_adjustment_records = app.measurement_logger.history(
+        sensor_id=SensorId.FC_DEMAND_WEATHER_ADJUSTMENT_PPM_PER_DAY,
         limit=10,
     )
     predicted_records = app.measurement_logger.history(
@@ -1067,11 +1071,13 @@ async def test_tick_logs_fc_demand_estimate_when_ready(tmp_path: Path) -> None:
     assert second.fc_demand_status is not None
     assert second.fc_demand_status.ready is True
     assert len(records) == 1
-    assert records[0].observed_at == datetime(2026, 5, 21, 12, 0, tzinfo=timezone.utc)
+    assert records[0].observed_at == datetime(2026, 5, 20, 20, 0, tzinfo=timezone.utc)
     assert records[0].value == 1.0
     assert records[0].unit == "ppm/day"
     assert len(base_records) == 1
     assert base_records[0].value == 1.0
+    assert len(weather_adjustment_records) == 1
+    assert weather_adjustment_records[0].value == 0.0
     assert len(predicted_records) == 1
     assert predicted_records[0].value == 1.0
     assert len(residual_records) == 1
@@ -1248,7 +1254,7 @@ async def test_dosing_prime_is_excluded_from_delivery_and_fc_demand(
     assert delivery_summary.runtime_seconds == 0.0
     assert delivery_summary.delivered_oz == 0.0
 
-    current_sampled_at = clock.now()
+    current_sampled_at = datetime(2026, 5, 21, 20, 0, tzinfo=timezone.utc)
     app.measurement_logger.log_lab_test(
         LabTest(
             sampled_at=current_sampled_at - timedelta(days=1),

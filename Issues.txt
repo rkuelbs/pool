@@ -1,0 +1,15 @@
+Pump oz/min calibration.
+Need to continue dosing for another week and then compare estimated tank level to actual tank level.
+After comparing tank level, adjust pump oz/min to correct.
+
+Issue: Dosing pump must run with consistent head pressure to get accurate dose.
+SW Action: Add interlock to dosing pump to ensure dosing pump will only run with pool pump running on low speed and booster pump OFF
+
+Issue: Dosing pump running dry will cause errors in chlorine delivered.
+SW Action: Add interlock to dosing pump so it will only run when tank estimate is >= 2 gallons.
+SW Action: Replace "Chlorine Remaining" with "Usable chlorine remaining" that removes this 2 gallon buffer from the tank level.
+  Usable chlorine remaining days should be calculated from maintenance chlorine daily estimate.
+
+Pool volume may be inaccurate.  I plan to run an overnight dosing test (after pump oz/min is recalibrated.
+This test will involve doing an FC test, calling for a manual dose of 60-100oz, then testing FC
+afterwards and calculating pool volume.  Once pool volume is calibrated this way, the feedback dosing should be more accurate.

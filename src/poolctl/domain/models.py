@@ -61,6 +61,9 @@ class SensorId(str, Enum):
     CHLORINATION_DUTY_CYCLE_PERCENT = "chlorination_duty_cycle_percent"
     FC_DEMAND_PPM_PER_DAY = "fc_demand_ppm_per_day"
     BASE_FC_DEMAND_PPM_PER_DAY = "base_fc_demand_ppm_per_day"
+    FC_DEMAND_WEATHER_ADJUSTMENT_PPM_PER_DAY = (
+        "fc_demand_weather_adjustment_ppm_per_day"
+    )
     PREDICTED_FC_DEMAND_PPM_PER_DAY = "predicted_fc_demand_ppm_per_day"
     FC_DEMAND_RESIDUAL_PPM_PER_DAY = "fc_demand_residual_ppm_per_day"
     DAILY_WATER_TEMP_MIN = "daily_water_temp_min"

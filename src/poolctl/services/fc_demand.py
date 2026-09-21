@@ -12,10 +12,11 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
+from enum import Enum
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from poolctl.domain.models import ChemicalAddition, ChemicalType, ControlMode
+from poolctl.domain.models import ChemicalAddition, ChemicalType, ControlMode, LabTest
 from poolctl.services.chlorination import (
     ChlorinationConfig,
     ChlorinationPlanAdjustment,
@@ -29,6 +30,9 @@ DEFAULT_RECENT_OBSERVATION_COUNT = 5
 DEFAULT_OBSERVATION_WEIGHTS = (0.35, 0.25, 0.18, 0.13, 0.09)
 DEFAULT_FC_FEEDBACK_GAIN = 0.6
 DEFAULT_MAX_MAINTENANCE_CHANGE_PERCENT = 15.0
+DEFAULT_PREFERRED_TEST_START_HOUR = 18
+DEFAULT_PREFERRED_TEST_END_HOUR = 23
+PHASE_1_WEATHER_ADJUSTMENT_PPM_PER_DAY = 0.0
 
 
 @dataclass(frozen=True)
@@ -47,6 +51,8 @@ class FcDemandConfig:
     chlorine_strength_percent: float = 12.0
     minimum_test_interval_hours: float = 12.0
     max_observation_interval_days: float = DEFAULT_MAX_OBSERVATION_INTERVAL_DAYS
+    preferred_test_start_hour: int = DEFAULT_PREFERRED_TEST_START_HOUR
+    preferred_test_end_hour: int = DEFAULT_PREFERRED_TEST_END_HOUR
     recent_observation_count: int = DEFAULT_RECENT_OBSERVATION_COUNT
     observation_weights: tuple[float, ...] = field(
         default_factory=lambda: DEFAULT_OBSERVATION_WEIGHTS
@@ -72,6 +78,19 @@ class FcDemandConfig:
             raise ValueError("fc_demand.minimum_test_interval_hours must be >= 0")
         if self.max_observation_interval_days <= 0:
             raise ValueError("fc_demand.max_observation_interval_days must be > 0")
+        if not 0 <= self.preferred_test_start_hour <= 23:
+            raise ValueError(
+                "fc_demand.preferred_test_start_hour must be between 0 and 23"
+            )
+        if not 0 <= self.preferred_test_end_hour <= 24:
+            raise ValueError(
+                "fc_demand.preferred_test_end_hour must be between 0 and 24"
+            )
+        if self.preferred_test_start_hour == self.preferred_test_end_hour:
+            raise ValueError(
+                "fc_demand.preferred_test_start_hour and "
+                "preferred_test_end_hour must define a non-empty window"
+            )
         if self.recent_observation_count < 1:
             raise ValueError("fc_demand.recent_observation_count must be >= 1")
         if not self.observation_weights:
@@ -134,6 +153,16 @@ class FcDemandConfig:
                 config_data,
                 cls.max_observation_interval_days,
             ),
+            preferred_test_start_hour=_int_value(
+                config_data,
+                "preferred_test_start_hour",
+                cls.preferred_test_start_hour,
+            ),
+            preferred_test_end_hour=_int_value(
+                config_data,
+                "preferred_test_end_hour",
+                cls.preferred_test_end_hour,
+            ),
             recent_observation_count=_int_value(
                 config_data,
                 "recent_observation_count",
@@ -162,10 +191,50 @@ class FcDemandConfig:
         )
 
 
+class FcObservationSource(str, Enum):
+    MANUAL_DPD = "manual_dpd"
+    WATERGURU = "waterguru"
+    FUTURE_SENSOR = "future_sensor"
+
+
+class FcObservationTiming(str, Enum):
+    REFERENCE = "reference"
+    AD_HOC = "ad_hoc"
+
+
 @dataclass(frozen=True)
 class FcTestPoint:
     sampled_at: datetime
     free_chlorine: float
+
+
+@dataclass(frozen=True)
+class FcObservation:
+    sampled_at: datetime
+    free_chlorine: float
+    source: FcObservationSource = FcObservationSource.MANUAL_DPD
+    confidence: float = 1.0
+    quality: str = "high"
+    timing: FcObservationTiming = FcObservationTiming.AD_HOC
+    source_id: str | None = None
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    @property
+    def is_reference(self) -> bool:
+        return self.timing == FcObservationTiming.REFERENCE
+
+    def as_payload(self) -> dict[str, Any]:
+        return {
+            "sampled_at": self.sampled_at.isoformat(),
+            "free_chlorine": self.free_chlorine,
+            "source": self.source.value,
+            "confidence": self.confidence,
+            "quality": self.quality,
+            "timing": self.timing.value,
+            "is_reference": self.is_reference,
+            "source_id": self.source_id,
+            "metadata": dict(self.metadata),
+        }
 
 
 @dataclass(frozen=True)
@@ -189,6 +258,12 @@ class FcDemandObservation:
     elapsed_days: float
     start_fc_ppm: float
     end_fc_ppm: float
+    start_observation_source: FcObservationSource
+    end_observation_source: FcObservationSource
+    start_observation_confidence: float
+    end_observation_confidence: float
+    start_observation_quality: str
+    end_observation_quality: str
     automated_chlorine_oz: float
     manual_sodium_hypochlorite_oz: float
     total_added_fc_ppm: float
@@ -202,6 +277,12 @@ class FcDemandObservation:
             "elapsed_days": self.elapsed_days,
             "start_fc_ppm": self.start_fc_ppm,
             "end_fc_ppm": self.end_fc_ppm,
+            "start_observation_source": self.start_observation_source.value,
+            "end_observation_source": self.end_observation_source.value,
+            "start_observation_confidence": self.start_observation_confidence,
+            "end_observation_confidence": self.end_observation_confidence,
+            "start_observation_quality": self.start_observation_quality,
+            "end_observation_quality": self.end_observation_quality,
             "automated_chlorine_oz": self.automated_chlorine_oz,
             "manual_sodium_hypochlorite_oz": self.manual_sodium_hypochlorite_oz,
             "total_added_fc_ppm": self.total_added_fc_ppm,
@@ -226,6 +307,20 @@ class FcDemandStatus:
     latest_fc_sampled_at: datetime | None = None
     latest_fc_age_hours: float | None = None
     latest_fc_age_days: float | None = None
+    latest_fc_source: FcObservationSource | None = None
+    latest_fc_confidence: float | None = None
+    latest_fc_quality: str | None = None
+    latest_fc_observation_timing: FcObservationTiming | None = None
+    latest_fc_is_reference: bool | None = None
+    latest_reference_fc_ppm: float | None = None
+    latest_reference_fc_sampled_at: datetime | None = None
+    latest_reference_fc_age_hours: float | None = None
+    latest_reference_fc_age_days: float | None = None
+    latest_reference_fc_source: FcObservationSource | None = None
+    latest_reference_fc_confidence: float | None = None
+    latest_reference_fc_quality: str | None = None
+    preferred_test_start_hour: int = DEFAULT_PREFERRED_TEST_START_HOUR
+    preferred_test_end_hour: int = DEFAULT_PREFERRED_TEST_END_HOUR
     previous_sampled_at: datetime | None = None
     previous_fc_ppm: float | None = None
     current_sampled_at: datetime | None = None
@@ -241,7 +336,10 @@ class FcDemandStatus:
     consumed_fc_ppm: float | None = None
     daily_demand_ppm: float | None = None
     latest_observed_demand_ppm_per_day: float | None = None
+    baseline_demand_ppm_per_day: float | None = None
     weighted_maintenance_demand_ppm_per_day: float | None = None
+    rate_limited_baseline_demand_ppm_per_day: float | None = None
+    weather_adjustment_ppm_per_day: float = PHASE_1_WEATHER_ADJUSTMENT_PPM_PER_DAY
     predicted_demand_ppm_per_day: float | None = None
     observation_count: int = 0
     recent_observation_count: int = DEFAULT_RECENT_OBSERVATION_COUNT
@@ -289,6 +387,41 @@ class FcDemandStatus:
             ),
             "latest_fc_age_hours": self.latest_fc_age_hours,
             "latest_fc_age_days": self.latest_fc_age_days,
+            "latest_fc_source": (
+                self.latest_fc_source.value
+                if self.latest_fc_source is not None
+                else None
+            ),
+            "latest_fc_confidence": self.latest_fc_confidence,
+            "latest_fc_quality": self.latest_fc_quality,
+            "latest_fc_observation_timing": (
+                self.latest_fc_observation_timing.value
+                if self.latest_fc_observation_timing is not None
+                else None
+            ),
+            "latest_fc_observation_type": (
+                self.latest_fc_observation_timing.value
+                if self.latest_fc_observation_timing is not None
+                else None
+            ),
+            "latest_fc_is_reference": self.latest_fc_is_reference,
+            "latest_reference_fc_ppm": self.latest_reference_fc_ppm,
+            "latest_reference_fc_sampled_at": (
+                self.latest_reference_fc_sampled_at.isoformat()
+                if self.latest_reference_fc_sampled_at is not None
+                else None
+            ),
+            "latest_reference_fc_age_hours": self.latest_reference_fc_age_hours,
+            "latest_reference_fc_age_days": self.latest_reference_fc_age_days,
+            "latest_reference_fc_source": (
+                self.latest_reference_fc_source.value
+                if self.latest_reference_fc_source is not None
+                else None
+            ),
+            "latest_reference_fc_confidence": self.latest_reference_fc_confidence,
+            "latest_reference_fc_quality": self.latest_reference_fc_quality,
+            "preferred_test_start_hour": self.preferred_test_start_hour,
+            "preferred_test_end_hour": self.preferred_test_end_hour,
             "previous_sampled_at": (
                 self.previous_sampled_at.isoformat()
                 if self.previous_sampled_at is not None
@@ -314,9 +447,14 @@ class FcDemandStatus:
             "latest_observed_demand_ppm_per_day": (
                 self.latest_observed_demand_ppm_per_day
             ),
+            "baseline_demand_ppm_per_day": self.baseline_demand_ppm_per_day,
             "weighted_maintenance_demand_ppm_per_day": (
                 self.weighted_maintenance_demand_ppm_per_day
             ),
+            "rate_limited_baseline_demand_ppm_per_day": (
+                self.rate_limited_baseline_demand_ppm_per_day
+            ),
+            "weather_adjustment_ppm_per_day": self.weather_adjustment_ppm_per_day,
             "predicted_demand_ppm_per_day": self.predicted_demand_ppm_per_day,
             "observation_count": self.observation_count,
             "recent_observation_count": self.recent_observation_count,
@@ -376,8 +514,10 @@ class FcDemandPlan:
 
 @dataclass(frozen=True)
 class _MaintenanceEstimate:
-    weighted_demand_ppm_per_day: float
+    baseline_demand_ppm_per_day: float
+    weather_adjustment_ppm_per_day: float
     predicted_demand_ppm_per_day: float
+    rate_limited_baseline_demand_ppm_per_day: float
     unlimited_dose_oz_per_day: float
     limited_dose_oz_per_day: float
     previous_limited_dose_oz_per_day: float | None
@@ -398,14 +538,26 @@ def fc_demand_test_selection(
     interval.
     """
 
-    clean_tests = _clean_fc_tests(fc_tests)
-    for previous, current in reversed(tuple(zip(clean_tests, clean_tests[1:]))):
+    observations = _reference_fc_observations(
+        manual_dpd_fc_observations(
+            config=config,
+            fc_tests=fc_tests,
+            timezone_name="UTC",
+        )
+    )
+    for previous, current in reversed(tuple(zip(observations, observations[1:]))):
         elapsed_hours = (current.sampled_at - previous.sampled_at).total_seconds() / 3600.0
         if not _valid_observation_elapsed_hours(elapsed_hours, config=config):
             continue
         return FcDemandTestSelection(
-            previous=previous,
-            current=current,
+            previous=FcTestPoint(
+                sampled_at=previous.sampled_at,
+                free_chlorine=previous.free_chlorine,
+            ),
+            current=FcTestPoint(
+                sampled_at=current.sampled_at,
+                free_chlorine=current.free_chlorine,
+            ),
             elapsed_hours=elapsed_hours,
             demand_window_source="consecutive_observation",
         )
@@ -418,23 +570,33 @@ def estimate_fc_demand_plan(
     now: datetime,
     pump_timer_config: PumpTimerConfig,
     chlorination_config: ChlorinationConfig,
-    fc_tests: Sequence[FcTestPoint],
+    fc_tests: Sequence[FcTestPoint] = (),
+    fc_observations: Sequence[FcObservation] | None = None,
     automated_chlorine_deliveries: Sequence[ChlorineDeliveryPoint] = (),
     sodium_hypochlorite_additions: Sequence[ChemicalAddition] = (),
     automated_chlorine_oz: float | None = None,
 ) -> FcDemandPlan:
-    clean_tests = tuple(
-        test
-        for test in _clean_fc_tests(fc_tests)
-        if test.sampled_at <= now
+    all_fc_observations = tuple(
+        observation
+        for observation in _fc_observations_for_plan(
+            config=config,
+            fc_tests=fc_tests,
+            fc_observations=fc_observations,
+            timezone_name=pump_timer_config.timezone,
+        )
+        if observation.sampled_at <= now
     )
+    reference_fc_observations = _reference_fc_observations(all_fc_observations)
     if automated_chlorine_oz is not None and not automated_chlorine_deliveries:
         automated_chlorine_deliveries = _legacy_delivery_points(
-            clean_tests,
+            reference_fc_observations,
             automated_chlorine_oz,
         )
 
-    latest_test = clean_tests[-1] if clean_tests else None
+    latest_fc_observation = all_fc_observations[-1] if all_fc_observations else None
+    latest_reference_observation = (
+        reference_fc_observations[-1] if reference_fc_observations else None
+    )
     available_minutes_today = _available_minutes_for_day(
         pump_timer_config,
         now.astimezone(ZoneInfo(pump_timer_config.timezone)).date(),
@@ -450,23 +612,24 @@ def estimate_fc_demand_plan(
                 chlorination_config=chlorination_config,
                 ready=False,
                 reason="FC demand controller disabled",
-                latest_test=latest_test,
+                latest_observation=latest_fc_observation,
+                latest_reference_observation=latest_reference_observation,
                 available_minutes_today=available_minutes_today,
             )
         )
 
     observations = fc_demand_observations(
         config=config,
-        fc_tests=clean_tests,
+        fc_observations=reference_fc_observations,
         automated_chlorine_deliveries=automated_chlorine_deliveries,
         sodium_hypochlorite_additions=sodium_hypochlorite_additions,
     )
     if not observations:
         reason = (
-            "need at least two free chlorine tests"
-            if len(clean_tests) < 2
+            "need at least two reference free chlorine tests"
+            if len(reference_fc_observations) < 2
             else (
-                "need consecutive FC tests between "
+                "need consecutive reference FC tests between "
                 f"{config.minimum_test_interval_hours:g} hours and "
                 f"{config.max_observation_interval_days:g} days apart"
             )
@@ -479,17 +642,18 @@ def estimate_fc_demand_plan(
                 chlorination_config=chlorination_config,
                 ready=False,
                 reason=reason,
-                latest_test=latest_test,
+                latest_observation=latest_fc_observation,
+                latest_reference_observation=latest_reference_observation,
                 observation_count=0,
                 available_minutes_today=available_minutes_today,
             )
         )
 
     maintenance = _maintenance_estimate(config, observations)
-    latest_observation = observations[-1]
+    latest_demand_observation = observations[-1]
     feedback = _feedback_for_latest_test(
         config=config,
-        latest_test=latest_test,
+        latest_test=latest_reference_observation,
         now=now,
         pump_timer_config=pump_timer_config,
     )
@@ -521,26 +685,95 @@ def estimate_fc_demand_plan(
         target_fc_ppm=config.target_fc_ppm,
         pool_volume_gal=config.pool_volume_gal,
         chlorine_strength_percent=config.chlorine_strength_percent,
-        latest_fc_ppm=latest_test.free_chlorine if latest_test is not None else None,
-        latest_fc_sampled_at=latest_test.sampled_at if latest_test is not None else None,
-        latest_fc_age_hours=_latest_test_age_hours(latest_test, now),
-        latest_fc_age_days=_latest_test_age_days(latest_test, now),
-        previous_sampled_at=latest_observation.start_sampled_at,
-        previous_fc_ppm=latest_observation.start_fc_ppm,
-        current_sampled_at=latest_observation.end_sampled_at,
-        current_fc_ppm=latest_observation.end_fc_ppm,
-        elapsed_days=latest_observation.elapsed_days,
+        latest_fc_ppm=(
+            latest_fc_observation.free_chlorine
+            if latest_fc_observation is not None
+            else None
+        ),
+        latest_fc_sampled_at=(
+            latest_fc_observation.sampled_at
+            if latest_fc_observation is not None
+            else None
+        ),
+        latest_fc_age_hours=_latest_test_age_hours(latest_fc_observation, now),
+        latest_fc_age_days=_latest_test_age_days(latest_fc_observation, now),
+        latest_fc_source=(
+            latest_fc_observation.source if latest_fc_observation is not None else None
+        ),
+        latest_fc_confidence=(
+            latest_fc_observation.confidence
+            if latest_fc_observation is not None
+            else None
+        ),
+        latest_fc_quality=(
+            latest_fc_observation.quality if latest_fc_observation is not None else None
+        ),
+        latest_fc_observation_timing=(
+            latest_fc_observation.timing if latest_fc_observation is not None else None
+        ),
+        latest_fc_is_reference=(
+            latest_fc_observation.is_reference
+            if latest_fc_observation is not None
+            else None
+        ),
+        latest_reference_fc_ppm=(
+            latest_reference_observation.free_chlorine
+            if latest_reference_observation is not None
+            else None
+        ),
+        latest_reference_fc_sampled_at=(
+            latest_reference_observation.sampled_at
+            if latest_reference_observation is not None
+            else None
+        ),
+        latest_reference_fc_age_hours=_latest_test_age_hours(
+            latest_reference_observation,
+            now,
+        ),
+        latest_reference_fc_age_days=_latest_test_age_days(
+            latest_reference_observation,
+            now,
+        ),
+        latest_reference_fc_source=(
+            latest_reference_observation.source
+            if latest_reference_observation is not None
+            else None
+        ),
+        latest_reference_fc_confidence=(
+            latest_reference_observation.confidence
+            if latest_reference_observation is not None
+            else None
+        ),
+        latest_reference_fc_quality=(
+            latest_reference_observation.quality
+            if latest_reference_observation is not None
+            else None
+        ),
+        preferred_test_start_hour=config.preferred_test_start_hour,
+        preferred_test_end_hour=config.preferred_test_end_hour,
+        previous_sampled_at=latest_demand_observation.start_sampled_at,
+        previous_fc_ppm=latest_demand_observation.start_fc_ppm,
+        current_sampled_at=latest_demand_observation.end_sampled_at,
+        current_fc_ppm=latest_demand_observation.end_fc_ppm,
+        elapsed_days=latest_demand_observation.elapsed_days,
         demand_window_days=config.demand_window_days,
         max_demand_window_days=config.max_demand_window_days,
         max_observation_interval_days=config.max_observation_interval_days,
         demand_window_source="consecutive_observation",
-        automated_chlorine_oz=latest_observation.automated_chlorine_oz,
-        manual_hypo_oz=latest_observation.manual_sodium_hypochlorite_oz,
-        added_fc_ppm=latest_observation.total_added_fc_ppm,
-        consumed_fc_ppm=latest_observation.consumed_fc_ppm,
-        daily_demand_ppm=latest_observation.demand_ppm_per_day,
-        latest_observed_demand_ppm_per_day=latest_observation.demand_ppm_per_day,
-        weighted_maintenance_demand_ppm_per_day=maintenance.weighted_demand_ppm_per_day,
+        automated_chlorine_oz=latest_demand_observation.automated_chlorine_oz,
+        manual_hypo_oz=latest_demand_observation.manual_sodium_hypochlorite_oz,
+        added_fc_ppm=latest_demand_observation.total_added_fc_ppm,
+        consumed_fc_ppm=latest_demand_observation.consumed_fc_ppm,
+        daily_demand_ppm=latest_demand_observation.demand_ppm_per_day,
+        latest_observed_demand_ppm_per_day=(
+            latest_demand_observation.demand_ppm_per_day
+        ),
+        baseline_demand_ppm_per_day=maintenance.baseline_demand_ppm_per_day,
+        weighted_maintenance_demand_ppm_per_day=maintenance.baseline_demand_ppm_per_day,
+        rate_limited_baseline_demand_ppm_per_day=(
+            maintenance.rate_limited_baseline_demand_ppm_per_day
+        ),
+        weather_adjustment_ppm_per_day=maintenance.weather_adjustment_ppm_per_day,
         predicted_demand_ppm_per_day=maintenance.predicted_demand_ppm_per_day,
         observation_count=len(observations),
         recent_observation_count=config.recent_observation_count,
@@ -588,14 +821,22 @@ def estimate_fc_demand_plan(
 def fc_demand_observations(
     *,
     config: FcDemandConfig,
-    fc_tests: Sequence[FcTestPoint],
-    automated_chlorine_deliveries: Sequence[ChlorineDeliveryPoint],
-    sodium_hypochlorite_additions: Sequence[ChemicalAddition],
+    fc_tests: Sequence[FcTestPoint] = (),
+    fc_observations: Sequence[FcObservation] | None = None,
+    automated_chlorine_deliveries: Sequence[ChlorineDeliveryPoint] = (),
+    sodium_hypochlorite_additions: Sequence[ChemicalAddition] = (),
 ) -> tuple[FcDemandObservation, ...]:
-    clean_tests = _clean_fc_tests(fc_tests)
+    clean_observations = _reference_fc_observations(
+        _fc_observations_for_plan(
+            config=config,
+            fc_tests=fc_tests,
+            fc_observations=fc_observations,
+            timezone_name="UTC",
+        )
+    )
     observations: list[FcDemandObservation] = []
 
-    for previous, current in zip(clean_tests, clean_tests[1:]):
+    for previous, current in zip(clean_observations, clean_observations[1:]):
         elapsed_hours = (current.sampled_at - previous.sampled_at).total_seconds() / 3600.0
         if not _valid_observation_elapsed_hours(elapsed_hours, config=config):
             continue
@@ -639,6 +880,12 @@ def fc_demand_observations(
                 elapsed_days=elapsed_days,
                 start_fc_ppm=previous.free_chlorine,
                 end_fc_ppm=current.free_chlorine,
+                start_observation_source=previous.source,
+                end_observation_source=current.source,
+                start_observation_confidence=previous.confidence,
+                end_observation_confidence=current.confidence,
+                start_observation_quality=previous.quality,
+                end_observation_quality=current.quality,
                 automated_chlorine_oz=automated_oz,
                 manual_sodium_hypochlorite_oz=manual_hypo_oz,
                 total_added_fc_ppm=total_added_fc_ppm,
@@ -684,6 +931,149 @@ def fl_oz_for_fc_ppm(
     return fc_ppm * 128.0 * (pool_volume_gal / 10000.0) / strength_percent
 
 
+def fc_observations_from_lab_tests(
+    *,
+    config: FcDemandConfig,
+    lab_tests: Sequence[LabTest],
+    timezone_name: str,
+) -> tuple[FcObservation, ...]:
+    return _clean_fc_observations(
+        tuple(
+            _manual_dpd_fc_observation(
+                config=config,
+                sampled_at=test.sampled_at,
+                free_chlorine=test.free_chlorine,
+                timezone_name=timezone_name,
+                source_id=test.id,
+                metadata={"lab_test_id": test.id},
+            )
+            for test in lab_tests
+            if test.free_chlorine is not None
+        )
+    )
+
+
+def manual_dpd_fc_observations(
+    *,
+    config: FcDemandConfig,
+    fc_tests: Sequence[FcTestPoint],
+    timezone_name: str,
+) -> tuple[FcObservation, ...]:
+    return _clean_fc_observations(
+        tuple(
+            _manual_dpd_fc_observation(
+                config=config,
+                sampled_at=test.sampled_at,
+                free_chlorine=test.free_chlorine,
+                timezone_name=timezone_name,
+            )
+            for test in fc_tests
+        )
+    )
+
+
+def _manual_dpd_fc_observation(
+    *,
+    config: FcDemandConfig,
+    sampled_at: datetime,
+    free_chlorine: float | None,
+    timezone_name: str,
+    source_id: str | None = None,
+    metadata: Mapping[str, Any] | None = None,
+) -> FcObservation:
+    return FcObservation(
+        sampled_at=sampled_at,
+        free_chlorine=float(free_chlorine if free_chlorine is not None else -1.0),
+        source=FcObservationSource.MANUAL_DPD,
+        confidence=1.0,
+        quality="high",
+        timing=_fc_observation_timing(
+            config=config,
+            sampled_at=sampled_at,
+            timezone_name=timezone_name,
+        ),
+        source_id=source_id,
+        metadata=dict(metadata or {}),
+    )
+
+
+def _fc_observations_for_plan(
+    *,
+    config: FcDemandConfig,
+    fc_tests: Sequence[FcTestPoint],
+    fc_observations: Sequence[FcObservation] | None,
+    timezone_name: str,
+) -> tuple[FcObservation, ...]:
+    if fc_observations is not None:
+        return _clean_fc_observations(fc_observations)
+    return manual_dpd_fc_observations(
+        config=config,
+        fc_tests=fc_tests,
+        timezone_name=timezone_name,
+    )
+
+
+def _clean_fc_observations(
+    fc_observations: Sequence[FcObservation],
+) -> tuple[FcObservation, ...]:
+    cleaned: list[FcObservation] = []
+    for observation in fc_observations:
+        free_chlorine = float(observation.free_chlorine)
+        confidence = float(observation.confidence)
+        if free_chlorine < 0 or confidence < 0:
+            continue
+        cleaned.append(
+            FcObservation(
+                sampled_at=observation.sampled_at,
+                free_chlorine=free_chlorine,
+                source=FcObservationSource(observation.source),
+                confidence=confidence,
+                quality=str(observation.quality),
+                timing=FcObservationTiming(observation.timing),
+                source_id=observation.source_id,
+                metadata=dict(observation.metadata),
+            )
+        )
+    return tuple(sorted(cleaned, key=lambda item: item.sampled_at))
+
+
+def _reference_fc_observations(
+    fc_observations: Sequence[FcObservation],
+) -> tuple[FcObservation, ...]:
+    return tuple(
+        observation
+        for observation in _clean_fc_observations(fc_observations)
+        if observation.timing == FcObservationTiming.REFERENCE
+    )
+
+
+def _fc_observation_timing(
+    *,
+    config: FcDemandConfig,
+    sampled_at: datetime,
+    timezone_name: str,
+) -> FcObservationTiming:
+    timezone = ZoneInfo(timezone_name)
+    local = sampled_at.astimezone(timezone)
+    local_hour = (
+        local.hour
+        + local.minute / 60.0
+        + local.second / 3600.0
+        + local.microsecond / 3_600_000_000.0
+    )
+    start = float(config.preferred_test_start_hour)
+    end = float(config.preferred_test_end_hour)
+    if start < end:
+        is_reference = start <= local_hour < end
+    else:
+        is_reference = local_hour >= start or local_hour < end
+    return (
+        FcObservationTiming.REFERENCE
+        if is_reference
+        else FcObservationTiming.AD_HOC
+    )
+
+
 def _clean_fc_tests(fc_tests: Sequence[FcTestPoint]) -> tuple[FcTestPoint, ...]:
     return tuple(
         sorted(
@@ -726,8 +1116,10 @@ def _maintenance_estimate(
             config,
             current_observations,
         )
+        weather_adjustment = PHASE_1_WEATHER_ADJUSTMENT_PPM_PER_DAY
+        predicted_demand = weighted_demand + weather_adjustment
         unlimited_dose = fl_oz_for_fc_ppm(
-            weighted_demand,
+            predicted_demand,
             strength_percent=config.chlorine_strength_percent,
             pool_volume_gal=config.pool_volume_gal,
         )
@@ -736,13 +1128,16 @@ def _maintenance_estimate(
             previous_limited_dose,
             max_change_percent=config.max_maintenance_change_percent,
         )
-        predicted_demand = _predicted_demand_before_latest_observation(
-            config,
-            current_observations,
+        rate_limited_demand = fc_ppm_from_fl_oz(
+            limited_dose,
+            strength_percent=config.chlorine_strength_percent,
+            pool_volume_gal=config.pool_volume_gal,
         )
         latest_estimate = _MaintenanceEstimate(
-            weighted_demand_ppm_per_day=weighted_demand,
+            baseline_demand_ppm_per_day=weighted_demand,
+            weather_adjustment_ppm_per_day=weather_adjustment,
             predicted_demand_ppm_per_day=predicted_demand,
+            rate_limited_baseline_demand_ppm_per_day=rate_limited_demand,
             unlimited_dose_oz_per_day=unlimited_dose,
             limited_dose_oz_per_day=limited_dose,
             previous_limited_dose_oz_per_day=previous_limited_dose,
@@ -777,17 +1172,6 @@ def _weighted_demand(
     return demand, used, normalized
 
 
-def _predicted_demand_before_latest_observation(
-    config: FcDemandConfig,
-    observations: tuple[FcDemandObservation, ...],
-) -> float:
-    if len(observations) < 2:
-        return observations[-1].demand_ppm_per_day
-
-    predicted, _, _ = _weighted_demand(config, observations[:-1])
-    return predicted
-
-
 def _rate_limited_maintenance_dose(
     requested_dose: float,
     previous_dose: float | None,
@@ -809,7 +1193,7 @@ def _rate_limited_maintenance_dose(
 def _feedback_for_latest_test(
     *,
     config: FcDemandConfig,
-    latest_test: FcTestPoint | None,
+    latest_test: FcObservation | None,
     now: datetime,
     pump_timer_config: PumpTimerConfig,
 ) -> dict[str, Any]:
@@ -885,7 +1269,7 @@ def _manual_hypo_between(
 
 
 def _legacy_delivery_points(
-    clean_tests: tuple[FcTestPoint, ...],
+    clean_tests: Sequence[FcObservation],
     automated_chlorine_oz: float,
 ) -> tuple[ChlorineDeliveryPoint, ...]:
     if len(clean_tests) < 2 or automated_chlorine_oz <= 0:
@@ -906,13 +1290,14 @@ def _base_status(
     chlorination_config: ChlorinationConfig,
     ready: bool,
     reason: str,
-    latest_test: FcTestPoint | None = None,
+    latest_observation: FcObservation | None = None,
+    latest_reference_observation: FcObservation | None = None,
     observation_count: int = 0,
     available_minutes_today: float | None = None,
 ) -> FcDemandStatus:
     feedback = _feedback_for_latest_test(
         config=config,
-        latest_test=latest_test,
+        latest_test=latest_reference_observation,
         now=now,
         pump_timer_config=pump_timer_config,
     )
@@ -924,17 +1309,84 @@ def _base_status(
         target_fc_ppm=config.target_fc_ppm,
         pool_volume_gal=config.pool_volume_gal,
         chlorine_strength_percent=config.chlorine_strength_percent,
-        latest_fc_ppm=latest_test.free_chlorine if latest_test is not None else None,
-        latest_fc_sampled_at=latest_test.sampled_at if latest_test is not None else None,
-        latest_fc_age_hours=_latest_test_age_hours(latest_test, now),
-        latest_fc_age_days=_latest_test_age_days(latest_test, now),
-        current_sampled_at=latest_test.sampled_at if latest_test is not None else None,
-        current_fc_ppm=latest_test.free_chlorine if latest_test is not None else None,
+        latest_fc_ppm=(
+            latest_observation.free_chlorine
+            if latest_observation is not None
+            else None
+        ),
+        latest_fc_sampled_at=(
+            latest_observation.sampled_at
+            if latest_observation is not None
+            else None
+        ),
+        latest_fc_age_hours=_latest_test_age_hours(latest_observation, now),
+        latest_fc_age_days=_latest_test_age_days(latest_observation, now),
+        latest_fc_source=(
+            latest_observation.source if latest_observation is not None else None
+        ),
+        latest_fc_confidence=(
+            latest_observation.confidence if latest_observation is not None else None
+        ),
+        latest_fc_quality=(
+            latest_observation.quality if latest_observation is not None else None
+        ),
+        latest_fc_observation_timing=(
+            latest_observation.timing if latest_observation is not None else None
+        ),
+        latest_fc_is_reference=(
+            latest_observation.is_reference if latest_observation is not None else None
+        ),
+        latest_reference_fc_ppm=(
+            latest_reference_observation.free_chlorine
+            if latest_reference_observation is not None
+            else None
+        ),
+        latest_reference_fc_sampled_at=(
+            latest_reference_observation.sampled_at
+            if latest_reference_observation is not None
+            else None
+        ),
+        latest_reference_fc_age_hours=_latest_test_age_hours(
+            latest_reference_observation,
+            now,
+        ),
+        latest_reference_fc_age_days=_latest_test_age_days(
+            latest_reference_observation,
+            now,
+        ),
+        latest_reference_fc_source=(
+            latest_reference_observation.source
+            if latest_reference_observation is not None
+            else None
+        ),
+        latest_reference_fc_confidence=(
+            latest_reference_observation.confidence
+            if latest_reference_observation is not None
+            else None
+        ),
+        latest_reference_fc_quality=(
+            latest_reference_observation.quality
+            if latest_reference_observation is not None
+            else None
+        ),
+        preferred_test_start_hour=config.preferred_test_start_hour,
+        preferred_test_end_hour=config.preferred_test_end_hour,
+        current_sampled_at=(
+            latest_reference_observation.sampled_at
+            if latest_reference_observation is not None
+            else None
+        ),
+        current_fc_ppm=(
+            latest_reference_observation.free_chlorine
+            if latest_reference_observation is not None
+            else None
+        ),
         demand_window_days=config.demand_window_days,
         max_demand_window_days=config.max_demand_window_days,
         max_observation_interval_days=config.max_observation_interval_days,
         recent_observation_count=config.recent_observation_count,
         observation_count=observation_count,
+        weather_adjustment_ppm_per_day=PHASE_1_WEATHER_ADJUSTMENT_PPM_PER_DAY,
         feedback_fc_ppm=feedback["fc_ppm"],
         correction_fc_ppm=feedback["fc_ppm"],
         feedback_dose_oz=feedback["dose_oz"],
@@ -957,7 +1409,7 @@ def _base_status(
 
 
 def _latest_test_age_hours(
-    latest_test: FcTestPoint | None,
+    latest_test: FcObservation | None,
     now: datetime,
 ) -> float | None:
     if latest_test is None:
@@ -966,7 +1418,7 @@ def _latest_test_age_hours(
 
 
 def _latest_test_age_days(
-    latest_test: FcTestPoint | None,
+    latest_test: FcObservation | None,
     now: datetime,
 ) -> float | None:
     age_hours = _latest_test_age_hours(latest_test, now)

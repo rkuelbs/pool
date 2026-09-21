@@ -35,6 +35,7 @@ const SENSOR_LABELS = {
   chlorination_duty_cycle_percent: "Dosing duty cycle",
   fc_demand_ppm_per_day: "FC demand",
   base_fc_demand_ppm_per_day: "Base FC demand",
+  fc_demand_weather_adjustment_ppm_per_day: "FC demand weather adjustment",
   predicted_fc_demand_ppm_per_day: "Predicted FC demand",
   fc_demand_residual_ppm_per_day: "FC demand residual",
   daily_water_temp_min: "Daily water temp min",
@@ -114,6 +115,7 @@ const HISTORY_SENSOR_ORDER = [
   "chlorination_duty_cycle_percent",
   "fc_demand_ppm_per_day",
   "base_fc_demand_ppm_per_day",
+  "fc_demand_weather_adjustment_ppm_per_day",
   "predicted_fc_demand_ppm_per_day",
   "fc_demand_residual_ppm_per_day",
   "daily_water_temp_min",
@@ -1009,15 +1011,29 @@ function renderFcDemandStatus(fcDemand, dosingPrime) {
     text = `FC demand: ${payload.reason || "waiting for test data"}`;
   } else if (payload.enabled && payload.ready) {
     const demand = Number(payload.latest_observed_demand_ppm_per_day);
-    const weighted = Number(payload.weighted_maintenance_demand_ppm_per_day);
+    const baseline = Number(payload.baseline_demand_ppm_per_day ?? payload.weighted_maintenance_demand_ppm_per_day);
+    const limitedBaseline = Number(payload.rate_limited_baseline_demand_ppm_per_day);
+    const weather = Number(payload.weather_adjustment_ppm_per_day);
+    const predicted = Number(payload.predicted_demand_ppm_per_day);
     const maintenance = Number(payload.maintenance_dose_oz_per_day);
     const dose = Number(payload.recommended_daily_dose_oz);
     const feedback = Number(payload.applied_feedback_dose_oz);
     const mode = String(payload.mode || "observe_only").replaceAll("_", " ");
     const confidence = String(payload.confidence || "learning");
-    const pieces = [`FC demand: ${Number.isFinite(weighted) ? weighted.toFixed(2) : "--"} ppm/day maint`];
+    const latestTiming = String(payload.latest_fc_observation_timing || "unknown").replaceAll("_", " ");
+    const pieces = [`FC demand: ${Number.isFinite(baseline) ? baseline.toFixed(2) : "--"} ppm/day baseline`];
     if (Number.isFinite(demand)) {
       pieces.push(`latest ${demand.toFixed(2)}`);
+    }
+    if (Number.isFinite(limitedBaseline) && Math.abs(limitedBaseline - baseline) > 0.005) {
+      pieces.push(`limited ${limitedBaseline.toFixed(2)}`);
+    }
+    pieces.push(`weather ${Number.isFinite(weather) ? weather.toFixed(2) : "0.00"}`);
+    if (Number.isFinite(predicted)) {
+      pieces.push(`pred ${predicted.toFixed(2)}`);
+    }
+    if (latestTiming !== "unknown") {
+      pieces.push(`latest ${latestTiming}`);
     }
     if (Number.isFinite(maintenance)) {
       pieces.push(`maint ${maintenance.toFixed(1)} oz/day`);
@@ -3649,6 +3665,8 @@ function renderFcDemandConfig(payload) {
   const strength = document.getElementById("fcDemandChlorineStrengthPercent");
   const minInterval = document.getElementById("fcDemandMinimumTestIntervalHours");
   const maxObservationInterval = document.getElementById("fcDemandMaxObservationIntervalDays");
+  const preferredStart = document.getElementById("fcDemandPreferredTestStartHour");
+  const preferredEnd = document.getElementById("fcDemandPreferredTestEndHour");
   const recentCount = document.getElementById("fcDemandRecentObservationCount");
   const weights = document.getElementById("fcDemandObservationWeights");
   const feedbackGain = document.getElementById("fcDemandFeedbackGain");
@@ -3662,6 +3680,8 @@ function renderFcDemandConfig(payload) {
     !strength ||
     !minInterval ||
     !maxObservationInterval ||
+    !preferredStart ||
+    !preferredEnd ||
     !recentCount ||
     !weights ||
     !feedbackGain ||
@@ -3677,6 +3697,8 @@ function renderFcDemandConfig(payload) {
   strength.value = String(payload.chlorine_strength_percent ?? 12.0);
   minInterval.value = String(payload.minimum_test_interval_hours ?? 12.0);
   maxObservationInterval.value = String(payload.max_observation_interval_days ?? 7.0);
+  preferredStart.value = String(payload.preferred_test_start_hour ?? 18);
+  preferredEnd.value = String(payload.preferred_test_end_hour ?? 23);
   recentCount.value = String(payload.recent_observation_count ?? 5);
   weights.value = Array.isArray(payload.observation_weights)
     ? payload.observation_weights.join(", ")
@@ -3699,6 +3721,8 @@ function collectFcDemandConfig() {
     chlorine_strength_percent: Number(document.getElementById("fcDemandChlorineStrengthPercent").value),
     minimum_test_interval_hours: Number(document.getElementById("fcDemandMinimumTestIntervalHours").value),
     max_observation_interval_days: Number(document.getElementById("fcDemandMaxObservationIntervalDays").value),
+    preferred_test_start_hour: Number(document.getElementById("fcDemandPreferredTestStartHour").value),
+    preferred_test_end_hour: Number(document.getElementById("fcDemandPreferredTestEndHour").value),
     recent_observation_count: Number(document.getElementById("fcDemandRecentObservationCount").value),
     observation_weights: weights,
     fc_feedback_gain: Number(document.getElementById("fcDemandFeedbackGain").value),
@@ -4105,7 +4129,9 @@ function renderLabTestFcDemandFeedback(fcDemand) {
 
   const mode = String(fcDemand.mode || "observe_only");
   const demand = Number(fcDemand.latest_observed_demand_ppm_per_day);
-  const weighted = Number(fcDemand.weighted_maintenance_demand_ppm_per_day);
+  const baseline = Number(fcDemand.baseline_demand_ppm_per_day ?? fcDemand.weighted_maintenance_demand_ppm_per_day);
+  const weather = Number(fcDemand.weather_adjustment_ppm_per_day);
+  const predicted = Number(fcDemand.predicted_demand_ppm_per_day);
   const recommended = Number(fcDemand.recommended_daily_dose_oz);
   const effective = Number(fcDemand.effective_daily_dose_oz);
   const elapsed = Number(fcDemand.elapsed_days);
@@ -4114,7 +4140,9 @@ function renderLabTestFcDemandFeedback(fcDemand) {
   const feedbackDate = fcDemand.feedback_control_date || "next control day";
   const pieces = [
     `FC demand ${Number.isFinite(demand) ? demand.toFixed(2) : "--"} ppm/day latest`,
-    `weighted ${Number.isFinite(weighted) ? weighted.toFixed(2) : "--"} ppm/day`,
+    `baseline ${Number.isFinite(baseline) ? baseline.toFixed(2) : "--"} ppm/day`,
+    `weather ${Number.isFinite(weather) ? weather.toFixed(2) : "0.00"} ppm/day`,
+    `predicted ${Number.isFinite(predicted) ? predicted.toFixed(2) : "--"} ppm/day`,
     `maintenance ${Number.isFinite(maintenance) ? maintenance.toFixed(1) : "--"} oz/day`,
     `recommended ${Number.isFinite(recommended) ? recommended.toFixed(1) : "--"} oz/day`,
   ];

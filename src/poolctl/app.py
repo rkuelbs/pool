@@ -65,8 +65,8 @@ from poolctl.services.fc_demand import (
     FcDemandConfig,
     FcDemandPlan,
     FcDemandStatus,
-    FcTestPoint,
     estimate_fc_demand_plan,
+    fc_observations_from_lab_tests,
     fc_ppm_from_fl_oz,
 )
 from poolctl.services.measurement_logging import (
@@ -1716,17 +1716,17 @@ class PoolControllerApp:
                 )
             )
 
-        fc_history = self.measurement_logger.lab_value_history(
-            field="free_chlorine",
-            limit=50,
+        lab_tests = self.measurement_logger.lab_test_history(
+            limit=200,
             until=now,
         )
-        fc_tests = tuple(
-            FcTestPoint(sampled_at=sampled_at, free_chlorine=value)
-            for sampled_at, value in fc_history
+        fc_observations = fc_observations_from_lab_tests(
+            config=self.fc_demand_config,
+            lab_tests=lab_tests,
+            timezone_name=self.pump_timer_config.timezone,
         )
-        since = fc_tests[0].sampled_at if fc_tests else None
-        until = fc_tests[-1].sampled_at if fc_tests else None
+        since = fc_observations[0].sampled_at if fc_observations else None
+        until = fc_observations[-1].sampled_at if fc_observations else None
         delivery_records = (
             self.measurement_logger.chlorine_delivery_history(
                 since=since,
@@ -1755,7 +1755,7 @@ class PoolControllerApp:
             now=now,
             pump_timer_config=self.pump_timer_config,
             chlorination_config=self.chlorination_config,
-            fc_tests=fc_tests,
+            fc_observations=fc_observations,
             automated_chlorine_deliveries=tuple(
                 ChlorineDeliveryPoint(
                     observed_at=record.observed_at,
@@ -2506,11 +2506,38 @@ class PoolControllerApp:
                         "latest_observed_demand_ppm_per_day": (
                             fc_demand_status.latest_observed_demand_ppm_per_day
                         ),
+                        "baseline_demand_ppm_per_day": (
+                            fc_demand_status.baseline_demand_ppm_per_day
+                        ),
                         "weighted_maintenance_demand_ppm_per_day": (
                             fc_demand_status.weighted_maintenance_demand_ppm_per_day
                         ),
+                        "rate_limited_baseline_demand_ppm_per_day": (
+                            fc_demand_status.rate_limited_baseline_demand_ppm_per_day
+                        ),
+                        "weather_adjustment_ppm_per_day": (
+                            fc_demand_status.weather_adjustment_ppm_per_day
+                        ),
                         "predicted_demand_ppm_per_day": (
                             fc_demand_status.predicted_demand_ppm_per_day
+                        ),
+                        "latest_fc_observation_timing": (
+                            fc_demand_status.latest_fc_observation_timing.value
+                            if fc_demand_status.latest_fc_observation_timing
+                            is not None
+                            else None
+                        ),
+                        "latest_reference_fc_sampled_at": (
+                            fc_demand_status.latest_reference_fc_sampled_at.isoformat()
+                            if fc_demand_status.latest_reference_fc_sampled_at
+                            is not None
+                            else None
+                        ),
+                        "preferred_test_start_hour": (
+                            fc_demand_status.preferred_test_start_hour
+                        ),
+                        "preferred_test_end_hour": (
+                            fc_demand_status.preferred_test_end_hour
                         ),
                         "maintenance_dose_oz_per_day": (
                             fc_demand_status.maintenance_dose_oz_per_day
@@ -3281,10 +3308,13 @@ def _fc_demand_trend_measurements(
 
     actual_demand = max(0.0, float(status.daily_demand_ppm))
     base_demand = (
-        status.weighted_maintenance_demand_ppm_per_day
-        if status.weighted_maintenance_demand_ppm_per_day is not None
-        else actual_demand
+        status.baseline_demand_ppm_per_day
+        if status.baseline_demand_ppm_per_day is not None
+        else status.weighted_maintenance_demand_ppm_per_day
     )
+    if base_demand is None:
+        base_demand = actual_demand
+    weather_adjustment = status.weather_adjustment_ppm_per_day
     predicted_demand = (
         status.predicted_demand_ppm_per_day
         if status.predicted_demand_ppm_per_day is not None
@@ -3298,14 +3328,19 @@ def _fc_demand_trend_measurements(
         "source": "fc_demand_ppm_per_day",
         "source_measurement_id": source_measurement_id,
         "actual_fc_demand_ppm_per_day": actual_demand,
+        "baseline_demand_ppm_per_day": base_demand,
         "weighted_maintenance_demand_ppm_per_day": base_demand,
+        "rate_limited_baseline_demand_ppm_per_day": (
+            status.rate_limited_baseline_demand_ppm_per_day
+        ),
+        "weather_adjustment_ppm_per_day": weather_adjustment,
         "predicted_fc_demand_ppm_per_day": predicted_demand,
         "max_observation_interval_days": status.max_observation_interval_days,
         "recent_observation_count": status.recent_observation_count,
         "observation_count": status.observation_count,
         "effective_normalized_weights": list(status.effective_normalized_weights),
         "demand_window_source": status.demand_window_source,
-        "modifier_model": "not_configured_phase_1",
+        "modifier_model": "phase_1_weather_adjustment_zero",
         "water_temp_source": SensorId.ORP_TEMP.value,
         "uv_modifier_ppm_per_day": 0.0,
         "temperature_modifier_ppm_per_day": 0.0,
@@ -3323,7 +3358,24 @@ def _fc_demand_trend_measurements(
             source_measurement_ids=[source_measurement_id],
             metadata={
                 **metadata,
-                "meaning": "recent weighted maintenance FC demand",
+                "meaning": "recent weighted baseline FC demand",
+            },
+        ),
+        Measurement(
+            id=(
+                f"{SensorId.FC_DEMAND_WEATHER_ADJUSTMENT_PPM_PER_DAY.value}:"
+                f"{source_suffix}"
+            ),
+            sensor_id=SensorId.FC_DEMAND_WEATHER_ADJUSTMENT_PPM_PER_DAY,
+            observed_at=observed_at,
+            kind=MeasurementKind.ESTIMATED,
+            value=round(weather_adjustment, 4),
+            unit="ppm/day",
+            quality=Quality.GOOD,
+            source_measurement_ids=[source_measurement_id],
+            metadata={
+                **metadata,
+                "meaning": "Phase 1 weather adjustment, intentionally zero",
             },
         ),
         Measurement(
@@ -3337,10 +3389,7 @@ def _fc_demand_trend_measurements(
             source_measurement_ids=[source_measurement_id],
             metadata={
                 **metadata,
-                "meaning": (
-                    "weighted maintenance-demand prediction available before "
-                    "this observation"
-                ),
+                "meaning": "baseline demand plus weather adjustment",
             },
         ),
         Measurement(

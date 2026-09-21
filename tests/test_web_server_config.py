@@ -243,6 +243,8 @@ def test_fc_demand_update_applies_live_and_persists(tmp_path: Path) -> None:
         "chlorine_strength_percent": 12.0,
         "minimum_test_interval_hours": 12.0,
         "max_observation_interval_days": 7.0,
+        "preferred_test_start_hour": 18,
+        "preferred_test_end_hour": 23,
         "recent_observation_count": 5,
         "observation_weights": [0.35, 0.25, 0.18, 0.13, 0.09],
         "fc_feedback_gain": 0.6,
@@ -264,6 +266,8 @@ def test_fc_demand_update_applies_live_and_persists(tmp_path: Path) -> None:
             "chlorine_strength_percent": 12.5,
             "minimum_test_interval_hours": 24.0,
             "max_observation_interval_days": 6.0,
+            "preferred_test_start_hour": 19,
+            "preferred_test_end_hour": 22,
             "recent_observation_count": 3,
             "observation_weights": [0.5, 0.3, 0.2],
             "fc_feedback_gain": 0.75,
@@ -277,6 +281,8 @@ def test_fc_demand_update_applies_live_and_persists(tmp_path: Path) -> None:
     assert result["mode"] == "automatic"
     assert app.fc_demand_config.pool_volume_gal == 14500.0
     assert app.fc_demand_config.max_observation_interval_days == 6.0
+    assert app.fc_demand_config.preferred_test_start_hour == 19
+    assert app.fc_demand_config.preferred_test_end_hour == 22
     assert app.fc_demand_config.recent_observation_count == 3
     assert app.fc_demand_config.observation_weights == (0.5, 0.3, 0.2)
     assert serialize_fc_demand_config(app)["target_fc_ppm"] == 5.0
@@ -285,6 +291,8 @@ def test_fc_demand_update_applies_live_and_persists(tmp_path: Path) -> None:
     assert saved["fc_demand"]["mode"] == "automatic"
     assert saved["fc_demand"]["pool_volume_gal"] == 14500.0
     assert saved["fc_demand"]["max_observation_interval_days"] == 6.0
+    assert saved["fc_demand"]["preferred_test_start_hour"] == 19
+    assert saved["fc_demand"]["preferred_test_end_hour"] == 22
     assert saved["fc_demand"]["recent_observation_count"] == 3
     assert saved["fc_demand"]["observation_weights"] == [0.5, 0.3, 0.2]
     assert saved["fc_demand"]["fc_feedback_gain"] == 0.75
@@ -964,6 +972,8 @@ def test_lab_test_api_returns_recalculated_fc_demand_feedback(tmp_path: Path) ->
         "target_fc_ppm": 4.0,
         "chlorine_strength_percent": 12.0,
         "minimum_test_interval_hours": 12.0,
+        "preferred_test_start_hour": 0,
+        "preferred_test_end_hour": 24,
         "max_daily_dose_oz": 256.0,
     }
     app = build_app_from_mapping(config, clock=make_clock())
