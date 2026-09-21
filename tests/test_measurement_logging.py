@@ -268,6 +268,39 @@ def test_measurement_logger_summarizes_chlorine_delivery(tmp_path: Path) -> None
     assert total.delivered_oz == 1.5
 
 
+def test_measurement_logger_returns_chlorine_delivery_history(
+    tmp_path: Path,
+) -> None:
+    logger = MeasurementLogger(
+        MeasurementLoggingConfig(database_path=tmp_path / "measurements.sqlite3")
+    )
+    now = datetime(2026, 5, 22, 12, 0, tzinfo=timezone.utc)
+    logger.log_chlorine_delivery(
+        observed_at=now,
+        runtime_seconds=30.0,
+        delivered_oz=0.5,
+        metadata={"source": "scheduled"},
+    )
+    logger.log_chlorine_delivery(
+        observed_at=now + timedelta(minutes=10),
+        runtime_seconds=60.0,
+        delivered_oz=1.0,
+        metadata={"source": "supplemental"},
+    )
+
+    records = logger.chlorine_delivery_history(
+        since=now - timedelta(minutes=1),
+        until=now + timedelta(minutes=20),
+    )
+
+    assert [record.observed_at for record in records] == [
+        now,
+        now + timedelta(minutes=10),
+    ]
+    assert [record.delivered_oz for record in records] == [0.5, 1.0]
+    assert records[1].metadata == {"source": "supplemental"}
+
+
 def test_measurement_logger_persists_and_summarizes_chlorine_tank_refills(
     tmp_path: Path,
 ) -> None:

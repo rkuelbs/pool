@@ -23,8 +23,8 @@ The project is intentionally layered:
 - Open-loop chlorine dosing on relay 7. On Raspberry Pi hardware, dosing ON
   pulses use the Waveshare relay module's timed flash command by default so the
   module turns the relay off even if the Pi process dies mid-pulse.
-- Optional FC-demand estimator based on manual FC tests and logged chlorine
-  delivery/additions. ORP and pH are not used by this estimator.
+- Optional FC-demand controller based on manual FC tests and logged chlorine
+  delivery/additions. ORP and pH are not used by this controller.
 - Safety enforcement layer with configurable pressure gates and lockouts.
 - Freeze protection with hysteresis and minimum runtime.
 - Sensor acquisition with per-group read/log rates, optional burst
@@ -455,8 +455,8 @@ The History page can graph chlorination control signals:
   total and one at segment end with the updated total. A zero-value reset
   snapshot is logged at local midnight.
 - `Dosing duty cycle`: the current duty cycle during valid dosing time. This is
-  logged across the full eligible window, including duty-cycle OFF portions, but
-  not during high-FC holdoff time. Like daily delivered chlorine, it uses
+  logged across the full eligible window, including duty-cycle OFF portions.
+  Like daily delivered chlorine, it uses
   `logging.control_measurement_interval_s` plus immediate samples on dosing
   state/duty-plan changes.
 - `Daily sodium hypochlorite added`: completed-day total fluid ounces from
@@ -468,14 +468,13 @@ The History page can graph chlorination control signals:
   averages of the completed-day chemical totals. Early history uses the
   available completed-day rows until a full window has accumulated.
 - `FC demand`: estimated free-chlorine consumption in ppm/day from the latest
-  FC test and an earlier test selected near the configured lookback window,
-  logged once per distinct estimate.
-- `Base FC demand`: exponential moving average of FC demand. This is an
-  observe-only baseline for seasonal trend work; it does not change dosing by
-  itself.
-- `Predicted FC demand` and `FC demand residual`: placeholder prediction and
-  actual-minus-predicted error. For now the prediction is just the baseline with
-  no pH, ORP, UV, or temperature modifier.
+  valid consecutive FC-test observation, logged once per distinct observation.
+- `Base FC demand`: recent weighted maintenance-demand estimate from the latest
+  usable observations. This is the Phase 1 feed-forward demand estimate.
+- `Predicted FC demand` and `FC demand residual`: prediction available before
+  the latest observation and actual-minus-predicted error. Phase 1 uses only the
+  weighted FC-test/addition history, with no pH, ORP, UV, weather, or
+  temperature modifier.
 - `Daily ORP avg`, `Daily water temp min/avg/max`, and `Daily pH avg`: daily
   summaries from `raw_orp`, `orp_temp`, and `raw_ph`. The water-temperature
   minimum is logged because it may better represent pool water than daytime
@@ -520,8 +519,16 @@ fc_demand:
   target_fc_ppm: 4.0
   chlorine_strength_percent: 12.0
   minimum_test_interval_hours: 12.0
-  demand_window_days: 7.0
-  max_demand_window_days: 14.0
+  max_observation_interval_days: 7.0
+  recent_observation_count: 5
+  observation_weights:
+  - 0.35
+  - 0.25
+  - 0.18
+  - 0.13
+  - 0.09
+  fc_feedback_gain: 0.6
+  max_maintenance_change_percent: 15.0
   max_daily_dose_oz: 256.0
 ```
 
@@ -546,33 +553,33 @@ controller's desired state.
 
 ## FC-Demand Estimator
 
-`fc_demand` estimates daily free-chlorine demand from manual FC tests plus
-logged chlorine additions/delivery. It deliberately does not use ORP or pH.
-The history page also logs observe-only trend signals for base demand,
-predicted demand, residual demand, daily ORP, pH, ORP-temperature min/avg/max,
-UV dose, shortwave dose, daily chemical totals, and 7-day/28-day daily moving
-averages. These provide the data needed to evaluate seasonal temperature,
-sunlight, and chemical-demand modifiers later without changing the current
-dosing controller.
+`fc_demand` is a discrete daily adaptive feed-forward controller for the
+open-loop chlorination target. It learns a maintenance dose from manual FC tests
+plus logged chlorine additions/delivery, then optionally adds a one-day signed
+FC target correction. It deliberately does not use ORP, pH, weather, UV, or
+water temperature as control inputs in Phase 1. Those signals are still logged
+for later analysis.
 
-The estimator needs at least two manual free-chlorine test results. It uses the
-latest FC test as the current value, then selects an earlier test for the mass
-balance:
+The low-level `ChlorinationController` remains responsible only for delivering
+an ounces-per-day target through eligible dosing windows, duty-cycle timing,
+relay flash pulses, safety checks, and delivery logging. FC-demand automatic
+mode passes a `ChlorinationPlanAdjustment`; it does not command relays directly.
 
-- Ignore tests closer than `minimum_test_interval_hours`.
-- Prefer the earliest test at or beyond `demand_window_days` before the latest
-  test.
-- If there is no test that old, use the oldest eligible test inside the maximum
-  window.
-- If no eligible prior test is within `max_demand_window_days`, wait for better
-  test history instead of estimating from stale conditions.
+The controller builds demand observations from consecutive valid manual
+free-chlorine tests. For each adjacent pair:
 
-Between the selected tests, it sums:
+- Ignore pairs closer than `minimum_test_interval_hours`.
+- Ignore pairs longer than `max_observation_interval_days` (default 7 days).
+- Allow missed-test intervals inside that maximum; a 2-7 day gap becomes one
+  average ppm/day observation.
+- Sum automated dosing pump delivery logged by the runtime loop.
+- Sum manually logged sodium-hypochlorite additions.
 
-- automated dosing pump delivery logged by the runtime loop
-- manually logged sodium hypochlorite additions
+Diagnostic prime/calibration dosing remains excluded because it is not logged as
+normal chlorine delivery. Supplemental `Add Chlorine` doses are normal pool
+dosing, so their delivered ounces are included.
 
-It converts liquid chlorine ounces to FC ppm using:
+Liquid chlorine ounces are converted to FC ppm using:
 
 ```text
 FC ppm = (fluid ounces / 128) * strength_percent * (10000 / pool_volume_gal)
@@ -581,32 +588,58 @@ FC ppm = (fluid ounces / 128) * strength_percent * (10000 / pool_volume_gal)
 Then it estimates:
 
 ```text
-daily demand ppm = max(0, previous FC + added FC - current FC) / elapsed days
-maintenance dose oz/day = dose needed to replace daily demand
+consumed FC ppm = previous FC + added FC - current FC
+demand ppm/day = max(0, consumed FC ppm / elapsed days)
 ```
 
-The default `demand_window_days: 7.0` and `max_demand_window_days: 14.0` reduce
-single-test noise while still letting weekly weather and sunlight changes move
-the estimate. The live status and lab-test feedback show the elapsed days used
-for the current estimate.
+The maintenance demand estimate uses the most recent
+`recent_observation_count` valid observations, default 5. The default
+newest-to-oldest weights are `[0.35, 0.25, 0.18, 0.13, 0.09]`. If fewer
+observations are available, the leading weights are renormalized. For example,
+with two observations the effective weights are `0.35 / (0.35 + 0.25)` and
+`0.25 / (0.35 + 0.25)`.
 
-When FC is below `target_fc_ppm`, the catch-up dose is added only on the day
-after the latest FC test. After that day, the dose returns to the estimated
-maintenance dose.
+The weighted maintenance demand is converted to fluid ounces/day using the same
+pool-volume and chlorine-strength math. The learned maintenance dose is rate
+limited by `max_maintenance_change_percent` (default 15%) from the previously
+computed learned target, reconstructed deterministically from FC-test and
+addition history. `max_daily_dose_oz` is still the final hard cap.
 
-When FC is above target, the estimator converts the high FC amount into
-`skip_days = high_fc_ppm / daily_demand_ppm`. In automatic mode, it keeps the
-normal maintenance duty cycle but delays dosing by that fraction of eligible
-schedule time. For example, if the schedule has 420 valid dosing minutes and FC
-is high by 0.5 days of demand, dosing starts 210 eligible minutes later.
+FC target feedback is symmetric and applies only once. When the latest manual FC
+test is new, the next local control day applies:
+
+```text
+feedback FC ppm = fc_feedback_gain * (target_fc_ppm - latest FC ppm)
+recommended dose = maintenance dose + feedback dose
+```
+
+The default `fc_feedback_gain` is `0.6`. Positive feedback raises the next-day
+dose when FC is below target; negative feedback lowers it when FC is above
+target. The final recommendation is clamped to `0 <= dose <= max_daily_dose_oz`.
+After that one control day, feedback is no longer applied. If FC tests are
+missed for several days, the controller continues the learned open-loop
+maintenance dose only.
 
 `mode` controls whether the estimate is applied:
 
 - `observe_only`: calculate and display status only.
 - `recommend`: calculate recommendations without applying them.
 - `approve_required`: reserved for a future approval workflow.
-- `automatic`: pass the effective daily dose and any high-FC delay into the
-  chlorination controller.
+- `automatic`: pass the effective daily dose into the chlorination controller.
+
+The live status/API reports the latest FC test and age, target FC, latest
+observed demand, weighted maintenance demand, maintenance dose, feedback ppm/oz,
+whether feedback is active today, recommended/effective dose, observation count,
+learning confidence, mode, and capping/rate-limit warnings. Confidence is based
+on usable observation count: `learning` for fewer than 2, `low` for 2,
+`medium` for 3-4, and `high` for 5 or more.
+
+Weather, UV, ORP, pH, and water-temperature summaries continue to be logged for
+Phase 2 analysis. The current `Predicted FC demand` history signal means the
+weighted maintenance prediction that was available before the latest
+observation; `FC demand residual` is actual observed demand minus that
+prediction. Phase 2 will evaluate correlations between observed FC demand and
+weather/water-temperature history before adding modifiers to the control law.
 
 ## Pushover Notifications
 

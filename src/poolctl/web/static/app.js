@@ -1008,19 +1008,25 @@ function renderFcDemandStatus(fcDemand, dosingPrime) {
   if (payload.enabled && !payload.ready) {
     text = `FC demand: ${payload.reason || "waiting for test data"}`;
   } else if (payload.enabled && payload.ready) {
-    const demand = Number(payload.daily_demand_ppm);
+    const demand = Number(payload.latest_observed_demand_ppm_per_day);
+    const weighted = Number(payload.weighted_maintenance_demand_ppm_per_day);
+    const maintenance = Number(payload.maintenance_dose_oz_per_day);
     const dose = Number(payload.recommended_daily_dose_oz);
-    const delay = Number(payload.delay_eligible_minutes_today);
-    const elapsed = Number(payload.elapsed_days);
+    const feedback = Number(payload.applied_feedback_dose_oz);
     const mode = String(payload.mode || "observe_only").replaceAll("_", " ");
-    const pieces = [`FC demand: ${Number.isFinite(demand) ? demand.toFixed(2) : "--"} ppm/day`];
-    if (Number.isFinite(elapsed) && elapsed > 0) {
-      pieces.push(`over ${elapsed.toFixed(1)}d`);
+    const confidence = String(payload.confidence || "learning");
+    const pieces = [`FC demand: ${Number.isFinite(weighted) ? weighted.toFixed(2) : "--"} ppm/day maint`];
+    if (Number.isFinite(demand)) {
+      pieces.push(`latest ${demand.toFixed(2)}`);
+    }
+    if (Number.isFinite(maintenance)) {
+      pieces.push(`maint ${maintenance.toFixed(1)} oz/day`);
+    }
+    if (payload.feedback_active_today && Number.isFinite(feedback) && feedback !== 0) {
+      pieces.push(`feedback ${feedback > 0 ? "+" : ""}${feedback.toFixed(1)} oz`);
     }
     pieces.push(`rec ${Number.isFinite(dose) ? dose.toFixed(1) : "--"} oz/day`);
-    if (Number.isFinite(delay) && delay > 0) {
-      pieces.push(`delay ${delay.toFixed(0)} min`);
-    }
+    pieces.push(confidence);
     pieces.push(mode);
     text = pieces.join(" | ");
   }
@@ -3642,8 +3648,11 @@ function renderFcDemandConfig(payload) {
   const target = document.getElementById("fcDemandTargetFcPpm");
   const strength = document.getElementById("fcDemandChlorineStrengthPercent");
   const minInterval = document.getElementById("fcDemandMinimumTestIntervalHours");
-  const demandWindow = document.getElementById("fcDemandDemandWindowDays");
-  const maxDemandWindow = document.getElementById("fcDemandMaxDemandWindowDays");
+  const maxObservationInterval = document.getElementById("fcDemandMaxObservationIntervalDays");
+  const recentCount = document.getElementById("fcDemandRecentObservationCount");
+  const weights = document.getElementById("fcDemandObservationWeights");
+  const feedbackGain = document.getElementById("fcDemandFeedbackGain");
+  const maxMaintenanceChange = document.getElementById("fcDemandMaxMaintenanceChangePercent");
   const maxDose = document.getElementById("fcDemandMaxDailyDoseOz");
   if (
     !enabled ||
@@ -3652,8 +3661,11 @@ function renderFcDemandConfig(payload) {
     !target ||
     !strength ||
     !minInterval ||
-    !demandWindow ||
-    !maxDemandWindow ||
+    !maxObservationInterval ||
+    !recentCount ||
+    !weights ||
+    !feedbackGain ||
+    !maxMaintenanceChange ||
     !maxDose
   ) {
     return;
@@ -3664,12 +3676,21 @@ function renderFcDemandConfig(payload) {
   target.value = String(payload.target_fc_ppm ?? 4.0);
   strength.value = String(payload.chlorine_strength_percent ?? 12.0);
   minInterval.value = String(payload.minimum_test_interval_hours ?? 12.0);
-  demandWindow.value = String(payload.demand_window_days ?? 7.0);
-  maxDemandWindow.value = String(payload.max_demand_window_days ?? 14.0);
+  maxObservationInterval.value = String(payload.max_observation_interval_days ?? 7.0);
+  recentCount.value = String(payload.recent_observation_count ?? 5);
+  weights.value = Array.isArray(payload.observation_weights)
+    ? payload.observation_weights.join(", ")
+    : "0.35, 0.25, 0.18, 0.13, 0.09";
+  feedbackGain.value = String(payload.fc_feedback_gain ?? 0.6);
+  maxMaintenanceChange.value = String(payload.max_maintenance_change_percent ?? 15.0);
   maxDose.value = String(payload.max_daily_dose_oz ?? 256.0);
 }
 
 function collectFcDemandConfig() {
+  const weights = String(document.getElementById("fcDemandObservationWeights").value)
+    .split(",")
+    .map((value) => Number(value.trim()))
+    .filter((value) => Number.isFinite(value));
   return {
     enabled: document.getElementById("fcDemandEnabled").checked,
     mode: document.getElementById("fcDemandMode").value,
@@ -3677,8 +3698,11 @@ function collectFcDemandConfig() {
     target_fc_ppm: Number(document.getElementById("fcDemandTargetFcPpm").value),
     chlorine_strength_percent: Number(document.getElementById("fcDemandChlorineStrengthPercent").value),
     minimum_test_interval_hours: Number(document.getElementById("fcDemandMinimumTestIntervalHours").value),
-    demand_window_days: Number(document.getElementById("fcDemandDemandWindowDays").value),
-    max_demand_window_days: Number(document.getElementById("fcDemandMaxDemandWindowDays").value),
+    max_observation_interval_days: Number(document.getElementById("fcDemandMaxObservationIntervalDays").value),
+    recent_observation_count: Number(document.getElementById("fcDemandRecentObservationCount").value),
+    observation_weights: weights,
+    fc_feedback_gain: Number(document.getElementById("fcDemandFeedbackGain").value),
+    max_maintenance_change_percent: Number(document.getElementById("fcDemandMaxMaintenanceChangePercent").value),
     max_daily_dose_oz: Number(document.getElementById("fcDemandMaxDailyDoseOz").value),
   };
 }
@@ -4080,30 +4104,30 @@ function renderLabTestFcDemandFeedback(fcDemand) {
   }
 
   const mode = String(fcDemand.mode || "observe_only");
-  const demand = Number(fcDemand.daily_demand_ppm);
+  const demand = Number(fcDemand.latest_observed_demand_ppm_per_day);
+  const weighted = Number(fcDemand.weighted_maintenance_demand_ppm_per_day);
   const recommended = Number(fcDemand.recommended_daily_dose_oz);
   const effective = Number(fcDemand.effective_daily_dose_oz);
   const elapsed = Number(fcDemand.elapsed_days);
-  const catchUp = Number(fcDemand.catch_up_dose_oz_next_day);
-  const skipDays = Number(fcDemand.skip_days);
-  const delay = Number(fcDemand.delay_eligible_minutes_today);
-  const adjustmentDate = fcDemand.next_adjustment_date || "next scheduled day";
+  const maintenance = Number(fcDemand.maintenance_dose_oz_per_day);
+  const feedback = Number(fcDemand.feedback_dose_oz);
+  const feedbackDate = fcDemand.feedback_control_date || "next control day";
   const pieces = [
-    `FC demand ${Number.isFinite(demand) ? demand.toFixed(2) : "--"} ppm/day`,
+    `FC demand ${Number.isFinite(demand) ? demand.toFixed(2) : "--"} ppm/day latest`,
+    `weighted ${Number.isFinite(weighted) ? weighted.toFixed(2) : "--"} ppm/day`,
+    `maintenance ${Number.isFinite(maintenance) ? maintenance.toFixed(1) : "--"} oz/day`,
     `recommended ${Number.isFinite(recommended) ? recommended.toFixed(1) : "--"} oz/day`,
   ];
   if (Number.isFinite(elapsed) && elapsed > 0) {
     pieces.push(`window ${elapsed.toFixed(1)} days`);
   }
 
-  if (Number.isFinite(catchUp) && catchUp > 0) {
-    pieces.push(`catch-up ${catchUp.toFixed(1)} oz on ${adjustmentDate}`);
+  if (Number.isFinite(feedback) && feedback !== 0) {
+    const sign = feedback > 0 ? "+" : "";
+    pieces.push(`feedback ${sign}${feedback.toFixed(1)} oz on ${feedbackDate}`);
   }
-  if (Number.isFinite(skipDays) && skipDays > 0) {
-    pieces.push(`skip ${skipDays.toFixed(2)} dosing days from ${adjustmentDate}`);
-  }
-  if (Number.isFinite(delay) && delay > 0) {
-    pieces.push(`delay dosing ${delay.toFixed(0)} eligible min`);
+  if (!fcDemand.feedback_active_today) {
+    pieces.push("feedback not active today");
   }
   if (mode === "automatic") {
     pieces.push(`automatic effective dose ${Number.isFinite(effective) ? effective.toFixed(1) : "--"} oz/day`);

@@ -156,8 +156,16 @@ fc_demand:
   target_fc_ppm: 4.5
   chlorine_strength_percent: 12.0
   minimum_test_interval_hours: 12.0
-  demand_window_days: 7.0
-  max_demand_window_days: 14.0
+  max_observation_interval_days: 7.0
+  recent_observation_count: 5
+  observation_weights:
+  - 0.35
+  - 0.25
+  - 0.18
+  - 0.13
+  - 0.09
+  fc_feedback_gain: 0.6
+  max_maintenance_change_percent: 15.0
   max_daily_dose_oz: 120.0
 safety:
   pressure_sensor_ids:

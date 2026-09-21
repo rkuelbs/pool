@@ -137,6 +137,14 @@ class ChlorineDeliverySummary:
 
 
 @dataclass(frozen=True)
+class ChlorineDeliveryRecord:
+    observed_at: datetime
+    runtime_seconds: float
+    delivered_oz: float
+    metadata: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class ChlorineTankRefillSummary:
     amount_gal: float = 0.0
     count: int = 0
@@ -506,6 +514,54 @@ class MeasurementLogger:
             runtime_seconds=float(row["runtime_seconds"]),
             delivered_oz=float(row["delivered_oz"]),
         )
+
+    def chlorine_delivery_history(
+        self,
+        *,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int = 1000,
+    ) -> tuple[ChlorineDeliveryRecord, ...]:
+        if limit < 1:
+            raise ValueError("limit must be at least 1")
+
+        clauses = ["1=1"]
+        parameters: list[str | int] = []
+        if since is not None:
+            clauses.append("observed_at >= ?")
+            parameters.append(since.isoformat())
+        if until is not None:
+            clauses.append("observed_at <= ?")
+            parameters.append(until.isoformat())
+        parameters.append(limit)
+        where_clause = " AND ".join(clauses)
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT
+                    observed_at,
+                    runtime_seconds,
+                    delivered_oz,
+                    metadata_json
+                FROM chlorine_delivery
+                WHERE {where_clause}
+                ORDER BY observed_at DESC
+                LIMIT ?
+                """,
+                parameters,
+            ).fetchall()
+
+        records = tuple(
+            ChlorineDeliveryRecord(
+                observed_at=_parse_datetime(str(row["observed_at"])),
+                runtime_seconds=float(row["runtime_seconds"]),
+                delivered_oz=float(row["delivered_oz"]),
+                metadata=_metadata_from_json(str(row["metadata_json"])),
+            )
+            for row in rows
+        )
+        return tuple(reversed(records))
 
     def measurement_value_summary(
         self,

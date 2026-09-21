@@ -61,12 +61,12 @@ from poolctl.services.chlorination import (
     ChlorinationStatus,
 )
 from poolctl.services.fc_demand import (
+    ChlorineDeliveryPoint,
     FcDemandConfig,
     FcDemandPlan,
     FcDemandStatus,
     FcTestPoint,
     estimate_fc_demand_plan,
-    fc_demand_test_selection,
     fc_ppm_from_fl_oz,
 )
 from poolctl.services.measurement_logging import (
@@ -98,7 +98,6 @@ from poolctl.services.safety import SafetyConfig, SafetyGate
 from poolctl.services.weather import WeatherConfig, WeatherPollResult, WeatherService
 
 
-FC_DEMAND_BASE_EMA_ALPHA = 0.35
 FLUID_OUNCES_PER_GALLON = 128.0
 DAILY_ENVIRONMENT_SUMMARY_INTERVAL_S = 3600.0
 CHLORINATION_CONTROL_SENSOR_IDS = frozenset(
@@ -1702,9 +1701,17 @@ class PoolControllerApp:
                     chlorine_strength_percent=(
                         self.fc_demand_config.chlorine_strength_percent
                     ),
-                    demand_window_days=self.fc_demand_config.demand_window_days,
+                    demand_window_days=(
+                        self.fc_demand_config.max_observation_interval_days
+                    ),
                     max_demand_window_days=(
-                        self.fc_demand_config.max_demand_window_days
+                        self.fc_demand_config.max_observation_interval_days
+                    ),
+                    max_observation_interval_days=(
+                        self.fc_demand_config.max_observation_interval_days
+                    ),
+                    recent_observation_count=(
+                        self.fc_demand_config.recent_observation_count
                     ),
                 )
             )
@@ -1712,28 +1719,22 @@ class PoolControllerApp:
         fc_history = self.measurement_logger.lab_value_history(
             field="free_chlorine",
             limit=50,
+            until=now,
         )
         fc_tests = tuple(
             FcTestPoint(sampled_at=sampled_at, free_chlorine=value)
             for sampled_at, value in fc_history
         )
-        selected_fc_interval = fc_demand_test_selection(
-            self.fc_demand_config,
-            fc_tests,
-        )
-        since = (
-            selected_fc_interval.previous.sampled_at
-            if selected_fc_interval is not None
-            else None
-        )
-        until = (
-            selected_fc_interval.current.sampled_at
-            if selected_fc_interval is not None
-            else None
-        )
-        delivery_summary = self.measurement_logger.chlorine_delivery_summary(
-            since=since,
-            until=until,
+        since = fc_tests[0].sampled_at if fc_tests else None
+        until = fc_tests[-1].sampled_at if fc_tests else None
+        delivery_records = (
+            self.measurement_logger.chlorine_delivery_history(
+                since=since,
+                until=until,
+                limit=5000,
+            )
+            if since is not None and until is not None
+            else ()
         )
         chemical_additions = (
             self.measurement_logger.chemical_addition_history(
@@ -1755,7 +1756,13 @@ class PoolControllerApp:
             pump_timer_config=self.pump_timer_config,
             chlorination_config=self.chlorination_config,
             fc_tests=fc_tests,
-            automated_chlorine_oz=delivery_summary.delivered_oz,
+            automated_chlorine_deliveries=tuple(
+                ChlorineDeliveryPoint(
+                    observed_at=record.observed_at,
+                    delivered_oz=record.delivered_oz,
+                )
+                for record in delivery_records
+            ),
             sodium_hypochlorite_additions=sodium_hypochlorite_additions,
         )
 
@@ -2483,23 +2490,54 @@ class PoolControllerApp:
                         "previous_fc_ppm": fc_demand_status.previous_fc_ppm,
                         "current_fc_ppm": fc_demand_status.current_fc_ppm,
                         "elapsed_days": fc_demand_status.elapsed_days,
-                        "demand_window_days": fc_demand_status.demand_window_days,
-                        "max_demand_window_days": (
-                            fc_demand_status.max_demand_window_days
+                        "max_observation_interval_days": (
+                            fc_demand_status.max_observation_interval_days
                         ),
+                        "recent_observation_count": (
+                            fc_demand_status.recent_observation_count
+                        ),
+                        "observation_count": fc_demand_status.observation_count,
+                        "confidence": fc_demand_status.confidence,
                         "demand_window_source": (
                             fc_demand_status.demand_window_source
                         ),
                         "added_fc_ppm": fc_demand_status.added_fc_ppm,
                         "consumed_fc_ppm": fc_demand_status.consumed_fc_ppm,
+                        "latest_observed_demand_ppm_per_day": (
+                            fc_demand_status.latest_observed_demand_ppm_per_day
+                        ),
+                        "weighted_maintenance_demand_ppm_per_day": (
+                            fc_demand_status.weighted_maintenance_demand_ppm_per_day
+                        ),
+                        "predicted_demand_ppm_per_day": (
+                            fc_demand_status.predicted_demand_ppm_per_day
+                        ),
                         "maintenance_dose_oz_per_day": (
                             fc_demand_status.maintenance_dose_oz_per_day
+                        ),
+                        "unlimited_maintenance_dose_oz_per_day": (
+                            fc_demand_status.unlimited_maintenance_dose_oz_per_day
+                        ),
+                        "maintenance_rate_limited": (
+                            fc_demand_status.maintenance_rate_limited
+                        ),
+                        "feedback_fc_ppm": fc_demand_status.feedback_fc_ppm,
+                        "feedback_dose_oz": fc_demand_status.feedback_dose_oz,
+                        "applied_feedback_dose_oz": (
+                            fc_demand_status.applied_feedback_dose_oz
+                        ),
+                        "feedback_active_today": (
+                            fc_demand_status.feedback_active_today
                         ),
                         "recommended_daily_dose_oz": (
                             fc_demand_status.recommended_daily_dose_oz
                         ),
                         "effective_daily_dose_oz": (
                             fc_demand_status.effective_daily_dose_oz
+                        ),
+                        "final_dose_capped": fc_demand_status.final_dose_capped,
+                        "final_dose_floor_limited": (
+                            fc_demand_status.final_dose_floor_limited
                         ),
                     },
                 )
@@ -3242,15 +3280,15 @@ def _fc_demand_trend_measurements(
         return ()
 
     actual_demand = max(0.0, float(status.daily_demand_ppm))
-    previous_base = _previous_base_fc_demand(logger=logger, before=observed_at)
-    predicted_demand = previous_base if previous_base is not None else actual_demand
     base_demand = (
-        actual_demand
-        if previous_base is None
-        else (
-            FC_DEMAND_BASE_EMA_ALPHA * actual_demand
-            + (1.0 - FC_DEMAND_BASE_EMA_ALPHA) * previous_base
-        )
+        status.weighted_maintenance_demand_ppm_per_day
+        if status.weighted_maintenance_demand_ppm_per_day is not None
+        else actual_demand
+    )
+    predicted_demand = (
+        status.predicted_demand_ppm_per_day
+        if status.predicted_demand_ppm_per_day is not None
+        else actual_demand
     )
     residual = actual_demand - predicted_demand
     source_measurement_id = _fc_demand_measurement_id(status)
@@ -3260,12 +3298,14 @@ def _fc_demand_trend_measurements(
         "source": "fc_demand_ppm_per_day",
         "source_measurement_id": source_measurement_id,
         "actual_fc_demand_ppm_per_day": actual_demand,
-        "previous_base_fc_demand_ppm_per_day": previous_base,
-        "base_ema_alpha": FC_DEMAND_BASE_EMA_ALPHA,
-        "demand_window_days": status.demand_window_days,
-        "max_demand_window_days": status.max_demand_window_days,
+        "weighted_maintenance_demand_ppm_per_day": base_demand,
+        "predicted_fc_demand_ppm_per_day": predicted_demand,
+        "max_observation_interval_days": status.max_observation_interval_days,
+        "recent_observation_count": status.recent_observation_count,
+        "observation_count": status.observation_count,
+        "effective_normalized_weights": list(status.effective_normalized_weights),
         "demand_window_source": status.demand_window_source,
-        "modifier_model": "not_configured",
+        "modifier_model": "not_configured_phase_1",
         "water_temp_source": SensorId.ORP_TEMP.value,
         "uv_modifier_ppm_per_day": 0.0,
         "temperature_modifier_ppm_per_day": 0.0,
@@ -3283,7 +3323,7 @@ def _fc_demand_trend_measurements(
             source_measurement_ids=[source_measurement_id],
             metadata={
                 **metadata,
-                "meaning": "exponential moving average of FC demand",
+                "meaning": "recent weighted maintenance FC demand",
             },
         ),
         Measurement(
@@ -3297,7 +3337,10 @@ def _fc_demand_trend_measurements(
             source_measurement_ids=[source_measurement_id],
             metadata={
                 **metadata,
-                "meaning": "current baseline prediction with no seasonal modifier",
+                "meaning": (
+                    "weighted maintenance-demand prediction available before "
+                    "this observation"
+                ),
             },
         ),
         Measurement(

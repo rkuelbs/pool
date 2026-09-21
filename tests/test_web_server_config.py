@@ -242,8 +242,11 @@ def test_fc_demand_update_applies_live_and_persists(tmp_path: Path) -> None:
         "target_fc_ppm": 4.0,
         "chlorine_strength_percent": 12.0,
         "minimum_test_interval_hours": 12.0,
-        "demand_window_days": 7.0,
-        "max_demand_window_days": 14.0,
+        "max_observation_interval_days": 7.0,
+        "recent_observation_count": 5,
+        "observation_weights": [0.35, 0.25, 0.18, 0.13, 0.09],
+        "fc_feedback_gain": 0.6,
+        "max_maintenance_change_percent": 15.0,
         "max_daily_dose_oz": 256.0,
     }
     path = tmp_path / "pool.yaml"
@@ -260,8 +263,11 @@ def test_fc_demand_update_applies_live_and_persists(tmp_path: Path) -> None:
             "target_fc_ppm": 5.0,
             "chlorine_strength_percent": 12.5,
             "minimum_test_interval_hours": 24.0,
-            "demand_window_days": 6.0,
-            "max_demand_window_days": 12.0,
+            "max_observation_interval_days": 6.0,
+            "recent_observation_count": 3,
+            "observation_weights": [0.5, 0.3, 0.2],
+            "fc_feedback_gain": 0.75,
+            "max_maintenance_change_percent": 20.0,
             "max_daily_dose_oz": 300.0,
         },
     )
@@ -270,14 +276,19 @@ def test_fc_demand_update_applies_live_and_persists(tmp_path: Path) -> None:
     assert result["applied_live"] is True
     assert result["mode"] == "automatic"
     assert app.fc_demand_config.pool_volume_gal == 14500.0
-    assert app.fc_demand_config.demand_window_days == 6.0
-    assert app.fc_demand_config.max_demand_window_days == 12.0
+    assert app.fc_demand_config.max_observation_interval_days == 6.0
+    assert app.fc_demand_config.recent_observation_count == 3
+    assert app.fc_demand_config.observation_weights == (0.5, 0.3, 0.2)
     assert serialize_fc_demand_config(app)["target_fc_ppm"] == 5.0
+    assert serialize_fc_demand_config(app)["fc_feedback_gain"] == 0.75
     saved = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert saved["fc_demand"]["mode"] == "automatic"
     assert saved["fc_demand"]["pool_volume_gal"] == 14500.0
-    assert saved["fc_demand"]["demand_window_days"] == 6.0
-    assert saved["fc_demand"]["max_demand_window_days"] == 12.0
+    assert saved["fc_demand"]["max_observation_interval_days"] == 6.0
+    assert saved["fc_demand"]["recent_observation_count"] == 3
+    assert saved["fc_demand"]["observation_weights"] == [0.5, 0.3, 0.2]
+    assert saved["fc_demand"]["fc_feedback_gain"] == 0.75
+    assert saved["fc_demand"]["max_maintenance_change_percent"] == 20.0
 
 
 def test_start_chlorination_prime_sets_runtime_timer() -> None:
@@ -978,8 +989,9 @@ def test_lab_test_api_returns_recalculated_fc_demand_feedback(tmp_path: Path) ->
     assert second["fc_demand"]["ready"] is True
     assert second["fc_demand"]["mode"] == "automatic"
     assert round(second["fc_demand"]["daily_demand_ppm"], 3) == 1.0
-    assert round(second["fc_demand"]["catch_up_dose_oz_next_day"], 3) == 10.667
-    assert second["fc_demand"]["next_adjustment_date"] == "2026-05-23"
+    assert round(second["fc_demand"]["feedback_dose_oz"], 3) == 6.4
+    assert second["fc_demand"]["applied_feedback_dose_oz"] == 0.0
+    assert second["fc_demand"]["feedback_control_date"] == "2026-05-23"
 
 
 def test_lab_test_api_accepts_sparse_payload_and_defaults_sampled_at(tmp_path: Path) -> None:
