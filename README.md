@@ -2,7 +2,7 @@
 
 `poolctl` is a Python pool automation controller being built for a Raspberry Pi 5.
 It is designed to be developed on Windows with simulated hardware and deployed
-later to Raspberry Pi OS with Modbus sensors and relays.
+to Raspberry Pi OS 64-bit Trixie with Modbus sensors and relays.
 
 The project is intentionally layered:
 
@@ -62,11 +62,11 @@ tests/                    Unit and integration-style tests.
 
 ## Python Versions
 
-The project supports Python `>=3.11,<3.14`.
+The project targets Python `>=3.13,<3.14`.
 
-- Windows development has been run with Python 3.13.
-- Raspberry Pi OS Bookworm currently commonly ships Python 3.11.2, which is
-  supported by the codebase.
+- Windows development uses Python 3.13.
+- New Raspberry Pi 5 deployments target Raspberry Pi OS 64-bit Trixie with
+  Python 3.13.
 
 ## Windows Development Setup
 
@@ -340,6 +340,11 @@ window through history, or set the `Ending` date/time and press `Jump` to view a
 specific past day. `Now` returns the chart to the live rolling window. CSV export
 uses the same selected window shown on the chart.
 
+SQLite databases include an explicit schema version marker in both
+`PRAGMA user_version` and a `schema_metadata` row. Current schema version is
+`1`; existing additive column checks are still retained for compatibility with
+older local databases.
+
 Water-test and chemical-addition entry times use local date/time pickers. Leaving
 the time blank records the event at the controller's current time. A selected
 browser-local time is converted to an offset-aware timestamp before logging; API
@@ -386,13 +391,19 @@ The controller:
 
 Normal scheduled dosing will only energize the dosing pump when the booster
 pump is off, the latest good pump-output pressure is inside the configured
-chlorine dosing pressure window, and the estimated true chlorine tank level is
-at least 2 gallons. The Pi profile defaults that pressure window to 3.0-3.5 psi
-so the interlock verifies the pump is actually running at the expected
-low-speed head pressure instead of trusting only the commanded speed bit. A
-missing pressure or tank estimate is treated as not eligible for normal dosing.
-Diagnostic prime/calibration runs remain a separate maintenance path and do not
-count toward delivered chlorine totals.
+chlorine dosing pressure window, and SafetyGate allows the estimated true
+chlorine tank level. Tank safety uses hysteresis: the dashboard warns at
+`low_warning_gal` (default 2.0 gal), normal dosing is inhibited at or below
+`inhibit_below_gal` (default 1.5 gal), and dosing is not re-enabled until the
+estimate reaches `reenable_at_gal` (default 2.0 gal). The Pi profile defaults
+the pressure window to 3.0-3.5 psi so the interlock verifies the pump is
+actually running at the expected low-speed head pressure instead of trusting
+only the commanded speed bit. A missing pressure or tank estimate is treated as
+not eligible for normal dosing. The chlorine tank gate is enforced by
+SafetyGate for normal dosing commands even when the broader continuous
+`safety_enforcement` layer is not enabled. Diagnostic prime/calibration runs
+remain a separate explicit bypass path and do not count toward delivered
+chlorine totals.
 
 This allows the same pump timer to run the pool at night for skimming or
 vacuuming while keeping the day's chlorine dose in morning and daytime windows
@@ -540,7 +551,8 @@ fc_demand:
   minimum_test_interval_hours: 12.0
   max_observation_interval_days: 7.0
   preferred_test_start_hour: 18
-  preferred_test_end_hour: 23
+  preferred_test_end_hour: 24
+  negative_demand_noise_tolerance_ppm_per_day: 0.05
   recent_observation_count: 5
   observation_weights:
   - 0.35
@@ -559,6 +571,11 @@ head-pressure qualification:
 
 ```yaml
 safety:
+  chlorine_tank:
+    level_sensor: chlorine_tank_level_gal
+    low_warning_gal: 2.0
+    inhibit_below_gal: 1.5
+    reenable_at_gal: 2.0
   thresholds:
     chlorine_min_pump_output_psi: 3.0
     chlorine_max_pump_output_psi: 3.5
@@ -599,7 +616,7 @@ control timezone:
 
 - Reference/control test: local sample time is in
   `[preferred_test_start_hour, preferred_test_end_hour)`. Defaults are
-  `18:00 <= sample < 23:00`. Reference tests drive maintenance learning and
+  `18:00 <= sample < 24:00`. Reference tests drive maintenance learning and
   one-time next-control-day target feedback.
 - Ad-hoc test: local sample time is outside that window. Ad-hoc tests are stored
   and shown in history/status, but Phase 1 treats them as analysis-only. They do
@@ -631,11 +648,17 @@ Then it estimates:
 
 ```text
 consumed FC ppm = previous FC + added FC - current FC
-demand ppm/day = max(0, consumed FC ppm / elapsed days)
+raw demand ppm/day = consumed FC ppm / elapsed days
 ```
 
+Clearly positive observations are valid. Tiny negative observations within
+`negative_demand_noise_tolerance_ppm_per_day` default to a suspect zero-demand
+observation so measurement noise is visible in status/history. Materially
+negative observations are rejected and excluded from maintenance learning; their
+raw value, quality, and rejection reason remain visible in status/debug payloads.
+
 The maintenance demand estimate uses the most recent
-`recent_observation_count` valid observations, default 5. The default
+`recent_observation_count` accepted observations, default 5. The default
 newest-to-oldest weights are `[0.35, 0.25, 0.18, 0.13, 0.09]`. If fewer
 observations are available, the leading weights are renormalized. For example,
 with two observations the effective weights are `0.35 / (0.35 + 0.25)` and
@@ -798,6 +821,8 @@ file out of Git.
 
 These commands assume:
 
+- OS: Raspberry Pi OS 64-bit Trixie
+- Python: 3.13
 - Pi username: `pool`
 - Project directory: `/home/pool/projects/pool`
 - Virtual environment: `/home/pool/projects/pool/venv`
@@ -1001,6 +1026,10 @@ The pH sensor produces:
 - `raw_ph`: pH units from register `0x0000`.
 - `ph_temp`: probe temperature from register `0x0001`, converted from C to F
   before display and logging.
+
+Analog pH channels also publish `raw_ph` as calibrated pH units. When an analog
+pH channel is configured, Poolctl additionally records `raw_ph_voltage` as the
+diagnostic input voltage used for calibration and troubleshooting.
 
 The DFRobot ORP and pH drivers have a small circuit breaker so a missing or
 failing chemistry probe does not repeatedly block the control loop with Modbus

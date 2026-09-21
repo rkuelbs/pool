@@ -9,6 +9,7 @@ ignored by the next scheduler tick.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -75,7 +76,7 @@ class FreezeProtectionConfig:
     enabled: bool = False
     source: FreezeProtectionSource = FreezeProtectionSource.TEMP
     temp_sensor: SensorId = SensorId.TEMP
-    ph_temp_sensor: SensorId = SensorId.ORP_TEMP
+    ph_temp_sensor: SensorId = SensorId.PH_TEMP
     low_speed_on_below_temp: float = 35.0
     low_speed_off_above_temp: float = 37.0
     high_speed_on_below_temp: float = 33.0
@@ -105,6 +106,34 @@ class FreezeProtectionConfig:
 
 
 @dataclass(frozen=True)
+class ChlorineTankSafetyConfig:
+    """
+    Safety thresholds for the liquid-chlorine storage tank estimate.
+
+    Hysteresis avoids chattering around the inhibit threshold: once normal
+    dosing is inhibited, the tank must recover to the re-enable threshold before
+    dosing can resume.
+    """
+
+    level_sensor: SensorId = SensorId.CHLORINE_TANK_LEVEL_GAL
+    low_warning_gal: float = 2.0
+    inhibit_below_gal: float = 1.5
+    reenable_at_gal: float = 2.0
+
+    def __post_init__(self) -> None:
+        if self.low_warning_gal < 0:
+            raise ValueError("chlorine_tank.low_warning_gal must be >= 0")
+        if self.inhibit_below_gal < 0:
+            raise ValueError("chlorine_tank.inhibit_below_gal must be >= 0")
+        if self.reenable_at_gal < 0:
+            raise ValueError("chlorine_tank.reenable_at_gal must be >= 0")
+        if self.inhibit_below_gal > self.reenable_at_gal:
+            raise ValueError(
+                "chlorine_tank.inhibit_below_gal must be <= reenable_at_gal"
+            )
+
+
+@dataclass(frozen=True)
 class SafetyConfig:
     """
     Configurable safety thresholds and timers.
@@ -112,6 +141,7 @@ class SafetyConfig:
 
     pressure_sensors: PressureSensorConfig = field(default_factory=PressureSensorConfig)
     freeze_protection: FreezeProtectionConfig = field(default_factory=FreezeProtectionConfig)
+    chlorine_tank: ChlorineTankSafetyConfig = field(default_factory=ChlorineTankSafetyConfig)
 
     chlorine_min_return_psi: float = 2.0
     chlorine_min_pump_output_psi: float = 3.0
@@ -136,6 +166,7 @@ class SafetyConfig:
         threshold_data = _mapping_value(safety_data, "thresholds", default={})
         timeout_data = _mapping_value(safety_data, "timeouts", default={})
         freeze_data = _mapping_value(safety_data, "freeze_protection", default={})
+        chlorine_tank_data = _mapping_value(safety_data, "chlorine_tank", default={})
 
         pressure_sensors = PressureSensorConfig(
             pump_output=_sensor_id_value(
@@ -209,6 +240,28 @@ class SafetyConfig:
                     freeze_data,
                     "threshold_unit",
                     FreezeProtectionConfig.threshold_unit,
+                ),
+            ),
+            chlorine_tank=ChlorineTankSafetyConfig(
+                level_sensor=_sensor_id_value(
+                    chlorine_tank_data,
+                    "level_sensor",
+                    ChlorineTankSafetyConfig().level_sensor,
+                ),
+                low_warning_gal=_float_value(
+                    chlorine_tank_data,
+                    "low_warning_gal",
+                    ChlorineTankSafetyConfig.low_warning_gal,
+                ),
+                inhibit_below_gal=_float_value(
+                    chlorine_tank_data,
+                    "inhibit_below_gal",
+                    ChlorineTankSafetyConfig.inhibit_below_gal,
+                ),
+                reenable_at_gal=_float_value(
+                    chlorine_tank_data,
+                    "reenable_at_gal",
+                    ChlorineTankSafetyConfig.reenable_at_gal,
                 ),
             ),
             chlorine_min_return_psi=_float_value(
@@ -365,6 +418,15 @@ class SafetyGate:
         self._freeze_latched_speed: ActuatorState | None = None
         self._freeze_started_at: datetime | None = None
         self._freeze_observation: str | None = None
+        self._chlorine_tank_hysteresis_inhibited = False
+        self._chlorine_tank_status: dict[str, Any] = (
+            self._chlorine_tank_status_payload(
+                tank_level_gal=None,
+                low_warning_active=False,
+                dosing_inhibited=True,
+                inhibit_reason="chlorine tank level unavailable",
+            )
+        )
 
     @property
     def locked_out(self) -> bool:
@@ -377,6 +439,19 @@ class SafetyGate:
         self._pump_high_reached_min_output = False
         self._low_pressure_prime_until = None
         self._clear_freeze_state()
+
+    def apply_config(self, config: SafetyConfig) -> None:
+        """
+        Replace safety settings and clear state that depends on threshold values.
+        """
+        self.config = config
+        self._chlorine_tank_hysteresis_inhibited = False
+        self._chlorine_tank_status = self._chlorine_tank_status_payload(
+            tank_level_gal=None,
+            low_warning_active=False,
+            dosing_inhibited=True,
+            inhibit_reason="chlorine tank level unavailable",
+        )
 
     def freeze_status(self, now: datetime) -> dict[str, Any]:
         freeze = self.config.freeze_protection
@@ -396,6 +471,41 @@ class SafetyGate:
             "source": freeze.source.value,
             "threshold_unit": freeze.threshold_unit.value,
         }
+
+    def chlorine_tank_status(self) -> dict[str, Any]:
+        return dict(self._chlorine_tank_status)
+
+    def check_chlorine_tank_dosing(self, snapshot: SafetySnapshot) -> SafetyDecision:
+        """
+        Check only the chlorine-tank dosing interlock.
+
+        This is used by chlorination deployments that have not enabled the full
+        continuous safety layer yet. Pressure and pump-flow checks remain in the
+        normal command path for those deployments, while tank hysteresis stays
+        centralized in SafetyGate.
+        """
+        return self._chlorine_tank_conditions_met(snapshot)
+
+    def chlorine_tank_action(self, snapshot: SafetySnapshot) -> SafetyAction | None:
+        decision = self.check_chlorine_tank_dosing(snapshot)
+        if snapshot.actuator_state(ActuatorId.CHLORINE_DOSING_PUMP) != ActuatorState.ON:
+            return None
+
+        if decision.accepted:
+            return None
+
+        return self._action(
+            snapshot.now,
+            ActuatorId.CHLORINE_DOSING_PUMP,
+            ActuatorState.OFF,
+            reason_code="chlorine_interlock_lost",
+            reason=(
+                decision.rejection_reason
+                if decision.rejection_reason is not None
+                else "chlorine tank dosing inhibited"
+            ),
+            metadata=decision.metadata,
+        )
 
     def check_command(
         self,
@@ -419,9 +529,9 @@ class SafetyGate:
             command.actuator_id == ActuatorId.CHLORINE_DOSING_PUMP
             and command.state == ActuatorState.ON
         ):
-            allowed, reason = self._chlorine_conditions_met(snapshot)
-            if not allowed:
-                return SafetyDecision(accepted=False, rejection_reason=reason)
+            decision = self._chlorine_conditions_met(snapshot)
+            if not decision.accepted:
+                return decision
 
         if command.actuator_id == ActuatorId.BOOSTER_PUMP and command.state == ActuatorState.ON:
             if not self._pump_is_on(snapshot):
@@ -437,6 +547,7 @@ class SafetyGate:
             return []
 
         actions: list[SafetyAction] = []
+        self._update_chlorine_tank_status(snapshot)
         pump_output_psi = snapshot.pressure_psi(self.config.pressure_sensors.pump_output)
         freeze_required_speed, freeze_observation = self._freeze_required_speed(snapshot)
 
@@ -503,43 +614,151 @@ class SafetyGate:
     def _pump_speed_is_low(self, snapshot: SafetySnapshot) -> bool:
         return snapshot.actuator_state(ActuatorId.PUMP_MOTOR_SPEED) == ActuatorState.LOW
 
-    def _chlorine_conditions_met(self, snapshot: SafetySnapshot) -> tuple[bool, str | None]:
+    def _chlorine_conditions_met(self, snapshot: SafetySnapshot) -> SafetyDecision:
         if not self._pump_is_on(snapshot):
-            return False, "chlorine output cannot turn on unless pump motor is on"
+            return SafetyDecision(
+                accepted=False,
+                rejection_reason="chlorine output cannot turn on unless pump motor is on",
+            )
 
         if self.config.chlorine_requires_high_speed and not self._pump_speed_is_high(snapshot):
-            return False, "chlorine output cannot turn on unless pump speed is high"
+            return SafetyDecision(
+                accepted=False,
+                rejection_reason="chlorine output cannot turn on unless pump speed is high",
+            )
 
         return_psi = snapshot.pressure_psi(self.config.pressure_sensors.return_line)
         if return_psi is None:
-            return False, "chlorine output requires a good return pressure reading"
+            return SafetyDecision(
+                accepted=False,
+                rejection_reason="chlorine output requires a good return pressure reading",
+            )
 
         if return_psi < self.config.chlorine_min_return_psi:
-            return (
-                False,
-                "chlorine output requires return pressure "
-                f">= {self.config.chlorine_min_return_psi:g} psi",
+            return SafetyDecision(
+                accepted=False,
+                rejection_reason=(
+                    "chlorine output requires return pressure "
+                    f">= {self.config.chlorine_min_return_psi:g} psi"
+                ),
             )
 
         pump_output_psi = snapshot.pressure_psi(self.config.pressure_sensors.pump_output)
         if pump_output_psi is None:
-            return False, "chlorine output requires a good pump output pressure reading"
+            return SafetyDecision(
+                accepted=False,
+                rejection_reason="chlorine output requires a good pump output pressure reading",
+            )
 
         if pump_output_psi < self.config.chlorine_min_pump_output_psi:
-            return (
-                False,
-                "chlorine output requires pump output pressure "
-                f">= {self.config.chlorine_min_pump_output_psi:g} psi",
+            return SafetyDecision(
+                accepted=False,
+                rejection_reason=(
+                    "chlorine output requires pump output pressure "
+                    f">= {self.config.chlorine_min_pump_output_psi:g} psi"
+                ),
             )
 
         if pump_output_psi > self.config.chlorine_max_pump_output_psi:
-            return (
-                False,
-                "chlorine output requires pump output pressure "
-                f"<= {self.config.chlorine_max_pump_output_psi:g} psi",
+            return SafetyDecision(
+                accepted=False,
+                rejection_reason=(
+                    "chlorine output requires pump output pressure "
+                    f"<= {self.config.chlorine_max_pump_output_psi:g} psi"
+                ),
             )
 
-        return True, None
+        tank_decision = self._chlorine_tank_conditions_met(snapshot)
+        if not tank_decision.accepted:
+            return tank_decision
+
+        return SafetyDecision(accepted=True)
+
+    def _chlorine_tank_conditions_met(self, snapshot: SafetySnapshot) -> SafetyDecision:
+        status = self._update_chlorine_tank_status(snapshot)
+        if not status["dosing_inhibited"]:
+            return SafetyDecision(accepted=True)
+
+        reason = status["inhibit_reason"] or "chlorine tank dosing inhibited"
+        return SafetyDecision(
+            accepted=False,
+            rejection_reason=reason,
+            metadata={"chlorine_tank": status},
+        )
+
+    def _update_chlorine_tank_status(self, snapshot: SafetySnapshot) -> dict[str, Any]:
+        tank = self.config.chlorine_tank
+        measurement = snapshot.raw_measurement(tank.level_sensor)
+        tank_level_gal: float | None = None
+        if measurement is not None and measurement.quality == Quality.GOOD:
+            try:
+                tank_level_gal = float(measurement.value)
+            except (TypeError, ValueError):
+                tank_level_gal = None
+
+        if tank_level_gal is None or not math.isfinite(tank_level_gal):
+            status = self._chlorine_tank_status_payload(
+                tank_level_gal=None,
+                low_warning_active=False,
+                dosing_inhibited=True,
+                inhibit_reason="chlorine tank level unavailable",
+            )
+            self._chlorine_tank_status = status
+            return status
+
+        tank_level_gal = max(0.0, tank_level_gal)
+        if tank_level_gal <= tank.inhibit_below_gal:
+            self._chlorine_tank_hysteresis_inhibited = True
+        elif (
+            self._chlorine_tank_hysteresis_inhibited
+            and tank_level_gal >= tank.reenable_at_gal
+        ):
+            self._chlorine_tank_hysteresis_inhibited = False
+
+        inhibit_reason = None
+        if self._chlorine_tank_hysteresis_inhibited:
+            if tank_level_gal <= tank.inhibit_below_gal:
+                inhibit_reason = (
+                    "chlorine tank level "
+                    f"<= {tank.inhibit_below_gal:g} gal dosing inhibit threshold"
+                )
+            else:
+                inhibit_reason = (
+                    "chlorine tank refill required until level "
+                    f">= {tank.reenable_at_gal:g} gal"
+                )
+
+        status = self._chlorine_tank_status_payload(
+            tank_level_gal=tank_level_gal,
+            low_warning_active=tank_level_gal <= tank.low_warning_gal,
+            dosing_inhibited=self._chlorine_tank_hysteresis_inhibited,
+            inhibit_reason=inhibit_reason,
+        )
+        self._chlorine_tank_status = status
+        return status
+
+    def _chlorine_tank_status_payload(
+        self,
+        *,
+        tank_level_gal: float | None,
+        low_warning_active: bool,
+        dosing_inhibited: bool,
+        inhibit_reason: str | None,
+    ) -> dict[str, Any]:
+        tank = self.config.chlorine_tank
+        return {
+            "level_sensor": tank.level_sensor.value,
+            "tank_level_gal": (
+                round(tank_level_gal, 4) if tank_level_gal is not None else None
+            ),
+            "available": tank_level_gal is not None,
+            "low_warning_active": low_warning_active,
+            "dosing_inhibited": dosing_inhibited,
+            "inhibit_reason": inhibit_reason,
+            "low_warning_threshold_gal": tank.low_warning_gal,
+            "inhibit_threshold_gal": tank.inhibit_below_gal,
+            "reenable_threshold_gal": tank.reenable_at_gal,
+        }
 
     def _booster_actions(self, snapshot: SafetySnapshot) -> list[SafetyAction]:
         if snapshot.actuator_state(ActuatorId.BOOSTER_PUMP) != ActuatorState.ON:
@@ -603,8 +822,8 @@ class SafetyGate:
         if snapshot.actuator_state(ActuatorId.CHLORINE_DOSING_PUMP) != ActuatorState.ON:
             return []
 
-        allowed, reason = self._chlorine_conditions_met(snapshot)
-        if allowed:
+        decision = self._chlorine_conditions_met(snapshot)
+        if decision.accepted:
             return []
 
         return [
@@ -613,7 +832,12 @@ class SafetyGate:
                 ActuatorId.CHLORINE_DOSING_PUMP,
                 ActuatorState.OFF,
                 reason_code="chlorine_interlock_lost",
-                reason=reason if reason is not None else "chlorine output interlock lost",
+                reason=(
+                    decision.rejection_reason
+                    if decision.rejection_reason is not None
+                    else "chlorine output interlock lost"
+                ),
+                metadata=decision.metadata,
             )
         ]
 
@@ -1006,6 +1230,7 @@ class SafetyGate:
         reason_code: str,
         reason: str,
         fault: SafetyFault | None = None,
+        metadata: Mapping[str, Any] | None = None,
     ) -> SafetyAction:
         return SafetyAction(
             command=ActuatorCommand(
@@ -1014,7 +1239,7 @@ class SafetyGate:
                 state=state,
                 requested_by=CommandSource.SYSTEM,
                 reason=reason,
-                metadata={"safety_action": reason_code},
+                metadata={"safety_action": reason_code, **dict(metadata or {})},
             ),
             reason_code=reason_code,
             fault=fault,

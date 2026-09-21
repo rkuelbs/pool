@@ -244,7 +244,8 @@ def test_fc_demand_update_applies_live_and_persists(tmp_path: Path) -> None:
         "minimum_test_interval_hours": 12.0,
         "max_observation_interval_days": 7.0,
         "preferred_test_start_hour": 18,
-        "preferred_test_end_hour": 23,
+        "preferred_test_end_hour": 24,
+        "negative_demand_noise_tolerance_ppm_per_day": 0.05,
         "recent_observation_count": 5,
         "observation_weights": [0.35, 0.25, 0.18, 0.13, 0.09],
         "fc_feedback_gain": 0.6,
@@ -268,6 +269,7 @@ def test_fc_demand_update_applies_live_and_persists(tmp_path: Path) -> None:
             "max_observation_interval_days": 6.0,
             "preferred_test_start_hour": 19,
             "preferred_test_end_hour": 22,
+            "negative_demand_noise_tolerance_ppm_per_day": 0.03,
             "recent_observation_count": 3,
             "observation_weights": [0.5, 0.3, 0.2],
             "fc_feedback_gain": 0.75,
@@ -283,6 +285,7 @@ def test_fc_demand_update_applies_live_and_persists(tmp_path: Path) -> None:
     assert app.fc_demand_config.max_observation_interval_days == 6.0
     assert app.fc_demand_config.preferred_test_start_hour == 19
     assert app.fc_demand_config.preferred_test_end_hour == 22
+    assert app.fc_demand_config.negative_demand_noise_tolerance_ppm_per_day == 0.03
     assert app.fc_demand_config.recent_observation_count == 3
     assert app.fc_demand_config.observation_weights == (0.5, 0.3, 0.2)
     assert serialize_fc_demand_config(app)["target_fc_ppm"] == 5.0
@@ -293,6 +296,7 @@ def test_fc_demand_update_applies_live_and_persists(tmp_path: Path) -> None:
     assert saved["fc_demand"]["max_observation_interval_days"] == 6.0
     assert saved["fc_demand"]["preferred_test_start_hour"] == 19
     assert saved["fc_demand"]["preferred_test_end_hour"] == 22
+    assert saved["fc_demand"]["negative_demand_noise_tolerance_ppm_per_day"] == 0.03
     assert saved["fc_demand"]["recent_observation_count"] == 3
     assert saved["fc_demand"]["observation_weights"] == [0.5, 0.3, 0.2]
     assert saved["fc_demand"]["fc_feedback_gain"] == 0.75
@@ -480,6 +484,12 @@ def test_safety_update_applies_live_and_persists(tmp_path: Path) -> None:
             "min_run_seconds": 180.0,
             "threshold_unit": "degF",
         },
+        "chlorine_tank": {
+            "level_sensor": "chlorine_tank_level_gal",
+            "low_warning_gal": 2.25,
+            "inhibit_below_gal": 1.25,
+            "reenable_at_gal": 2.5,
+        },
         "thresholds": {
             "chlorine_min_return_psi": 2.5,
             "chlorine_min_pump_output_psi": 3.0,
@@ -504,10 +514,12 @@ def test_safety_update_applies_live_and_persists(tmp_path: Path) -> None:
     saved = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert saved["safety"]["thresholds"]["booster_max_psi"] == 58.0
     assert saved["safety"]["freeze_protection"]["source"] == "both"
+    assert saved["safety"]["chlorine_tank"]["inhibit_below_gal"] == 1.25
     serialized = serialize_safety_config(app)
     assert serialized["thresholds"]["booster_max_psi"] == 58.0
     assert serialized["thresholds"]["chlorine_max_pump_output_psi"] == 3.5
     assert serialized["freeze_protection"]["high_speed_on_below_temp"] == 33.0
+    assert serialized["chlorine_tank"]["reenable_at_gal"] == 2.5
 
 
 def test_acquisition_and_logging_updates_write_yaml(tmp_path: Path) -> None:

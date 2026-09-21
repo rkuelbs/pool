@@ -1,15 +1,22 @@
-Pump oz/min calibration.
-Need to continue dosing for another week and then compare estimated tank level to actual tank level.
-After comparing tank level, adjust pump oz/min to correct.
+chlorine dosing should only occur after pump has run for 1 min to stabilize psi.  We currently have a no-dose last x minutes,
+ let's add a no-dose first x minutes, and subtract that time from available dosing time when doing the dosing rate calculations.
 
-Issue: Dosing pump must run with consistent head pressure to get accurate dose.
-SW Action: Add interlock to dosing pump to ensure dosing pump will only run with pool pump running on low speed and booster pump OFF
+ Currently only have a pump output psi sensor, but all valves usually remain in same position.  Should we run the pump
+ at high speed for 5 minutes every morning as a "prime", and use the average pump output PSI (after 1 minute of stabilization)
+ as the filter-blockage test?  I.E. we set a "clean filter" PSI (during pump hihg/booster off) and "dirty filter" PSI, and
+ estimate filter blockage daily with current PSI with pump high/booster off?
 
-Issue: Dosing pump running dry will cause errors in chlorine delivered.
-SW Action: Add interlock to dosing pump so it will only run when tank estimate is >= 2 gallons.
-SW Action: Replace "Chlorine Remaining" with "Usable chlorine remaining" that removes this 2 gallon buffer from the tank level.
-  Usable chlorine remaining days should be calculated from maintenance chlorine daily estimate.
+ I think we manually schedule the "prime" period in scheduling - i will manually add a 5 to 10-minute pump high period in the morning
+ The SW addition should be adding a filter metric that is calculated during pump high / booster off periods, and ignores the first minute to let the system stabilize.
+ This metric will not always be available, so it should just latch the last reading (which should be based on some moving average of pressure)
+ We should also remove the existing filter metrics that rely on filter output PSI and replace the existing filter metrics with this one.
 
-Pool volume may be inaccurate.  I plan to run an overnight dosing test (after pump oz/min is recalibrated.
-This test will involve doing an FC test, calling for a manual dose of 60-100oz, then testing FC
-afterwards and calculating pool volume.  Once pool volume is calibrated this way, the feedback dosing should be more accurate.
+ The current web server takes care of the whole UI, I see no need to ever use MQTT.  We can remove any MQTT development / integration from the repo.
+ Runtime config also has a "stage" option that I don't know what it does - it is currently set to open_loop_timer, though we are doign much more.
+ There is also a "closed-loop control" checkbox, and I don't know what this was or how it relates to the new estimator and its observe / recommend / automatic options.
+ Safety config uses return and booster psi, but we currently only have pump output psi and may never add these.  But I do want to use safety for the freeze protection.
+ We have moved to RS485 PH with no intent to ever use analog PH sensors again.  All support and references to PH voltage can be removed.
+
+ I think the continuous safety layer should always be enabled since it is a safety layer, but we should make it simpler - just main pump prime checks / overpressure checks / dosing pump tank level and pump pressure safety / freeze guard
+
+ The main UI is the web server, viewed in a smartphone.  We can remove the schematic diagram and switch to a more mobile-friendly layout that is visible on desktop as well.

@@ -15,6 +15,7 @@ from poolctl.services.chlorination import ChlorinationConfig
 from poolctl.services.fc_demand import (
     ChlorineDeliveryPoint,
     FcDemandConfig,
+    FcDemandObservationQuality,
     FcObservationTiming,
     FcTestPoint,
     estimate_fc_demand_plan,
@@ -308,34 +309,82 @@ def test_multiple_daytime_tests_do_not_crowd_out_nightly_references() -> None:
     ]
 
 
-def test_default_reference_window_classifies_19_as_reference_and_14_as_ad_hoc() -> None:
+def test_default_reference_window_includes_evening_through_23xx() -> None:
     config = FcDemandConfig(enabled=True)
     observations = manual_dpd_fc_observations(
         config=config,
         fc_tests=(
-            FcTestPoint(sampled_at=at(20, 19), free_chlorine=4.0),
-            FcTestPoint(sampled_at=at(21, 14), free_chlorine=3.5),
-            FcTestPoint(sampled_at=at(21, 19), free_chlorine=3.0),
+            FcTestPoint(sampled_at=at(20, 18), free_chlorine=4.0),
+            FcTestPoint(sampled_at=at(21, 22), free_chlorine=3.8),
+            FcTestPoint(sampled_at=at(22, 23, 30), free_chlorine=3.6),
+            FcTestPoint(sampled_at=at(23, 14), free_chlorine=3.5),
         ),
         timezone_name="UTC",
     )
 
     assert [observation.timing for observation in observations] == [
         FcObservationTiming.REFERENCE,
-        FcObservationTiming.AD_HOC,
         FcObservationTiming.REFERENCE,
+        FcObservationTiming.REFERENCE,
+        FcObservationTiming.AD_HOC,
     ]
 
     plan = estimate_fc_demand_plan(
         config=config,
-        now=at(22, 1),
+        now=at(24, 1),
         pump_timer_config=timer_config(),
         chlorination_config=ChlorinationConfig(),
         fc_observations=observations,
     )
     assert plan.status.ready is True
-    assert plan.status.previous_sampled_at == at(20, 19)
-    assert plan.status.current_sampled_at == at(21, 19)
+    assert plan.status.previous_sampled_at == at(21, 22)
+    assert plan.status.current_sampled_at == at(22, 23, 30)
+
+
+def test_materially_negative_fc_demand_observation_is_rejected_not_learned() -> None:
+    plan = estimate_fc_demand_plan(
+        config=FcDemandConfig(enabled=True, mode=ControlMode.RECOMMEND),
+        now=at(22, 23),
+        pump_timer_config=timer_config(),
+        chlorination_config=ChlorinationConfig(),
+        fc_tests=(
+            FcTestPoint(sampled_at=at(20, 20), free_chlorine=3.0),
+            FcTestPoint(sampled_at=at(21, 20), free_chlorine=4.0),
+        ),
+    )
+
+    assert plan.status.ready is False
+    assert plan.status.raw_demand_ppm_per_day == -1.0
+    assert plan.status.accepted_demand_ppm_per_day is None
+    assert plan.status.daily_demand_ppm is None
+    assert plan.status.demand_observation_quality == FcDemandObservationQuality.REJECTED
+    assert plan.status.observation_count == 0
+    assert plan.status.baseline_demand_ppm_per_day is None
+
+
+def test_tiny_negative_fc_demand_is_suspect_zero_not_silent_valid_zero() -> None:
+    plan = estimate_fc_demand_plan(
+        config=FcDemandConfig(
+            enabled=True,
+            mode=ControlMode.RECOMMEND,
+            negative_demand_noise_tolerance_ppm_per_day=0.05,
+            max_maintenance_change_percent=1000.0,
+        ),
+        now=at(22, 23),
+        pump_timer_config=timer_config(),
+        chlorination_config=ChlorinationConfig(),
+        fc_tests=(
+            FcTestPoint(sampled_at=at(20, 20), free_chlorine=3.0),
+            FcTestPoint(sampled_at=at(21, 20), free_chlorine=3.01),
+        ),
+    )
+
+    assert plan.status.ready is True
+    assert round(plan.status.raw_demand_ppm_per_day or 0.0, 3) == -0.01
+    assert plan.status.accepted_demand_ppm_per_day == 0.0
+    assert plan.status.daily_demand_ppm == 0.0
+    assert plan.status.demand_observation_quality == FcDemandObservationQuality.SUSPECT
+    assert plan.status.observations_used[0].quality == FcDemandObservationQuality.SUSPECT
 
 
 def test_daytime_ad_hoc_test_does_not_create_next_day_feedback() -> None:

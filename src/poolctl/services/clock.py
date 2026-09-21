@@ -19,7 +19,8 @@ class Clock(Protocol):
     Clock interface used by services that care about time.
 
     Production code can use RealClock.
-    Tests and accelerated simulations can use SimulatedClock.
+    Deterministic tests can use SimulatedClock; shared live simulations should
+    use AcceleratedClock.
     """
 
     def now(self) -> datetime:
@@ -51,15 +52,19 @@ class RealClock:
 
 class SimulatedClock:
     """
-    Accelerated clock for tests and simulation.
+    Manual deterministic clock for tests.
+
+    `sleep()` advances this clock by the requested simulated duration after an
+    optional scaled real delay. Concurrent sleepers each advance the shared
+    manual time, so this class is not intended as the clock for a live runtime
+    with multiple independently sleeping tasks. Use AcceleratedClock for that
+    case.
 
     Example:
-        speedup = 3600.0 means:
+        speedup = 3600.0 means sleep(3600) waits about one real second before
+        advancing the manual clock by one simulated hour.
 
-            1 real second = 3600 simulated seconds
-            1 real second = 1 simulated hour
-
-    This allows multi-day pool behavior to be tested in minutes.
+    Tests can call advance() to move time instantly without waiting.
     """
 
     def __init__(

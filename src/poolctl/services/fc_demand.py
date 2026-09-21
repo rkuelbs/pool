@@ -31,7 +31,8 @@ DEFAULT_OBSERVATION_WEIGHTS = (0.35, 0.25, 0.18, 0.13, 0.09)
 DEFAULT_FC_FEEDBACK_GAIN = 0.6
 DEFAULT_MAX_MAINTENANCE_CHANGE_PERCENT = 15.0
 DEFAULT_PREFERRED_TEST_START_HOUR = 18
-DEFAULT_PREFERRED_TEST_END_HOUR = 23
+DEFAULT_PREFERRED_TEST_END_HOUR = 24
+DEFAULT_NEGATIVE_DEMAND_NOISE_TOLERANCE_PPM_PER_DAY = 0.05
 PHASE_1_WEATHER_ADJUSTMENT_PPM_PER_DAY = 0.0
 
 
@@ -53,6 +54,9 @@ class FcDemandConfig:
     max_observation_interval_days: float = DEFAULT_MAX_OBSERVATION_INTERVAL_DAYS
     preferred_test_start_hour: int = DEFAULT_PREFERRED_TEST_START_HOUR
     preferred_test_end_hour: int = DEFAULT_PREFERRED_TEST_END_HOUR
+    negative_demand_noise_tolerance_ppm_per_day: float = (
+        DEFAULT_NEGATIVE_DEMAND_NOISE_TOLERANCE_PPM_PER_DAY
+    )
     recent_observation_count: int = DEFAULT_RECENT_OBSERVATION_COUNT
     observation_weights: tuple[float, ...] = field(
         default_factory=lambda: DEFAULT_OBSERVATION_WEIGHTS
@@ -91,6 +95,10 @@ class FcDemandConfig:
                 "fc_demand.preferred_test_start_hour and "
                 "preferred_test_end_hour must define a non-empty window"
             )
+        if self.negative_demand_noise_tolerance_ppm_per_day < 0:
+            raise ValueError(
+                "fc_demand.negative_demand_noise_tolerance_ppm_per_day must be >= 0"
+            )
         if self.recent_observation_count < 1:
             raise ValueError("fc_demand.recent_observation_count must be >= 1")
         if not self.observation_weights:
@@ -110,22 +118,6 @@ class FcDemandConfig:
             )
         if self.max_daily_dose_oz < 0:
             raise ValueError("fc_demand.max_daily_dose_oz must be >= 0")
-
-    @property
-    def demand_window_days(self) -> float:
-        """
-        Backward-compatible alias for older status/API callers.
-        """
-
-        return self.max_observation_interval_days
-
-    @property
-    def max_demand_window_days(self) -> float:
-        """
-        Backward-compatible alias for older status/API callers.
-        """
-
-        return self.max_observation_interval_days
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> FcDemandConfig:
@@ -162,6 +154,11 @@ class FcDemandConfig:
                 config_data,
                 "preferred_test_end_hour",
                 cls.preferred_test_end_hour,
+            ),
+            negative_demand_noise_tolerance_ppm_per_day=_float_value(
+                config_data,
+                "negative_demand_noise_tolerance_ppm_per_day",
+                cls.negative_demand_noise_tolerance_ppm_per_day,
             ),
             recent_observation_count=_int_value(
                 config_data,
@@ -200,6 +197,12 @@ class FcObservationSource(str, Enum):
 class FcObservationTiming(str, Enum):
     REFERENCE = "reference"
     AD_HOC = "ad_hoc"
+
+
+class FcDemandObservationQuality(str, Enum):
+    VALID = "valid"
+    SUSPECT = "suspect"
+    REJECTED = "rejected"
 
 
 @dataclass(frozen=True)
@@ -244,14 +247,6 @@ class ChlorineDeliveryPoint:
 
 
 @dataclass(frozen=True)
-class FcDemandTestSelection:
-    previous: FcTestPoint
-    current: FcTestPoint
-    elapsed_hours: float
-    demand_window_source: str
-
-
-@dataclass(frozen=True)
 class FcDemandObservation:
     start_sampled_at: datetime
     end_sampled_at: datetime
@@ -268,7 +263,18 @@ class FcDemandObservation:
     manual_sodium_hypochlorite_oz: float
     total_added_fc_ppm: float
     consumed_fc_ppm: float
-    demand_ppm_per_day: float
+    raw_demand_ppm_per_day: float
+    accepted_demand_ppm_per_day: float | None
+    quality: FcDemandObservationQuality
+    rejection_reason: str | None = None
+
+    @property
+    def demand_ppm_per_day(self) -> float | None:
+        return self.accepted_demand_ppm_per_day
+
+    @property
+    def accepted_for_learning(self) -> bool:
+        return self.accepted_demand_ppm_per_day is not None
 
     def as_payload(self, *, weight: float | None = None) -> dict[str, Any]:
         payload = {
@@ -287,7 +293,12 @@ class FcDemandObservation:
             "manual_sodium_hypochlorite_oz": self.manual_sodium_hypochlorite_oz,
             "total_added_fc_ppm": self.total_added_fc_ppm,
             "consumed_fc_ppm": self.consumed_fc_ppm,
+            "raw_demand_ppm_per_day": self.raw_demand_ppm_per_day,
+            "accepted_demand_ppm_per_day": self.accepted_demand_ppm_per_day,
             "demand_ppm_per_day": self.demand_ppm_per_day,
+            "quality": self.quality.value,
+            "accepted_for_learning": self.accepted_for_learning,
+            "rejection_reason": self.rejection_reason,
         }
         if weight is not None:
             payload["weight"] = weight
@@ -326,14 +337,15 @@ class FcDemandStatus:
     current_sampled_at: datetime | None = None
     current_fc_ppm: float | None = None
     elapsed_days: float | None = None
-    demand_window_days: float = DEFAULT_MAX_OBSERVATION_INTERVAL_DAYS
-    max_demand_window_days: float = DEFAULT_MAX_OBSERVATION_INTERVAL_DAYS
     max_observation_interval_days: float = DEFAULT_MAX_OBSERVATION_INTERVAL_DAYS
-    demand_window_source: str | None = None
     automated_chlorine_oz: float = 0.0
     manual_hypo_oz: float = 0.0
     added_fc_ppm: float | None = None
     consumed_fc_ppm: float | None = None
+    raw_demand_ppm_per_day: float | None = None
+    accepted_demand_ppm_per_day: float | None = None
+    demand_observation_quality: FcDemandObservationQuality | None = None
+    demand_observation_rejection_reason: str | None = None
     daily_demand_ppm: float | None = None
     latest_observed_demand_ppm_per_day: float | None = None
     baseline_demand_ppm_per_day: float | None = None
@@ -357,14 +369,10 @@ class FcDemandStatus:
     feedback_active_today: bool = False
     feedback_control_date: date | None = None
     fc_feedback_gain: float = DEFAULT_FC_FEEDBACK_GAIN
-    catch_up_dose_oz_next_day: float = 0.0
-    skip_days: float = 0.0
-    next_adjustment_date: date | None = None
     recommended_daily_dose_oz: float | None = None
     effective_daily_dose_oz: float | None = None
     final_dose_capped: bool = False
     final_dose_floor_limited: bool = False
-    delay_eligible_minutes_today: float = 0.0
     available_dosing_minutes_today: float = 0.0
     applied_automatic: bool = False
     confidence: str = "learning"
@@ -435,14 +443,21 @@ class FcDemandStatus:
             ),
             "current_fc_ppm": self.current_fc_ppm,
             "elapsed_days": self.elapsed_days,
-            "demand_window_days": self.demand_window_days,
-            "max_demand_window_days": self.max_demand_window_days,
             "max_observation_interval_days": self.max_observation_interval_days,
-            "demand_window_source": self.demand_window_source,
             "automated_chlorine_oz": self.automated_chlorine_oz,
             "manual_hypo_oz": self.manual_hypo_oz,
             "added_fc_ppm": self.added_fc_ppm,
             "consumed_fc_ppm": self.consumed_fc_ppm,
+            "raw_demand_ppm_per_day": self.raw_demand_ppm_per_day,
+            "accepted_demand_ppm_per_day": self.accepted_demand_ppm_per_day,
+            "demand_observation_quality": (
+                self.demand_observation_quality.value
+                if self.demand_observation_quality is not None
+                else None
+            ),
+            "demand_observation_rejection_reason": (
+                self.demand_observation_rejection_reason
+            ),
             "daily_demand_ppm": self.daily_demand_ppm,
             "latest_observed_demand_ppm_per_day": (
                 self.latest_observed_demand_ppm_per_day
@@ -487,18 +502,10 @@ class FcDemandStatus:
                 else None
             ),
             "fc_feedback_gain": self.fc_feedback_gain,
-            "catch_up_dose_oz_next_day": self.catch_up_dose_oz_next_day,
-            "skip_days": self.skip_days,
-            "next_adjustment_date": (
-                self.next_adjustment_date.isoformat()
-                if self.next_adjustment_date is not None
-                else None
-            ),
             "recommended_daily_dose_oz": self.recommended_daily_dose_oz,
             "effective_daily_dose_oz": self.effective_daily_dose_oz,
             "final_dose_capped": self.final_dose_capped,
             "final_dose_floor_limited": self.final_dose_floor_limited,
-            "delay_eligible_minutes_today": self.delay_eligible_minutes_today,
             "available_dosing_minutes_today": self.available_dosing_minutes_today,
             "applied_automatic": self.applied_automatic,
             "confidence": self.confidence,
@@ -524,44 +531,6 @@ class _MaintenanceEstimate:
     rate_limited: bool
     observations_used: tuple[FcDemandObservation, ...]
     normalized_weights: tuple[float, ...]
-
-
-def fc_demand_test_selection(
-    config: FcDemandConfig,
-    fc_tests: Sequence[FcTestPoint],
-) -> FcDemandTestSelection | None:
-    """
-    Return the latest adjacent FC-test interval that can form an observation.
-
-    This is retained for compatibility with older callers; the controller now
-    uses all recent consecutive observations instead of selecting one lookback
-    interval.
-    """
-
-    observations = _reference_fc_observations(
-        manual_dpd_fc_observations(
-            config=config,
-            fc_tests=fc_tests,
-            timezone_name="UTC",
-        )
-    )
-    for previous, current in reversed(tuple(zip(observations, observations[1:]))):
-        elapsed_hours = (current.sampled_at - previous.sampled_at).total_seconds() / 3600.0
-        if not _valid_observation_elapsed_hours(elapsed_hours, config=config):
-            continue
-        return FcDemandTestSelection(
-            previous=FcTestPoint(
-                sampled_at=previous.sampled_at,
-                free_chlorine=previous.free_chlorine,
-            ),
-            current=FcTestPoint(
-                sampled_at=current.sampled_at,
-                free_chlorine=current.free_chlorine,
-            ),
-            elapsed_hours=elapsed_hours,
-            demand_window_source="consecutive_observation",
-        )
-    return None
 
 
 def estimate_fc_demand_plan(
@@ -618,20 +587,31 @@ def estimate_fc_demand_plan(
             )
         )
 
-    observations = fc_demand_observations(
+    demand_observations = fc_demand_observations(
         config=config,
         fc_observations=reference_fc_observations,
         automated_chlorine_deliveries=automated_chlorine_deliveries,
         sodium_hypochlorite_additions=sodium_hypochlorite_additions,
     )
-    if not observations:
+    learning_observations = tuple(
+        observation
+        for observation in demand_observations
+        if observation.accepted_for_learning
+    )
+    if not learning_observations:
         reason = (
             "need at least two reference free chlorine tests"
             if len(reference_fc_observations) < 2
             else (
-                "need consecutive reference FC tests between "
-                f"{config.minimum_test_interval_hours:g} hours and "
-                f"{config.max_observation_interval_days:g} days apart"
+                f"latest FC demand observation rejected: "
+                f"{demand_observations[-1].rejection_reason}"
+                if demand_observations
+                and demand_observations[-1].rejection_reason is not None
+                else (
+                    "need consecutive reference FC tests between "
+                    f"{config.minimum_test_interval_hours:g} hours and "
+                    f"{config.max_observation_interval_days:g} days apart"
+                )
             )
         )
         return FcDemandPlan(
@@ -644,13 +624,16 @@ def estimate_fc_demand_plan(
                 reason=reason,
                 latest_observation=latest_fc_observation,
                 latest_reference_observation=latest_reference_observation,
+                latest_demand_observation=(
+                    demand_observations[-1] if demand_observations else None
+                ),
                 observation_count=0,
                 available_minutes_today=available_minutes_today,
             )
-        )
+    )
 
-    maintenance = _maintenance_estimate(config, observations)
-    latest_demand_observation = observations[-1]
+    maintenance = _maintenance_estimate(config, learning_observations)
+    latest_demand_observation = demand_observations[-1]
     feedback = _feedback_for_latest_test(
         config=config,
         latest_test=latest_reference_observation,
@@ -756,14 +739,19 @@ def estimate_fc_demand_plan(
         current_sampled_at=latest_demand_observation.end_sampled_at,
         current_fc_ppm=latest_demand_observation.end_fc_ppm,
         elapsed_days=latest_demand_observation.elapsed_days,
-        demand_window_days=config.demand_window_days,
-        max_demand_window_days=config.max_demand_window_days,
         max_observation_interval_days=config.max_observation_interval_days,
-        demand_window_source="consecutive_observation",
         automated_chlorine_oz=latest_demand_observation.automated_chlorine_oz,
         manual_hypo_oz=latest_demand_observation.manual_sodium_hypochlorite_oz,
         added_fc_ppm=latest_demand_observation.total_added_fc_ppm,
         consumed_fc_ppm=latest_demand_observation.consumed_fc_ppm,
+        raw_demand_ppm_per_day=latest_demand_observation.raw_demand_ppm_per_day,
+        accepted_demand_ppm_per_day=(
+            latest_demand_observation.accepted_demand_ppm_per_day
+        ),
+        demand_observation_quality=latest_demand_observation.quality,
+        demand_observation_rejection_reason=(
+            latest_demand_observation.rejection_reason
+        ),
         daily_demand_ppm=latest_demand_observation.demand_ppm_per_day,
         latest_observed_demand_ppm_per_day=(
             latest_demand_observation.demand_ppm_per_day
@@ -775,7 +763,7 @@ def estimate_fc_demand_plan(
         ),
         weather_adjustment_ppm_per_day=maintenance.weather_adjustment_ppm_per_day,
         predicted_demand_ppm_per_day=maintenance.predicted_demand_ppm_per_day,
-        observation_count=len(observations),
+        observation_count=len(learning_observations),
         recent_observation_count=config.recent_observation_count,
         effective_normalized_weights=maintenance.normalized_weights,
         observations_used=maintenance.observations_used,
@@ -793,17 +781,13 @@ def estimate_fc_demand_plan(
         feedback_active_today=feedback["active"],
         feedback_control_date=feedback["control_date"],
         fc_feedback_gain=config.fc_feedback_gain,
-        catch_up_dose_oz_next_day=max(0.0, feedback["dose_oz"]),
-        skip_days=0.0,
-        next_adjustment_date=feedback["control_date"],
         recommended_daily_dose_oz=recommended,
         effective_daily_dose_oz=effective_daily_dose_oz,
         final_dose_capped=capped,
         final_dose_floor_limited=floor_limited,
-        delay_eligible_minutes_today=0.0,
         available_dosing_minutes_today=available_minutes_today,
         applied_automatic=applied_automatic,
-        confidence=_confidence_label(len(observations)),
+        confidence=_confidence_label(len(learning_observations)),
         warning="; ".join(warnings) if warnings else None,
     )
 
@@ -872,7 +856,13 @@ def fc_demand_observations(
             + total_added_fc_ppm
             - current.free_chlorine
         )
-        demand_ppm_per_day = max(0.0, consumed_fc_ppm / elapsed_days)
+        raw_demand_ppm_per_day = consumed_fc_ppm / elapsed_days
+        accepted_demand_ppm_per_day, quality, rejection_reason = (
+            _classify_demand_observation(
+                raw_demand_ppm_per_day,
+                config=config,
+            )
+        )
         observations.append(
             FcDemandObservation(
                 start_sampled_at=previous.sampled_at,
@@ -890,11 +880,40 @@ def fc_demand_observations(
                 manual_sodium_hypochlorite_oz=manual_hypo_oz,
                 total_added_fc_ppm=total_added_fc_ppm,
                 consumed_fc_ppm=consumed_fc_ppm,
-                demand_ppm_per_day=demand_ppm_per_day,
+                raw_demand_ppm_per_day=raw_demand_ppm_per_day,
+                accepted_demand_ppm_per_day=accepted_demand_ppm_per_day,
+                quality=quality,
+                rejection_reason=rejection_reason,
             )
         )
 
     return tuple(observations)
+
+
+def _classify_demand_observation(
+    raw_demand_ppm_per_day: float,
+    *,
+    config: FcDemandConfig,
+) -> tuple[float | None, FcDemandObservationQuality, str | None]:
+    if raw_demand_ppm_per_day >= 0:
+        return raw_demand_ppm_per_day, FcDemandObservationQuality.VALID, None
+
+    tolerance = config.negative_demand_noise_tolerance_ppm_per_day
+    if abs(raw_demand_ppm_per_day) <= tolerance:
+        return (
+            0.0,
+            FcDemandObservationQuality.SUSPECT,
+            (
+                "tiny negative demand within "
+                f"{tolerance:g} ppm/day noise tolerance; accepted as zero"
+            ),
+        )
+
+    return (
+        None,
+        FcDemandObservationQuality.REJECTED,
+        "negative FC demand outside noise tolerance",
+    )
 
 
 def fc_ppm_from_fl_oz(
@@ -1166,8 +1185,9 @@ def _weighted_demand(
     weight_sum = sum(raw_weights)
     normalized = tuple(weight / weight_sum for weight in raw_weights)
     demand = sum(
-        weight * observation.demand_ppm_per_day
+        weight * observation.accepted_demand_ppm_per_day
         for observation, weight in zip(used, normalized, strict=True)
+        if observation.accepted_demand_ppm_per_day is not None
     )
     return demand, used, normalized
 
@@ -1292,6 +1312,7 @@ def _base_status(
     reason: str,
     latest_observation: FcObservation | None = None,
     latest_reference_observation: FcObservation | None = None,
+    latest_demand_observation: FcDemandObservation | None = None,
     observation_count: int = 0,
     available_minutes_today: float | None = None,
 ) -> FcDemandStatus:
@@ -1371,19 +1392,86 @@ def _base_status(
         ),
         preferred_test_start_hour=config.preferred_test_start_hour,
         preferred_test_end_hour=config.preferred_test_end_hour,
+        previous_sampled_at=(
+            latest_demand_observation.start_sampled_at
+            if latest_demand_observation is not None
+            else None
+        ),
+        previous_fc_ppm=(
+            latest_demand_observation.start_fc_ppm
+            if latest_demand_observation is not None
+            else None
+        ),
         current_sampled_at=(
-            latest_reference_observation.sampled_at
+            latest_demand_observation.end_sampled_at
+            if latest_demand_observation is not None
+            else latest_reference_observation.sampled_at
             if latest_reference_observation is not None
             else None
         ),
         current_fc_ppm=(
-            latest_reference_observation.free_chlorine
+            latest_demand_observation.end_fc_ppm
+            if latest_demand_observation is not None
+            else latest_reference_observation.free_chlorine
             if latest_reference_observation is not None
             else None
         ),
-        demand_window_days=config.demand_window_days,
-        max_demand_window_days=config.max_demand_window_days,
+        elapsed_days=(
+            latest_demand_observation.elapsed_days
+            if latest_demand_observation is not None
+            else None
+        ),
         max_observation_interval_days=config.max_observation_interval_days,
+        automated_chlorine_oz=(
+            latest_demand_observation.automated_chlorine_oz
+            if latest_demand_observation is not None
+            else 0.0
+        ),
+        manual_hypo_oz=(
+            latest_demand_observation.manual_sodium_hypochlorite_oz
+            if latest_demand_observation is not None
+            else 0.0
+        ),
+        added_fc_ppm=(
+            latest_demand_observation.total_added_fc_ppm
+            if latest_demand_observation is not None
+            else None
+        ),
+        consumed_fc_ppm=(
+            latest_demand_observation.consumed_fc_ppm
+            if latest_demand_observation is not None
+            else None
+        ),
+        raw_demand_ppm_per_day=(
+            latest_demand_observation.raw_demand_ppm_per_day
+            if latest_demand_observation is not None
+            else None
+        ),
+        accepted_demand_ppm_per_day=(
+            latest_demand_observation.accepted_demand_ppm_per_day
+            if latest_demand_observation is not None
+            else None
+        ),
+        demand_observation_quality=(
+            latest_demand_observation.quality
+            if latest_demand_observation is not None
+            else None
+        ),
+        demand_observation_rejection_reason=(
+            latest_demand_observation.rejection_reason
+            if latest_demand_observation is not None
+            else None
+        ),
+        daily_demand_ppm=(
+            latest_demand_observation.demand_ppm_per_day
+            if latest_demand_observation is not None
+            else None
+        ),
+        latest_observed_demand_ppm_per_day=(
+            latest_demand_observation.demand_ppm_per_day
+            if latest_demand_observation is not None
+            else None
+        ),
         recent_observation_count=config.recent_observation_count,
         observation_count=observation_count,
         weather_adjustment_ppm_per_day=PHASE_1_WEATHER_ADJUSTMENT_PPM_PER_DAY,
@@ -1393,7 +1481,6 @@ def _base_status(
         feedback_active_today=feedback["active"],
         feedback_control_date=feedback["control_date"],
         fc_feedback_gain=config.fc_feedback_gain,
-        next_adjustment_date=feedback["control_date"],
         available_dosing_minutes_today=(
             available_minutes_today
             if available_minutes_today is not None

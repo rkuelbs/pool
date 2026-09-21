@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import math
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from poolctl.domain.models import ActuatorState
@@ -57,12 +57,21 @@ class SimulatedPlant:
     # These are deliberately internal "true-ish" simulated values.
     simulated_ph: float = 7.55
     simulated_orp_mv: float = 675.0
+    true_fc_ppm: float = 4.0
 
     # Chlorine tank level as percent.
     tank_level_percent: float = 100.0
 
+    # Noise configuration. A seed makes sensor noise reproducible for tests.
+    noise_seed: int | None = None
+    noise_stddev_scale: float = 1.0
+    _rng: random.Random = field(init=False, repr=False)
+
     # Internal time bookkeeping.
     last_update_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        self._rng = random.Random(self.noise_seed)
 
     def update(self) -> None:
         """
@@ -174,7 +183,7 @@ class SimulatedPlant:
         if speed <= 0.0:
             # Real pressure transducers rarely read exactly zero, so the
             # simulator leaves a small noisy residual pressure with the pump off.
-            return max(0.0, noisy(0.25, 0.12))
+            return max(0.0, self._noisy(0.25, 0.12))
 
         if sensor_name == "pump_output_psi":
             base = 12.0 * speed
@@ -194,14 +203,14 @@ class SimulatedPlant:
             # GUI coloring can be exercised in simulation.
             base += 45.0
 
-        return max(0.0, noisy(base, 0.35))
+        return max(0.0, self._noisy(base, 0.35))
 
     def measured_water_temp_f(self) -> float:
         """
         Return simulated main water temperature.
         """
         self.update()
-        return noisy(self.water_temp_f, 0.15)
+        return self._noisy(self.water_temp_f, 0.15)
 
     def raw_ph_voltage(self) -> float:
         """
@@ -213,21 +222,21 @@ class SimulatedPlant:
         """
         self.update()
         voltage = (self.simulated_ph / 14.0) * 5.0
-        return noisy(clamp(voltage, 0.0, 5.0), 0.005)
+        return self._noisy(clamp(voltage, 0.0, 5.0), 0.005)
 
     def orp_probe_temp_f(self) -> float:
         """
         Return simulated temperature near the ORP probe.
         """
         self.update()
-        return noisy(self.water_temp_f, 0.10)
+        return self._noisy(self.water_temp_f, 0.10)
 
     def ph_probe_temp_f(self) -> float:
         """
         Return simulated temperature near the pH probe.
         """
         self.update()
-        return noisy(self.water_temp_f, 0.12)
+        return self._noisy(self.water_temp_f, 0.12)
 
     def raw_ph(self) -> float:
         """
@@ -235,21 +244,21 @@ class SimulatedPlant:
         """
         self.update()
 
-        return noisy(self.simulated_ph, 0.015)
+        return self._noisy(self.simulated_ph, 0.015)
 
     def raw_orp_mv(self) -> float:
         """
         Return fake raw ORP sensor millivolts.
         """
         self.update()
-        return noisy(self.simulated_orp_mv, 4.0)
+        return self._noisy(self.simulated_orp_mv, 4.0)
 
     def tank_level(self) -> float:
         """
         Return simulated tank level as percent full.
         """
         self.update()
-        return clamp(noisy(self.tank_level_percent, 0.2), 0.0, 100.0)
+        return clamp(self._noisy(self.tank_level_percent, 0.2), 0.0, 100.0)
 
     def _update_water_temperature(self, now: datetime, elapsed_hours: float) -> None:
         """
@@ -281,19 +290,23 @@ class SimulatedPlant:
 
         # ORP slowly decays when not dosing.
         orp_decay_per_hour = 0.8
+        fc_decay_ppm_per_hour = 0.03
 
         self.simulated_ph += ph_rise_per_hour * elapsed_hours
         self.simulated_orp_mv -= orp_decay_per_hour * elapsed_hours
+        self.true_fc_ppm -= fc_decay_ppm_per_hour * elapsed_hours
 
         if self.chlorine_dosing_pump == ActuatorState.ON:
             # Dosing changes chemistry gradually, so the live/history charts show
             # a slow response rather than an instant step change.
-            # Dosing increases ORP and slightly lowers simulated pH.
+            # Dosing increases ORP and slightly raises simulated pH.
             self.simulated_orp_mv += 25.0 * elapsed_hours
-            self.simulated_ph -= 0.003 * elapsed_hours
+            self.simulated_ph += 0.003 * elapsed_hours
+            self.true_fc_ppm += 0.2 * elapsed_hours
 
         self.simulated_ph = clamp(self.simulated_ph, 6.8, 8.4)
         self.simulated_orp_mv = clamp(self.simulated_orp_mv, 450.0, 850.0)
+        self.true_fc_ppm = clamp(self.true_fc_ppm, 0.0, 20.0)
 
     def _update_tank_level(self, elapsed_hours: float) -> None:
         """
@@ -322,10 +335,19 @@ class SimulatedPlant:
 
         return average + amplitude * math.sin(radians)
 
+    def _noisy(self, value: float, std_dev: float) -> float:
+        """
+        Add small per-plant Gaussian noise to a simulated value.
+        """
+        return value + self._rng.gauss(0.0, std_dev * self.noise_stddev_scale)
+
 
 def noisy(value: float, std_dev: float) -> float:
     """
     Add small Gaussian noise to a simulated value.
+
+    Retained for older tests or utility callers. SimulatedPlant methods use a
+    per-plant RNG so independent plants do not share global random state.
     """
     return value + random.gauss(0.0, std_dev)
 

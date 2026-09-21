@@ -71,6 +71,16 @@ def pressure(clock: SimulatedClock, sensor_id: SensorId, value: float) -> Measur
     )
 
 
+def chlorine_tank_level(clock: SimulatedClock, value: float) -> Measurement:
+    return Measurement(
+        sensor_id=SensorId.CHLORINE_TANK_LEVEL_GAL,
+        observed_at=clock.now(),
+        value=value,
+        unit="gal",
+        quality=Quality.GOOD,
+    )
+
+
 def temperature(
     clock: SimulatedClock,
     value: float,
@@ -92,6 +102,7 @@ def required_chlorine_pressures(clock: SimulatedClock) -> list[Measurement]:
     return [
         pressure(clock, SensorId.RETURN_PSI, 2.0),
         pressure(clock, SensorId.PUMP_OUTPUT_PSI, 3.2),
+        chlorine_tank_level(clock, 5.0),
     ]
 
 
@@ -153,6 +164,69 @@ async def test_chlorine_output_requires_pump_and_pressure_window() -> None:
     assert accepted_result.accepted
     assert accepted_result.applied
     assert router.actuator_states[ActuatorId.CHLORINE_DOSING_PUMP] == ActuatorState.ON
+
+
+@pytest.mark.asyncio
+async def test_chlorine_tank_hysteresis_blocks_and_reenables_dosing() -> None:
+    clock, _, router = make_router()
+    await router.route(command(clock, ActuatorId.PUMP_MOTOR, ActuatorState.ON))
+
+    inhibited = await router.route(
+        command(clock, ActuatorId.CHLORINE_DOSING_PUMP, ActuatorState.ON),
+        measurements=[
+            pressure(clock, SensorId.RETURN_PSI, 2.0),
+            pressure(clock, SensorId.PUMP_OUTPUT_PSI, 3.2),
+            chlorine_tank_level(clock, 1.5),
+        ],
+    )
+    still_inhibited = await router.route(
+        command(clock, ActuatorId.CHLORINE_DOSING_PUMP, ActuatorState.ON),
+        measurements=[
+            pressure(clock, SensorId.RETURN_PSI, 2.0),
+            pressure(clock, SensorId.PUMP_OUTPUT_PSI, 3.2),
+            chlorine_tank_level(clock, 1.8),
+        ],
+    )
+    reenabled = await router.route(
+        command(clock, ActuatorId.CHLORINE_DOSING_PUMP, ActuatorState.ON),
+        measurements=[
+            pressure(clock, SensorId.RETURN_PSI, 2.0),
+            pressure(clock, SensorId.PUMP_OUTPUT_PSI, 3.2),
+            chlorine_tank_level(clock, 2.0),
+        ],
+    )
+
+    assert not inhibited.accepted
+    assert inhibited.metadata["chlorine_tank"]["dosing_inhibited"] is True
+    assert inhibited.metadata["chlorine_tank"]["low_warning_active"] is True
+    assert inhibited.metadata["chlorine_tank"]["reenable_threshold_gal"] == 2.0
+    assert not still_inhibited.accepted
+    assert "refill required" in (still_inhibited.rejection_reason or "")
+    assert reenabled.accepted
+    assert reenabled.applied
+
+
+@pytest.mark.asyncio
+async def test_active_chlorine_dose_stops_when_tank_inhibits() -> None:
+    clock, _, router = make_router()
+    await router.route(command(clock, ActuatorId.PUMP_MOTOR, ActuatorState.ON))
+    await router.route(
+        command(clock, ActuatorId.CHLORINE_DOSING_PUMP, ActuatorState.ON),
+        measurements=required_chlorine_pressures(clock),
+    )
+
+    results = await router.enforce_safety(
+        measurements=[
+            pressure(clock, SensorId.RETURN_PSI, 2.0),
+            pressure(clock, SensorId.PUMP_OUTPUT_PSI, 3.2),
+            chlorine_tank_level(clock, 1.4),
+        ]
+    )
+
+    assert len(results) == 1
+    assert results[0].metadata["safety_action"] == "chlorine_interlock_lost"
+    assert results[0].metadata["chlorine_tank"]["dosing_inhibited"] is True
+    assert router.actuator_states[ActuatorId.CHLORINE_DOSING_PUMP] == ActuatorState.OFF
 
 
 @pytest.mark.asyncio

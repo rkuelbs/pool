@@ -33,6 +33,7 @@ from poolctl.services.weather import WEATHER_FIELDS, WeatherObservation
 # 1 hour, and 1 day. Raw measurement rows are still stored separately.
 ROLLUP_BUCKET_SECONDS = (60, 3600, 86400)
 DEFAULT_CONTROL_MEASUREMENT_INTERVAL_S = 30.0
+SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -169,6 +170,19 @@ class MeasurementLogger:
         self._database_path = config.database_path
         self._database_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
+
+    def schema_version(self) -> int:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT value
+                FROM schema_metadata
+                WHERE key = 'schema_version'
+                """
+            ).fetchone()
+        if row is None:
+            return 0
+        return int(row["value"])
 
     def log_measurements(self, measurements: tuple[Measurement, ...]) -> int:
         if not measurements:
@@ -1109,6 +1123,29 @@ class MeasurementLogger:
     def _init_schema(self) -> None:
         with self._connect() as connection:
             connection.execute("PRAGMA journal_mode = WAL")
+            connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS schema_metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO schema_metadata (key, value, updated_at)
+                VALUES ('schema_version', ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    str(SCHEMA_VERSION),
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS measurements (

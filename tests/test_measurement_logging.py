@@ -7,6 +7,7 @@ and chlorine delivery persistence.
 
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -74,6 +75,21 @@ def test_measurement_logger_persists_and_queries_history(tmp_path: Path) -> None
     assert records[0].measurement_id == recent.id
     assert records[0].value == 10.0
     assert records[0].metadata == {"driver": "test"}
+
+
+def test_measurement_logger_records_schema_version(tmp_path: Path) -> None:
+    database_path = tmp_path / "measurements.sqlite3"
+    logger = MeasurementLogger(MeasurementLoggingConfig(database_path=database_path))
+
+    assert logger.schema_version() == 1
+    with sqlite3.connect(database_path) as connection:
+        user_version = connection.execute("PRAGMA user_version").fetchone()[0]
+        metadata_version = connection.execute(
+            "SELECT value FROM schema_metadata WHERE key = 'schema_version'"
+        ).fetchone()[0]
+
+    assert user_version == 1
+    assert metadata_version == "1"
 
 
 def test_measurement_logger_ignores_duplicate_measurement_ids(tmp_path: Path) -> None:

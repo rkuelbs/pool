@@ -451,10 +451,92 @@ async def test_tick_blocks_open_loop_chlorination_below_tank_reserve(
     assert result.chlorination_status is not None
     assert result.chlorination_status.active is False
     assert result.chlorination_status.reason == (
-        "chlorine tank estimate below 2.00 gal reserve"
+        "chlorine tank level <= 1.5 gal dosing inhibit threshold"
     )
     assert app.router.actuator_states[ActuatorId.CHLORINE_DOSING_PUMP] == ActuatorState.OFF
-    assert result.chlorination_results == ()
+    assert len(result.chlorination_results) == 1
+    assert result.chlorination_results[0].accepted is False
+    assert result.chlorination_results[0].metadata["chlorine_tank"][
+        "dosing_inhibited"
+    ] is True
+    assert app.measurement_logger is not None
+    delivery = app.measurement_logger.chlorine_delivery_summary()
+    assert delivery.runtime_seconds == 0.0
+    assert delivery.delivered_oz == 0.0
+
+
+@pytest.mark.asyncio
+async def test_tick_stops_active_open_loop_chlorination_when_tank_becomes_low(
+    tmp_path: Path,
+) -> None:
+    clock = make_clock()
+    config = {
+        "runtime": {
+            "stage": "open_loop_timer",
+            "driver_profile": "simulated",
+            "enabled_layers": ["pump_timer", "chlorination", "logging"],
+            "enabled_actuators": [
+                "pump_motor",
+                "pump_motor_speed",
+                "booster_pump",
+                "chlorine_dosing_pump",
+            ],
+            "enabled_sensor_groups": [],
+        },
+        "logging": {
+            "database_path": str(tmp_path / "low_tank_active_open_loop.sqlite3"),
+        },
+        "pump_timer": {
+            "timezone": "UTC",
+            "schedules": [
+                {
+                    "name": "midday_filter",
+                    "start": "12:00",
+                    "end": "14:00",
+                    "pump_speed": "low",
+                    "booster": "off",
+                }
+            ],
+        },
+        "chlorination": {
+            "enabled": True,
+            "daily_dose_oz": 4.0,
+            "pump_output_oz_per_min": 1.0,
+            "no_dose_last_minutes": 10.0,
+            "max_duty_cycle": 0.5,
+            "cycle_on_seconds": 60.0,
+        },
+    }
+
+    add_dosing_pressure_acquisition(config)
+    app = build_app_from_mapping(
+        config,
+        clock=clock,
+        sensor_drivers=[fixed_dosing_pressure_sensor(clock)],
+    )
+    seed_chlorine_tank_level(app, clock, level_gal=10.0)
+    seed_dosing_pressure(app, clock)
+    first = await app.tick()
+
+    assert first.chlorination_results[0].applied is True
+    assert app.router.actuator_states[ActuatorId.CHLORINE_DOSING_PUMP] == ActuatorState.ON
+
+    await clock.advance(5.0)
+    assert app.measurement_logger is not None
+    app.measurement_logger.log_lab_test(
+        LabTest(sampled_at=clock.now(), chlorine_tank_level_gal=1.4)
+    )
+    second = await app.tick()
+
+    assert len(second.safety_results) == 1
+    assert second.safety_results[0].applied is True
+    assert second.safety_results[0].metadata["safety_action"] == (
+        "chlorine_interlock_lost"
+    )
+    assert second.safety_results[0].metadata["chlorine_tank"][
+        "dosing_inhibited"
+    ] is True
+    assert app.router.actuator_states[ActuatorId.CHLORINE_DOSING_PUMP] == ActuatorState.OFF
 
 
 @pytest.mark.asyncio
@@ -992,11 +1074,13 @@ async def test_supplemental_chlorine_dose_blocks_below_tank_reserve(
     assert result.chlorination_status.active is False
     assert result.chlorination_status.reason == (
         "supplemental chlorine dose blocked: "
-        "chlorine tank estimate below 2.00 gal reserve"
+        "chlorine tank level <= 1.5 gal dosing inhibit threshold"
     )
     assert app.router.actuator_states[ActuatorId.PUMP_MOTOR] == ActuatorState.ON
     assert app.router.actuator_states[ActuatorId.PUMP_MOTOR_SPEED] == ActuatorState.LOW
     assert app.router.actuator_states[ActuatorId.CHLORINE_DOSING_PUMP] == ActuatorState.OFF
+    assert len(result.chlorination_results) == 1
+    assert result.chlorination_results[0].accepted is False
     assert dosing_driver.commands == []
 
 

@@ -2931,13 +2931,14 @@ async function loadSafetyConfig() {
     const response = await fetch("/api/config/safety", { cache: "no-store" });
     const payload = await parseApiResponse(response, "safety config load failed");
     const freeze = payload.freeze_protection || {};
+    const tank = payload.chlorine_tank || {};
     document.getElementById("safetySensorPumpOutput").value = payload.pressure_sensor_ids.pump_output;
     document.getElementById("safetySensorReturn").value = payload.pressure_sensor_ids.return_line;
     document.getElementById("safetySensorBooster").value = payload.pressure_sensor_ids.booster;
     document.getElementById("safetyFreezeEnabled").checked = Boolean(freeze.enabled);
     document.getElementById("safetyFreezeSource").value = freeze.source || "temp";
     document.getElementById("safetyFreezeTempSensor").value = freeze.temp_sensor || "temp";
-    document.getElementById("safetyFreezePhTempSensor").value = freeze.ph_temp_sensor || "orp_temp";
+    document.getElementById("safetyFreezePhTempSensor").value = freeze.ph_temp_sensor || "ph_temp";
     document.getElementById("safetyFreezeLowOnTemp").value = String(
       freeze.low_speed_on_below_temp ?? freeze.low_speed_below_temp ?? 35.0,
     );
@@ -2959,6 +2960,11 @@ async function loadSafetyConfig() {
     document.getElementById("safetyChlorineMaxPump").value = payload.thresholds.chlorine_max_pump_output_psi;
     document.getElementById("safetyChlorineRequiresHighSpeed").checked =
       payload.thresholds.chlorine_requires_high_speed !== false;
+    document.getElementById("safetyChlorineTankLevelSensor").value =
+      tank.level_sensor || "chlorine_tank_level_gal";
+    document.getElementById("safetyChlorineTankWarningGal").value = String(tank.low_warning_gal ?? 2.0);
+    document.getElementById("safetyChlorineTankInhibitGal").value = String(tank.inhibit_below_gal ?? 1.5);
+    document.getElementById("safetyChlorineTankReenableGal").value = String(tank.reenable_at_gal ?? 2.0);
     document.getElementById("safetyBoosterMax").value = payload.thresholds.booster_max_psi;
     document.getElementById("safetyBoosterMin").value = payload.thresholds.booster_min_psi;
     document.getElementById("safetyLowPrimeMin").value = payload.thresholds.pump_low_prime_min_output_psi;
@@ -3002,6 +3008,12 @@ async function saveSafetyConfig() {
           high_speed_off_above_temp: Number(document.getElementById("safetyFreezeHighOffTemp").value),
           min_run_seconds: Number(document.getElementById("safetyFreezeMinRunSeconds").value),
           threshold_unit: document.getElementById("safetyFreezeUnit").value,
+        },
+        chlorine_tank: {
+          level_sensor: document.getElementById("safetyChlorineTankLevelSensor").value,
+          low_warning_gal: Number(document.getElementById("safetyChlorineTankWarningGal").value),
+          inhibit_below_gal: Number(document.getElementById("safetyChlorineTankInhibitGal").value),
+          reenable_at_gal: Number(document.getElementById("safetyChlorineTankReenableGal").value),
         },
         thresholds: {
           chlorine_min_return_psi: Number(document.getElementById("safetyChlorineMinReturn").value),
@@ -3055,6 +3067,7 @@ function initializeSafetyControls() {
     "safetySensorBooster",
     "safetyFreezeTempSensor",
     "safetyFreezePhTempSensor",
+    "safetyChlorineTankLevelSensor",
   ];
   selects.forEach((selectId) => {
     const select = document.getElementById(selectId);
@@ -3669,6 +3682,7 @@ function renderFcDemandConfig(payload) {
   const maxObservationInterval = document.getElementById("fcDemandMaxObservationIntervalDays");
   const preferredStart = document.getElementById("fcDemandPreferredTestStartHour");
   const preferredEnd = document.getElementById("fcDemandPreferredTestEndHour");
+  const negativeDemandNoise = document.getElementById("fcDemandNegativeDemandNoiseTolerance");
   const recentCount = document.getElementById("fcDemandRecentObservationCount");
   const weights = document.getElementById("fcDemandObservationWeights");
   const feedbackGain = document.getElementById("fcDemandFeedbackGain");
@@ -3684,6 +3698,7 @@ function renderFcDemandConfig(payload) {
     !maxObservationInterval ||
     !preferredStart ||
     !preferredEnd ||
+    !negativeDemandNoise ||
     !recentCount ||
     !weights ||
     !feedbackGain ||
@@ -3700,7 +3715,10 @@ function renderFcDemandConfig(payload) {
   minInterval.value = String(payload.minimum_test_interval_hours ?? 12.0);
   maxObservationInterval.value = String(payload.max_observation_interval_days ?? 7.0);
   preferredStart.value = String(payload.preferred_test_start_hour ?? 18);
-  preferredEnd.value = String(payload.preferred_test_end_hour ?? 23);
+  preferredEnd.value = String(payload.preferred_test_end_hour ?? 24);
+  negativeDemandNoise.value = String(
+    payload.negative_demand_noise_tolerance_ppm_per_day ?? 0.05
+  );
   recentCount.value = String(payload.recent_observation_count ?? 5);
   weights.value = Array.isArray(payload.observation_weights)
     ? payload.observation_weights.join(", ")
@@ -3725,6 +3743,9 @@ function collectFcDemandConfig() {
     max_observation_interval_days: Number(document.getElementById("fcDemandMaxObservationIntervalDays").value),
     preferred_test_start_hour: Number(document.getElementById("fcDemandPreferredTestStartHour").value),
     preferred_test_end_hour: Number(document.getElementById("fcDemandPreferredTestEndHour").value),
+    negative_demand_noise_tolerance_ppm_per_day: Number(
+      document.getElementById("fcDemandNegativeDemandNoiseTolerance").value
+    ),
     recent_observation_count: Number(document.getElementById("fcDemandRecentObservationCount").value),
     observation_weights: weights,
     fc_feedback_gain: Number(document.getElementById("fcDemandFeedbackGain").value),

@@ -63,6 +63,7 @@ PUSHOVER_USER_KEY=your_user_key_here
 From the repo root on the Pi:
 
 ```bash
+# Raspberry Pi OS 64-bit Trixie with Python 3.13 is the intended target.
 sudo apt update
 sudo apt install -y git python3-venv python3-pip sqlite3
 

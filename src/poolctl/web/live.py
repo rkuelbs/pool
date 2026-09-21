@@ -230,6 +230,8 @@ async def build_live_snapshot(app: PoolControllerApp) -> dict[str, Any]:
             else None
         ),
         "chlorine_supply": chlorine_supply_payload(
+            reserve_gal=app.safety_config.chlorine_tank.low_warning_gal,
+            safety_status=app.router.safety_gate.chlorine_tank_status(),
             tank_measurement=chlorine_tank_measurement,
             daily_dose_oz=daily_dose_oz,
         ),
@@ -338,6 +340,8 @@ def chlorine_supply_payload(
     *,
     tank_measurement: Measurement | None,
     daily_dose_oz: float,
+    reserve_gal: float = CHLORINE_TANK_RESERVE_GAL,
+    safety_status: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     tank_level_gal = None
     remaining_gal = None
@@ -352,7 +356,10 @@ def chlorine_supply_payload(
             tank_level_gal = None
             reason = "chlorine tank estimate is unavailable"
         else:
-            remaining_gal = usable_chlorine_gallons(tank_level_gal)
+            remaining_gal = usable_chlorine_gallons(
+                tank_level_gal,
+                reserve_gal=reserve_gal,
+            )
 
     dose = float(daily_dose_oz)
     if not math.isfinite(dose) or dose <= 0:
@@ -390,7 +397,8 @@ def chlorine_supply_payload(
         "usable_remaining_gal": remaining_gal,
         "remaining_gal_display": remaining_gal_display,
         "usable_remaining_gal_display": remaining_gal_display,
-        "reserve_gal": CHLORINE_TANK_RESERVE_GAL,
+        "reserve_gal": reserve_gal,
+        "safety": safety_status,
         "days_remaining": days_remaining,
         "days_remaining_display": days_display,
         "daily_dose_oz": dose,
@@ -901,12 +909,14 @@ def _chemical_addition_history_point_payload(
 def safety_payload(app: PoolControllerApp) -> dict[str, Any]:
     fault = app.router.safety_gate.active_fault
     freeze = app.router.safety_gate.freeze_status(app.clock.now())
+    chlorine_tank = app.router.safety_gate.chlorine_tank_status()
 
     if fault is None:
         return {
             "locked_out": False,
             "fault": None,
             "freeze_protection": freeze,
+            "chlorine_tank": chlorine_tank,
         }
 
     return {
@@ -918,6 +928,7 @@ def safety_payload(app: PoolControllerApp) -> dict[str, Any]:
             "raised_at": fault.raised_at.isoformat(),
         },
         "freeze_protection": freeze,
+        "chlorine_tank": chlorine_tank,
     }
 
 

@@ -158,7 +158,8 @@ fc_demand:
   minimum_test_interval_hours: 12.0
   max_observation_interval_days: 7.0
   preferred_test_start_hour: 18
-  preferred_test_end_hour: 23
+  preferred_test_end_hour: 24
+  negative_demand_noise_tolerance_ppm_per_day: 0.05
   recent_observation_count: 5
   observation_weights:
   - 0.35
@@ -185,6 +186,11 @@ safety:
     high_speed_off_above_temp: 34
     min_run_seconds: 600
     threshold_unit: degF
+  chlorine_tank:
+    level_sensor: chlorine_tank_level_gal
+    low_warning_gal: 2.0
+    inhibit_below_gal: 1.5
+    reenable_at_gal: 2.0
   thresholds:
     chlorine_min_return_psi: 0
     chlorine_min_pump_output_psi: 3

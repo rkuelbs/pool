@@ -33,6 +33,11 @@ safety:
     high_speed_off_above_temp: 34
     min_run_seconds: 120
     threshold_unit: degF
+  chlorine_tank:
+    level_sensor: chlorine_tank_level_gal
+    low_warning_gal: 2.25
+    inhibit_below_gal: 1.25
+    reenable_at_gal: 2.5
   thresholds:
     chlorine_min_return_psi: 3.5
     chlorine_min_pump_output_psi: 7.5
@@ -66,6 +71,10 @@ safety:
     assert config.freeze_protection.high_speed_off_above_temp == 34.0
     assert config.freeze_protection.min_run_seconds == 120.0
     assert config.freeze_protection.threshold_unit.value == "degF"
+    assert config.chlorine_tank.level_sensor == SensorId.CHLORINE_TANK_LEVEL_GAL
+    assert config.chlorine_tank.low_warning_gal == 2.25
+    assert config.chlorine_tank.inhibit_below_gal == 1.25
+    assert config.chlorine_tank.reenable_at_gal == 2.5
     assert config.chlorine_min_return_psi == 3.5
     assert config.chlorine_min_pump_output_psi == 7.5
     assert config.chlorine_max_pump_output_psi == 8.5
@@ -102,6 +111,12 @@ def test_safety_config_accepts_top_level_safety_mapping() -> None:
     assert config.chlorine_min_pump_output_psi == 3.0
     assert config.chlorine_max_pump_output_psi == 3.5
     assert config.chlorine_requires_high_speed is False
+
+
+def test_freeze_ph_temp_default_uses_ph_temp_sensor() -> None:
+    config = SafetyConfig()
+
+    assert config.freeze_protection.ph_temp_sensor == SensorId.PH_TEMP
 
 
 def test_freeze_config_accepts_legacy_on_threshold_keys() -> None:

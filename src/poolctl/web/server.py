@@ -1241,6 +1241,10 @@ async def route_command(app: PoolControllerApp, payload: dict[str, Any]) -> dict
     measurements: tuple[Measurement, ...] = ()
     if app.acquisition_service is not None:
         measurements = tuple(app.acquisition_service.latest_measurements.values())
+    measurements = app.safety_measurements(
+        measurements,
+        source="dashboard_command_safety",
+    )
 
     result = await app.router.route(command, measurements=measurements)
 
@@ -2123,6 +2127,12 @@ def serialize_safety_config(app: PoolControllerApp) -> dict[str, Any]:
             "min_run_seconds": config.freeze_protection.min_run_seconds,
             "threshold_unit": config.freeze_protection.threshold_unit.value,
         },
+        "chlorine_tank": {
+            "level_sensor": config.chlorine_tank.level_sensor.value,
+            "low_warning_gal": config.chlorine_tank.low_warning_gal,
+            "inhibit_below_gal": config.chlorine_tank.inhibit_below_gal,
+            "reenable_at_gal": config.chlorine_tank.reenable_at_gal,
+        },
         "thresholds": {
             "chlorine_min_return_psi": config.chlorine_min_return_psi,
             "chlorine_min_pump_output_psi": config.chlorine_min_pump_output_psi,
@@ -2153,6 +2163,7 @@ def apply_safety_config_update(
         "safety": {
             "pressure_sensor_ids": payload.get("pressure_sensor_ids", {}),
             "freeze_protection": payload.get("freeze_protection", {}),
+            "chlorine_tank": payload.get("chlorine_tank", {}),
             "thresholds": payload.get("thresholds", {}),
             "timeouts": payload.get("timeouts", {}),
         }
@@ -2163,6 +2174,7 @@ def apply_safety_config_update(
     config_data["safety"] = {
         "pressure_sensor_ids": payload.get("pressure_sensor_ids", {}),
         "freeze_protection": payload.get("freeze_protection", {}),
+        "chlorine_tank": payload.get("chlorine_tank", {}),
         "thresholds": payload.get("thresholds", {}),
         "timeouts": payload.get("timeouts", {}),
     }
@@ -2234,6 +2246,9 @@ def serialize_fc_demand_config(app: PoolControllerApp) -> dict[str, Any]:
         "max_observation_interval_days": config.max_observation_interval_days,
         "preferred_test_start_hour": config.preferred_test_start_hour,
         "preferred_test_end_hour": config.preferred_test_end_hour,
+        "negative_demand_noise_tolerance_ppm_per_day": (
+            config.negative_demand_noise_tolerance_ppm_per_day
+        ),
         "recent_observation_count": config.recent_observation_count,
         "observation_weights": list(config.observation_weights),
         "fc_feedback_gain": config.fc_feedback_gain,
@@ -2263,6 +2278,9 @@ def apply_fc_demand_config_update(
         "max_observation_interval_days": proposed.max_observation_interval_days,
         "preferred_test_start_hour": proposed.preferred_test_start_hour,
         "preferred_test_end_hour": proposed.preferred_test_end_hour,
+        "negative_demand_noise_tolerance_ppm_per_day": (
+            proposed.negative_demand_noise_tolerance_ppm_per_day
+        ),
         "recent_observation_count": proposed.recent_observation_count,
         "observation_weights": list(proposed.observation_weights),
         "fc_feedback_gain": proposed.fc_feedback_gain,

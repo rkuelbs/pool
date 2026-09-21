@@ -139,11 +139,12 @@ class MeasurementKind(str, Enum):
 
     RAW:
         Direct or near-direct value from a sensor.
-        Example: raw pH voltage, raw ORP mV, pressure transducer voltage.
+        Example: pH reported directly by a pH circuit, raw ORP mV, or pressure
+        transducer voltage.
 
     CALIBRATED:
         Sensor value converted using a calibration model.
-        Example: calibrated pH derived from raw_ph.
+        Example: analog pH units derived from a voltage calibration.
 
     ESTIMATED:
         Value inferred from multiple inputs.
@@ -201,10 +202,16 @@ class Measurement(BaseModel):
       raw_ph:
         sensor_id = SensorId.RAW_PH
         kind = MeasurementKind.RAW
-        value = 1.842
+        value = 7.42
+        unit = "pH"
+
+      raw_ph_voltage:
+        sensor_id = SensorId.RAW_PH_VOLTAGE
+        kind = MeasurementKind.RAW
+        value = 2.650
         unit = "V"
 
-      calibrated pH later:
+      calibrated pH estimate later:
         sensor_id = SensorId.RAW_PH
         kind = MeasurementKind.CALIBRATED
         value = 7.42
@@ -397,34 +404,6 @@ class ChlorineTankRefill(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class EstimatedState(BaseModel):
-    """
-    Represents a future estimated pool state.
-
-    This is where the estimator can later publish things like:
-      - calibrated pH
-      - estimated free chlorine
-      - sensor drift
-      - estimated chlorine demand
-    """
-
-    id: str = Field(default_factory=lambda: str(uuid4()))
-
-    variable: str
-    estimated_at: datetime = Field(default_factory=utc_now)
-
-    value: float
-    unit: str
-
-    uncertainty: float | None = None
-
-    method_version: str
-    input_measurement_ids: list[str] = Field(default_factory=list)
-    input_lab_test_ids: list[str] = Field(default_factory=list)
-
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
 class ControlMode(str, Enum):
     """
     Future operating modes for controller-generated decisions.
@@ -435,24 +414,3 @@ class ControlMode(str, Enum):
     APPROVE_REQUIRED = "approve_required"
     AUTOMATIC = "automatic"
 
-
-class ControlPlan(BaseModel):
-    """
-    Represents a future controller plan.
-
-    The predictive controller should generate a plan, not directly control
-    hardware. Any recommended actuator command still has to pass through the
-    command router and safety gate.
-    """
-
-    id: str = Field(default_factory=lambda: str(uuid4()))
-
-    generated_at: datetime = Field(default_factory=utc_now)
-
-    mode: ControlMode = ControlMode.OBSERVE_ONLY
-    horizon_hours: float
-
-    recommended_commands: list[ActuatorCommand] = Field(default_factory=list)
-    recommendations: list[str] = Field(default_factory=list)
-
-    metadata: dict[str, Any] = Field(default_factory=dict)

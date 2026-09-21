@@ -285,6 +285,12 @@
           <label>Chlorine min pump psi <input id="safetyChlorineMinPump" type="number" step="0.1"></label>
           <label>Chlorine max pump psi <input id="safetyChlorineMaxPump" type="number" step="0.1"></label>
           <label><span>Chlorine requires high speed</span><input id="safetyChlorineRequiresHighSpeed" type="checkbox"></label>
+          <label>Tank level sensor
+            <select id="safetyChlorineTankLevelSensor"></select>
+          </label>
+          <label>Tank warning gal <input id="safetyChlorineTankWarningGal" type="number" step="0.1" min="0"></label>
+          <label>Tank inhibit gal <input id="safetyChlorineTankInhibitGal" type="number" step="0.1" min="0"></label>
+          <label>Tank re-enable gal <input id="safetyChlorineTankReenableGal" type="number" step="0.1" min="0"></label>
           <label>Booster max psi <input id="safetyBoosterMax" type="number" step="0.1"></label>
           <label>Booster min psi <input id="safetyBoosterMin" type="number" step="0.1"></label>
           <label>Pump low prime min psi <input id="safetyLowPrimeMin" type="number" step="0.1"></label>
@@ -344,10 +350,11 @@
           <label>Target FC ppm <input id="fcDemandTargetFcPpm" type="number" step="0.1" min="0"></label>
           <label>Chlorine strength % <input id="fcDemandChlorineStrengthPercent" type="number" step="0.1" min="0.1"></label>
           <label>Min test interval h <input id="fcDemandMinimumTestIntervalHours" type="number" step="1" min="0"></label>
-          <label>Max observation d <input id="fcDemandMaxObservationIntervalDays" type="number" step="0.5" min="0.5"></label>
-          <label>Reference start h <input id="fcDemandPreferredTestStartHour" type="number" step="1" min="0" max="23"></label>
-          <label>Reference end h <input id="fcDemandPreferredTestEndHour" type="number" step="1" min="0" max="24"></label>
-          <label>Recent observations <input id="fcDemandRecentObservationCount" type="number" step="1" min="1"></label>
+            <label>Max observation d <input id="fcDemandMaxObservationIntervalDays" type="number" step="0.5" min="0.5"></label>
+            <label>Reference start h <input id="fcDemandPreferredTestStartHour" type="number" step="1" min="0" max="23"></label>
+            <label>Reference end h <input id="fcDemandPreferredTestEndHour" type="number" step="1" min="0" max="24"></label>
+            <label>Negative demand noise ppm/day <input id="fcDemandNegativeDemandNoiseTolerance" type="number" step="0.01" min="0"></label>
+            <label>Recent observations <input id="fcDemandRecentObservationCount" type="number" step="1" min="1"></label>
           <label>Weights <input id="fcDemandObservationWeights" type="text"></label>
           <label>Feedback gain <input id="fcDemandFeedbackGain" type="number" step="0.05" min="0"></label>
           <label>Max maint change % <input id="fcDemandMaxMaintenanceChangePercent" type="number" step="1" min="0"></label>

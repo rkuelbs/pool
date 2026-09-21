@@ -2,7 +2,7 @@
 name = "poolctl"
 version = "0.1.0"
 description = "Raspberry Pi pool automation controller"
-requires-python = ">=3.11,<3.14"
+requires-python = ">=3.13,<3.14"
 dependencies = [
     "pydantic>=2",
     "pyyaml>=6",
@@ -50,9 +50,9 @@ markers = [
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py313"
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.13"
 mypy_path = "src"
 strict = true
