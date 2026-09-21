@@ -482,7 +482,8 @@ def test_safety_update_applies_live_and_persists(tmp_path: Path) -> None:
         },
         "thresholds": {
             "chlorine_min_return_psi": 2.5,
-            "chlorine_min_pump_output_psi": 6.5,
+            "chlorine_min_pump_output_psi": 3.0,
+            "chlorine_max_pump_output_psi": 3.5,
             "booster_max_psi": 58.0,
             "booster_min_psi": 29.0,
             "pump_low_prime_min_output_psi": 1.1,
@@ -505,6 +506,7 @@ def test_safety_update_applies_live_and_persists(tmp_path: Path) -> None:
     assert saved["safety"]["freeze_protection"]["source"] == "both"
     serialized = serialize_safety_config(app)
     assert serialized["thresholds"]["booster_max_psi"] == 58.0
+    assert serialized["thresholds"]["chlorine_max_pump_output_psi"] == 3.5
     assert serialized["freeze_protection"]["high_speed_on_below_temp"] == 33.0
 
 

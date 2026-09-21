@@ -187,7 +187,8 @@ safety:
     threshold_unit: degF
   thresholds:
     chlorine_min_return_psi: 0
-    chlorine_min_pump_output_psi: 1
+    chlorine_min_pump_output_psi: 3
+    chlorine_max_pump_output_psi: 3.5
     chlorine_requires_high_speed: false
     booster_max_psi: 60
     booster_min_psi: 30

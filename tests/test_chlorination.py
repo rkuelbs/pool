@@ -54,6 +54,21 @@ def timer_config(*schedules: PumpTimerSchedule) -> PumpTimerConfig:
     return PumpTimerConfig(timezone="UTC", schedules=schedules)
 
 
+def dosing_actuator_states(
+    *,
+    dosing_pump: ActuatorState,
+    pump_motor: ActuatorState = ActuatorState.ON,
+    pump_speed: ActuatorState = ActuatorState.LOW,
+    booster: ActuatorState = ActuatorState.OFF,
+) -> dict[ActuatorId, ActuatorState]:
+    return {
+        ActuatorId.PUMP_MOTOR: pump_motor,
+        ActuatorId.PUMP_MOTOR_SPEED: pump_speed,
+        ActuatorId.BOOSTER_PUMP: booster,
+        ActuatorId.CHLORINE_DOSING_PUMP: dosing_pump,
+    }
+
+
 def test_valid_dosing_windows_trim_last_minutes_of_merged_run() -> None:
     config = timer_config(
         schedule(name="first", start="08:00", end="10:00"),
@@ -132,10 +147,7 @@ def test_controller_turns_dosing_on_for_first_minute_of_duty_cycle() -> None:
     evaluation = controller.evaluate(
         now=at(8),
         pump_timer_config=timer_config(schedule()),
-        actuator_states={
-            ActuatorId.PUMP_MOTOR: ActuatorState.ON,
-            ActuatorId.CHLORINE_DOSING_PUMP: ActuatorState.OFF,
-        },
+        actuator_states=dosing_actuator_states(dosing_pump=ActuatorState.OFF),
         layer_enabled=True,
     )
 
@@ -166,10 +178,7 @@ def test_controller_turns_dosing_off_after_one_minute_on_interval() -> None:
     evaluation = controller.evaluate(
         now=at(8, 1),
         pump_timer_config=timer_config(schedule()),
-        actuator_states={
-            ActuatorId.PUMP_MOTOR: ActuatorState.ON,
-            ActuatorId.CHLORINE_DOSING_PUMP: ActuatorState.ON,
-        },
+        actuator_states=dosing_actuator_states(dosing_pump=ActuatorState.ON),
         layer_enabled=True,
     )
 
@@ -177,6 +186,30 @@ def test_controller_turns_dosing_off_after_one_minute_on_interval() -> None:
     assert evaluation.status.duty_cycle_window_active is True
     assert evaluation.status.reason == "open-loop chlorination duty cycle off interval"
     assert len(evaluation.commands) == 1
+    assert evaluation.commands[0].state == ActuatorState.OFF
+
+
+def test_controller_requires_booster_off_for_dosing() -> None:
+    controller = ChlorinationController(
+        ChlorinationConfig(
+            daily_dose_oz=4.0,
+            pump_output_oz_per_min=1.0,
+            cycle_on_seconds=60.0,
+        )
+    )
+
+    evaluation = controller.evaluate(
+        now=at(8),
+        pump_timer_config=timer_config(schedule()),
+        actuator_states=dosing_actuator_states(
+            dosing_pump=ActuatorState.ON,
+            booster=ActuatorState.ON,
+        ),
+        layer_enabled=True,
+    )
+
+    assert evaluation.status.active is False
+    assert evaluation.status.reason == "booster pump is on"
     assert evaluation.commands[0].state == ActuatorState.OFF
 
 
@@ -194,10 +227,7 @@ def test_controller_shortens_on_time_when_low_duty_would_exceed_max_cycle() -> N
     on_evaluation = controller.evaluate(
         now=at(8, 0, 32),
         pump_timer_config=timer_config(schedule()),
-        actuator_states={
-            ActuatorId.PUMP_MOTOR: ActuatorState.ON,
-            ActuatorId.CHLORINE_DOSING_PUMP: ActuatorState.OFF,
-        },
+        actuator_states=dosing_actuator_states(dosing_pump=ActuatorState.OFF),
         layer_enabled=True,
     )
 
@@ -213,10 +243,7 @@ def test_controller_shortens_on_time_when_low_duty_would_exceed_max_cycle() -> N
     off_evaluation = controller.evaluate(
         now=at(8, 0, 33),
         pump_timer_config=timer_config(schedule()),
-        actuator_states={
-            ActuatorId.PUMP_MOTOR: ActuatorState.ON,
-            ActuatorId.CHLORINE_DOSING_PUMP: ActuatorState.ON,
-        },
+        actuator_states=dosing_actuator_states(dosing_pump=ActuatorState.ON),
         layer_enabled=True,
     )
 
@@ -238,10 +265,7 @@ def test_controller_uses_minimum_on_time_for_extremely_low_duty_cycle() -> None:
     on_evaluation = controller.evaluate(
         now=at(8, 0, 4),
         pump_timer_config=timer_config(schedule()),
-        actuator_states={
-            ActuatorId.PUMP_MOTOR: ActuatorState.ON,
-            ActuatorId.CHLORINE_DOSING_PUMP: ActuatorState.OFF,
-        },
+        actuator_states=dosing_actuator_states(dosing_pump=ActuatorState.OFF),
         layer_enabled=True,
     )
 
@@ -256,10 +280,7 @@ def test_controller_uses_minimum_on_time_for_extremely_low_duty_cycle() -> None:
     off_evaluation = controller.evaluate(
         now=at(8, 0, 6),
         pump_timer_config=timer_config(schedule()),
-        actuator_states={
-            ActuatorId.PUMP_MOTOR: ActuatorState.ON,
-            ActuatorId.CHLORINE_DOSING_PUMP: ActuatorState.ON,
-        },
+        actuator_states=dosing_actuator_states(dosing_pump=ActuatorState.ON),
         layer_enabled=True,
     )
 
@@ -275,10 +296,7 @@ def test_controller_prohibits_dosing_during_final_no_dose_buffer() -> None:
     evaluation = controller.evaluate(
         now=at(9, 55),
         pump_timer_config=timer_config(schedule()),
-        actuator_states={
-            ActuatorId.PUMP_MOTOR: ActuatorState.ON,
-            ActuatorId.CHLORINE_DOSING_PUMP: ActuatorState.ON,
-        },
+        actuator_states=dosing_actuator_states(dosing_pump=ActuatorState.ON),
         layer_enabled=True,
     )
 
@@ -295,10 +313,7 @@ def test_controller_caps_duty_cycle_and_reports_warning() -> None:
     evaluation = controller.evaluate(
         now=at(8),
         pump_timer_config=timer_config(schedule()),
-        actuator_states={
-            ActuatorId.PUMP_MOTOR: ActuatorState.ON,
-            ActuatorId.CHLORINE_DOSING_PUMP: ActuatorState.OFF,
-        },
+        actuator_states=dosing_actuator_states(dosing_pump=ActuatorState.OFF),
         layer_enabled=True,
     )
 
@@ -337,10 +352,7 @@ def test_controller_keeps_dosing_off_when_layer_disabled() -> None:
     evaluation = controller.evaluate(
         now=at(8),
         pump_timer_config=timer_config(schedule()),
-        actuator_states={
-            ActuatorId.PUMP_MOTOR: ActuatorState.ON,
-            ActuatorId.CHLORINE_DOSING_PUMP: ActuatorState.ON,
-        },
+        actuator_states=dosing_actuator_states(dosing_pump=ActuatorState.ON),
         layer_enabled=False,
     )
 
@@ -363,10 +375,7 @@ def test_controller_delays_dosing_by_eligible_minutes_without_changing_duty() ->
     delayed = controller.evaluate(
         now=at(11, 0),
         pump_timer_config=config,
-        actuator_states={
-            ActuatorId.PUMP_MOTOR: ActuatorState.ON,
-            ActuatorId.CHLORINE_DOSING_PUMP: ActuatorState.ON,
-        },
+        actuator_states=dosing_actuator_states(dosing_pump=ActuatorState.ON),
         layer_enabled=True,
         plan_adjustment=ChlorinationPlanAdjustment(
             delay_eligible_seconds=210.0 * 60.0,
@@ -385,10 +394,7 @@ def test_controller_delays_dosing_by_eligible_minutes_without_changing_duty() ->
     resumed = controller.evaluate(
         now=at(11, 30),
         pump_timer_config=config,
-        actuator_states={
-            ActuatorId.PUMP_MOTOR: ActuatorState.ON,
-            ActuatorId.CHLORINE_DOSING_PUMP: ActuatorState.OFF,
-        },
+        actuator_states=dosing_actuator_states(dosing_pump=ActuatorState.OFF),
         layer_enabled=True,
         plan_adjustment=ChlorinationPlanAdjustment(
             delay_eligible_seconds=210.0 * 60.0,

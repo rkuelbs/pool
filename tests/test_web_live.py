@@ -363,18 +363,23 @@ async def test_build_live_snapshot_includes_chlorine_tank_estimate(
     assert tank["label"] == "Chlorine tank level"
     assert tank["value"] == 9.5
     assert tank["display"] == "9.50 gal"
-    assert snapshot["chlorine_supply"]["remaining_gal"] == 9.5
-    assert snapshot["chlorine_supply"]["days_remaining"] == 19.0
+    assert snapshot["chlorine_supply"]["tank_level_gal"] == 9.5
+    assert snapshot["chlorine_supply"]["remaining_gal"] == 7.5
+    assert snapshot["chlorine_supply"]["usable_remaining_gal"] == 7.5
+    assert snapshot["chlorine_supply"]["reserve_gal"] == 2.0
+    assert snapshot["chlorine_supply"]["days_remaining"] == 15.0
     assert snapshot["chlorine_supply"]["status"] == "normal"
-    assert snapshot["chlorine_supply"]["display"] == "Chlorine Remaining 9.50 gallons, 19.0 days"
+    assert snapshot["chlorine_supply"]["display"] == (
+        "Usable chlorine remaining 7.50 gallons, 15.0 days"
+    )
 
 
 @pytest.mark.parametrize(
     ("daily_dose_oz", "expected_days", "expected_status"),
     [
-        (128.0, 8.0, "normal"),
-        (256.0, 4.0, "caution"),
-        (512.0, 2.0, "alarm"),
+        (128.0, 6.0, "caution"),
+        (256.0, 3.0, "alarm"),
+        (512.0, 1.5, "alarm"),
         (0.0, None, "unknown"),
     ],
 )

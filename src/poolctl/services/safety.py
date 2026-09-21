@@ -114,8 +114,9 @@ class SafetyConfig:
     freeze_protection: FreezeProtectionConfig = field(default_factory=FreezeProtectionConfig)
 
     chlorine_min_return_psi: float = 2.0
-    chlorine_min_pump_output_psi: float = 6.0
-    chlorine_requires_high_speed: bool = True
+    chlorine_min_pump_output_psi: float = 3.0
+    chlorine_max_pump_output_psi: float = 3.5
+    chlorine_requires_high_speed: bool = False
 
     booster_max_psi: float = 60.0
     booster_min_psi: float = 30.0
@@ -219,6 +220,11 @@ class SafetyConfig:
                 threshold_data,
                 "chlorine_min_pump_output_psi",
                 cls.chlorine_min_pump_output_psi,
+            ),
+            chlorine_max_pump_output_psi=_float_value(
+                threshold_data,
+                "chlorine_max_pump_output_psi",
+                cls.chlorine_max_pump_output_psi,
             ),
             chlorine_requires_high_speed=_bool_value(
                 threshold_data,
@@ -524,6 +530,13 @@ class SafetyGate:
                 False,
                 "chlorine output requires pump output pressure "
                 f">= {self.config.chlorine_min_pump_output_psi:g} psi",
+            )
+
+        if pump_output_psi > self.config.chlorine_max_pump_output_psi:
+            return (
+                False,
+                "chlorine output requires pump output pressure "
+                f"<= {self.config.chlorine_max_pump_output_psi:g} psi",
             )
 
         return True, None

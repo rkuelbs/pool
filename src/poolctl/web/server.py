@@ -2126,6 +2126,7 @@ def serialize_safety_config(app: PoolControllerApp) -> dict[str, Any]:
         "thresholds": {
             "chlorine_min_return_psi": config.chlorine_min_return_psi,
             "chlorine_min_pump_output_psi": config.chlorine_min_pump_output_psi,
+            "chlorine_max_pump_output_psi": config.chlorine_max_pump_output_psi,
             "chlorine_requires_high_speed": config.chlorine_requires_high_speed,
             "booster_max_psi": config.booster_max_psi,
             "booster_min_psi": config.booster_min_psi,

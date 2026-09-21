@@ -57,6 +57,7 @@ from poolctl.services.command_router import CommandRouter
 from poolctl.services.chlorination import (
     ChlorinationConfig,
     ChlorinationController,
+    ChlorinationEvaluation,
     ChlorinationPlanAdjustment,
     ChlorinationStatus,
 )
@@ -99,6 +100,7 @@ from poolctl.services.weather import WeatherConfig, WeatherPollResult, WeatherSe
 
 
 FLUID_OUNCES_PER_GALLON = 128.0
+CHLORINE_TANK_RESERVE_GAL = 2.0
 DAILY_ENVIRONMENT_SUMMARY_INTERVAL_S = 3600.0
 CHLORINATION_CONTROL_SENSOR_IDS = frozenset(
     {
@@ -133,6 +135,30 @@ DAILY_MOVING_AVERAGE_SENSOR_IDS = {
         28: SensorId.DAILY_UV_INDEX_DOSE_28D_AVG,
     },
 }
+
+
+def usable_chlorine_gallons(tank_level_gal: float) -> float:
+    return max(0.0, float(tank_level_gal) - CHLORINE_TANK_RESERVE_GAL)
+
+
+def chlorine_supply_daily_dose_oz(
+    *,
+    chlorination_status: ChlorinationStatus | None,
+    fc_demand_status: FcDemandStatus | None,
+    fallback_daily_dose_oz: float,
+) -> float:
+    maintenance_dose = (
+        fc_demand_status.maintenance_dose_oz_per_day
+        if fc_demand_status is not None
+        else None
+    )
+    if maintenance_dose is not None and math.isfinite(maintenance_dose):
+        return float(maintenance_dose)
+
+    if chlorination_status is not None:
+        return float(chlorination_status.daily_dose_oz)
+
+    return float(fallback_daily_dose_oz)
 
 
 @dataclass(frozen=True)
@@ -290,6 +316,39 @@ class ChlorineTankEstimate:
             "delivered_gal_since_baseline": self.delivered_gal,
             "refilled_gal_since_baseline": self.refilled_gal,
             "refill_count_since_baseline": self.refill_count,
+        }
+
+
+@dataclass(frozen=True)
+class ChlorineTankDosingInterlock:
+    allowed: bool
+    reason: str | None
+    tank_level_gal: float | None
+    usable_remaining_gal: float | None
+
+    def as_metadata(self) -> dict[str, Any]:
+        return {
+            "tank_level_gal": self.tank_level_gal,
+            "usable_remaining_gal": self.usable_remaining_gal,
+            "reserve_gal": CHLORINE_TANK_RESERVE_GAL,
+        }
+
+
+@dataclass(frozen=True)
+class ChlorineDosingPressureInterlock:
+    allowed: bool
+    reason: str | None
+    sensor_id: SensorId
+    pump_output_psi: float | None
+    min_pump_output_psi: float
+    max_pump_output_psi: float
+
+    def as_metadata(self) -> dict[str, Any]:
+        return {
+            "pump_output_pressure_sensor_id": self.sensor_id.value,
+            "pump_output_psi": self.pump_output_psi,
+            "min_pump_output_psi": self.min_pump_output_psi,
+            "max_pump_output_psi": self.max_pump_output_psi,
         }
 
 
@@ -565,16 +624,19 @@ class PoolControllerApp:
             publish_measurements = publish_measurements + (csi_measurement,)
         publish_measurements = publish_measurements + control_measurements
         self._publish_mqtt(publish_measurements)
+        chlorine_supply_daily_dose = chlorine_supply_daily_dose_oz(
+            chlorination_status=chlorination_status,
+            fc_demand_status=(
+                fc_demand_plan.status if fc_demand_plan is not None else None
+            ),
+            fallback_daily_dose_oz=self.chlorination_config.daily_dose_oz,
+        )
         notification_results = self._run_notification_alerts(
             measurements=self._notification_alert_measurements(
                 latest_measurements=latest_measurements,
                 control_measurements=control_measurements,
                 observed_at=self.clock.now(),
-                daily_dose_oz=(
-                    chlorination_status.daily_dose_oz
-                    if chlorination_status is not None
-                    else self.chlorination_config.daily_dose_oz
-                ),
+                daily_dose_oz=chlorine_supply_daily_dose,
             )
         )
 
@@ -1314,15 +1376,42 @@ class PoolControllerApp:
         if supplemental_dose is not None:
             phase = supplemental_dose.phase(now)
             safety_locked_out = self.router.safety_gate.locked_out
+            dose_desired_state = supplemental_dose.desired_state(now)
             pump_running = (
                 self.router.actuator_states.get(ActuatorId.PUMP_MOTOR)
                 == ActuatorState.ON
             )
-            desired_state = (
-                ActuatorState.OFF
-                if safety_locked_out or not pump_running
-                else supplemental_dose.desired_state(now)
+            booster_off = (
+                self.router.actuator_states.get(
+                    ActuatorId.BOOSTER_PUMP,
+                    ActuatorState.OFF,
+                )
+                == ActuatorState.OFF
             )
+            pressure_interlock = self.chlorine_dosing_pressure_interlock(
+                measurements=measurements,
+            )
+            tank_interlock = self.chlorine_tank_dosing_interlock(observed_at=now)
+            desired_state = dose_desired_state
+            block_reason: str | None = None
+            if safety_locked_out:
+                block_reason = "supplemental chlorine dose blocked by safety lockout"
+            elif dose_desired_state == ActuatorState.ON and not pump_running:
+                block_reason = "supplemental chlorine dose waiting for pump circulation"
+            elif dose_desired_state == ActuatorState.ON and not booster_off:
+                block_reason = "supplemental chlorine dose blocked while booster pump is on"
+            elif dose_desired_state == ActuatorState.ON and not pressure_interlock.allowed:
+                block_reason = (
+                    "supplemental chlorine dose blocked: "
+                    f"{pressure_interlock.reason or 'pump output pressure unavailable'}"
+                )
+            elif dose_desired_state == ActuatorState.ON and not tank_interlock.allowed:
+                block_reason = (
+                    "supplemental chlorine dose blocked: "
+                    f"{tank_interlock.reason or 'chlorine tank reserve unavailable'}"
+                )
+            if block_reason is not None:
+                desired_state = ActuatorState.OFF
             current_state = self.router.actuator_states.get(
                 ActuatorId.CHLORINE_DOSING_PUMP,
                 ActuatorState.OFF,
@@ -1335,10 +1424,8 @@ class PoolControllerApp:
                 != current_pulse_index
             )
             reason = (
-                "supplemental chlorine dose blocked by safety lockout"
-                if safety_locked_out
-                else "supplemental chlorine dose waiting for pump circulation"
-                if not pump_running
+                block_reason
+                if block_reason is not None
                 else "supplemental chlorine post-dose circulation"
                 if phase == "circulating"
                 else "supplemental chlorine dose active"
@@ -1392,6 +1479,8 @@ class PoolControllerApp:
                         "pulse_seconds": supplemental_dose.pulse_seconds,
                         "pulse_count": supplemental_dose.pulse_count,
                         "cycle_period_s": supplemental_dose.cycle_period_s,
+                        **pressure_interlock.as_metadata(),
+                        **tank_interlock.as_metadata(),
                         "min_cycle_on_seconds": (
                             supplemental_dose.min_cycle_on_seconds
                         ),
@@ -1432,6 +1521,15 @@ class PoolControllerApp:
             logged_delivery_count += self._flush_chlorine_delivery_if_inactive()
             return tuple(results), status, logged_delivery_count
 
+        evaluation = self._apply_chlorine_dosing_pressure_interlock(
+            evaluation=evaluation,
+            now=now,
+            measurements=measurements,
+        )
+        evaluation = self._apply_chlorine_tank_dosing_interlock(
+            evaluation=evaluation,
+            now=now,
+        )
         for command in evaluation.commands:
             result = await self.router.route(command, measurements=measurements)
             results.append(result)
@@ -1447,6 +1545,101 @@ class PoolControllerApp:
 
         logged_delivery_count += self._flush_chlorine_delivery_if_inactive()
         return tuple(results), evaluation.status, logged_delivery_count
+
+    def _apply_chlorine_dosing_pressure_interlock(
+        self,
+        *,
+        evaluation: ChlorinationEvaluation,
+        now: datetime,
+        measurements: tuple[Measurement, ...],
+    ) -> ChlorinationEvaluation:
+        if evaluation.status.desired_state != ActuatorState.ON:
+            return evaluation
+
+        interlock = self.chlorine_dosing_pressure_interlock(
+            measurements=measurements,
+        )
+        if interlock.allowed:
+            return evaluation
+
+        reason = interlock.reason or "pump output pressure unavailable"
+        current_state = self.router.actuator_states.get(
+            ActuatorId.CHLORINE_DOSING_PUMP,
+            ActuatorState.OFF,
+        )
+        commands: tuple[ActuatorCommand, ...] = ()
+        if current_state != ActuatorState.OFF:
+            commands = (
+                ActuatorCommand(
+                    actuator_id=ActuatorId.CHLORINE_DOSING_PUMP,
+                    created_at=now,
+                    state=ActuatorState.OFF,
+                    requested_by=CommandSource.CONTROLLER,
+                    reason=reason,
+                    metadata={
+                        "controller": "chlorine_dosing_pressure_interlock",
+                        "source_controller": "open_loop_chlorination",
+                        **interlock.as_metadata(),
+                    },
+                ),
+            )
+
+        return ChlorinationEvaluation(
+            status=replace(
+                evaluation.status,
+                desired_state=ActuatorState.OFF,
+                active=False,
+                reason=reason,
+                duty_cycle_window_active=False,
+            ),
+            commands=commands,
+        )
+
+    def _apply_chlorine_tank_dosing_interlock(
+        self,
+        *,
+        evaluation: ChlorinationEvaluation,
+        now: datetime,
+    ) -> ChlorinationEvaluation:
+        if evaluation.status.desired_state != ActuatorState.ON:
+            return evaluation
+
+        interlock = self.chlorine_tank_dosing_interlock(observed_at=now)
+        if interlock.allowed:
+            return evaluation
+
+        reason = interlock.reason or "chlorine tank reserve unavailable"
+        current_state = self.router.actuator_states.get(
+            ActuatorId.CHLORINE_DOSING_PUMP,
+            ActuatorState.OFF,
+        )
+        commands: tuple[ActuatorCommand, ...] = ()
+        if current_state != ActuatorState.OFF:
+            commands = (
+                ActuatorCommand(
+                    actuator_id=ActuatorId.CHLORINE_DOSING_PUMP,
+                    created_at=now,
+                    state=ActuatorState.OFF,
+                    requested_by=CommandSource.CONTROLLER,
+                    reason=reason,
+                    metadata={
+                        "controller": "chlorine_tank_reserve_interlock",
+                        "source_controller": "open_loop_chlorination",
+                        **interlock.as_metadata(),
+                    },
+                ),
+            )
+
+        return ChlorinationEvaluation(
+            status=replace(
+                evaluation.status,
+                desired_state=ActuatorState.OFF,
+                active=False,
+                reason=reason,
+                duty_cycle_window_active=False,
+            ),
+            commands=commands,
+        )
 
     async def _confirm_expired_dosing_flash_off(
         self,
@@ -1812,6 +2005,119 @@ class PoolControllerApp:
             refill_count=refill_summary.count,
         )
 
+    def chlorine_dosing_pressure_interlock(
+        self,
+        *,
+        measurements: Iterable[Measurement],
+    ) -> ChlorineDosingPressureInterlock:
+        sensor_id = self.safety_config.pressure_sensors.pump_output
+        min_psi = self.safety_config.chlorine_min_pump_output_psi
+        max_psi = self.safety_config.chlorine_max_pump_output_psi
+        measurement = next(
+            (
+                candidate
+                for candidate in measurements
+                if candidate.sensor_id == sensor_id
+            ),
+            None,
+        )
+        if measurement is None or measurement.quality != Quality.GOOD:
+            return ChlorineDosingPressureInterlock(
+                allowed=False,
+                reason="chlorine dosing requires a good pump output pressure reading",
+                sensor_id=sensor_id,
+                pump_output_psi=None,
+                min_pump_output_psi=min_psi,
+                max_pump_output_psi=max_psi,
+            )
+
+        pump_output_psi = float(measurement.value)
+        if not math.isfinite(pump_output_psi):
+            return ChlorineDosingPressureInterlock(
+                allowed=False,
+                reason="chlorine dosing requires a good pump output pressure reading",
+                sensor_id=sensor_id,
+                pump_output_psi=None,
+                min_pump_output_psi=min_psi,
+                max_pump_output_psi=max_psi,
+            )
+
+        rounded_psi = round(pump_output_psi, 4)
+        if pump_output_psi < min_psi:
+            return ChlorineDosingPressureInterlock(
+                allowed=False,
+                reason=(
+                    "chlorine dosing requires pump output pressure "
+                    f">= {min_psi:g} psi"
+                ),
+                sensor_id=sensor_id,
+                pump_output_psi=rounded_psi,
+                min_pump_output_psi=min_psi,
+                max_pump_output_psi=max_psi,
+            )
+        if pump_output_psi > max_psi:
+            return ChlorineDosingPressureInterlock(
+                allowed=False,
+                reason=(
+                    "chlorine dosing requires pump output pressure "
+                    f"<= {max_psi:g} psi"
+                ),
+                sensor_id=sensor_id,
+                pump_output_psi=rounded_psi,
+                min_pump_output_psi=min_psi,
+                max_pump_output_psi=max_psi,
+            )
+
+        return ChlorineDosingPressureInterlock(
+            allowed=True,
+            reason=None,
+            sensor_id=sensor_id,
+            pump_output_psi=rounded_psi,
+            min_pump_output_psi=min_psi,
+            max_pump_output_psi=max_psi,
+        )
+
+    def chlorine_tank_dosing_interlock(
+        self,
+        *,
+        observed_at: datetime,
+    ) -> ChlorineTankDosingInterlock:
+        estimate = self.chlorine_tank_estimate(observed_at=observed_at)
+        if estimate is None:
+            return ChlorineTankDosingInterlock(
+                allowed=False,
+                reason="chlorine tank estimate unavailable",
+                tank_level_gal=None,
+                usable_remaining_gal=None,
+            )
+
+        tank_level_gal = max(0.0, float(estimate.level_gal))
+        usable_remaining_gal = usable_chlorine_gallons(tank_level_gal)
+        if not math.isfinite(tank_level_gal):
+            return ChlorineTankDosingInterlock(
+                allowed=False,
+                reason="chlorine tank estimate unavailable",
+                tank_level_gal=None,
+                usable_remaining_gal=None,
+            )
+        if tank_level_gal < CHLORINE_TANK_RESERVE_GAL:
+            return ChlorineTankDosingInterlock(
+                allowed=False,
+                reason=(
+                    "chlorine tank estimate below "
+                    f"{CHLORINE_TANK_RESERVE_GAL:.2f} gal reserve"
+                ),
+                tank_level_gal=round(tank_level_gal, 4),
+                usable_remaining_gal=round(usable_remaining_gal, 4),
+            )
+
+        return ChlorineTankDosingInterlock(
+            allowed=True,
+            reason=None,
+            tank_level_gal=round(tank_level_gal, 4),
+            usable_remaining_gal=round(usable_remaining_gal, 4),
+        )
+
     def chlorine_tank_level_measurement(
         self,
         *,
@@ -1862,9 +2168,15 @@ class PoolControllerApp:
         if tank_measurement is None or tank_measurement.quality != Quality.GOOD:
             return None
 
-        remaining_gal = max(0.0, float(tank_measurement.value))
+        tank_level_gal = max(0.0, float(tank_measurement.value))
+        remaining_gal = usable_chlorine_gallons(tank_level_gal)
         dose = float(daily_dose_oz)
-        if not math.isfinite(remaining_gal) or not math.isfinite(dose) or dose <= 0:
+        if (
+            not math.isfinite(tank_level_gal)
+            or not math.isfinite(remaining_gal)
+            or not math.isfinite(dose)
+            or dose <= 0
+        ):
             return None
 
         days_remaining = remaining_gal * FLUID_OUNCES_PER_GALLON / dose
@@ -1886,6 +2198,8 @@ class PoolControllerApp:
                 "driver": "chlorine_tank_estimator",
                 "source": source,
                 "remaining_gal": round(remaining_gal, 4),
+                "tank_level_gal": round(tank_level_gal, 4),
+                "reserve_gal": CHLORINE_TANK_RESERVE_GAL,
                 "daily_dose_oz": dose,
                 "tank_measurement_id": tank_measurement.id,
             },

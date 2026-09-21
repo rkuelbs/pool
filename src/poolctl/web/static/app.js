@@ -756,7 +756,7 @@ function renderChlorineSupplyBadge(chlorineSupply) {
   badge.textContent =
     chlorineSupply && chlorineSupply.display
       ? chlorineSupply.display
-      : "Chlorine Remaining -- gallons, -- days";
+      : "Usable chlorine remaining -- gallons, -- days";
   if (chlorineSupply && chlorineSupply.reason) {
     badge.title = chlorineSupply.reason;
   } else {
@@ -1425,7 +1425,7 @@ function renderMobileTankCard(sensors, chlorineSupply) {
       ? chlorineSupply.days_remaining_display
       : "-- days";
   setMobileCardStatus("mobileTankCard", sensorCardStatus(supplyStatus));
-  setNodeText("mobileTankLevelLine", `Remaining: ${remaining}`);
+  setNodeText("mobileTankLevelLine", `Usable: ${remaining}`);
   setNodeText("mobileTankDaysLine", `Days: ${days}`);
 }
 
@@ -2956,6 +2956,7 @@ async function loadSafetyConfig() {
     document.getElementById("safetyFreezeUnit").value = freeze.threshold_unit || "degF";
     document.getElementById("safetyChlorineMinReturn").value = payload.thresholds.chlorine_min_return_psi;
     document.getElementById("safetyChlorineMinPump").value = payload.thresholds.chlorine_min_pump_output_psi;
+    document.getElementById("safetyChlorineMaxPump").value = payload.thresholds.chlorine_max_pump_output_psi;
     document.getElementById("safetyChlorineRequiresHighSpeed").checked =
       payload.thresholds.chlorine_requires_high_speed !== false;
     document.getElementById("safetyBoosterMax").value = payload.thresholds.booster_max_psi;
@@ -3005,6 +3006,7 @@ async function saveSafetyConfig() {
         thresholds: {
           chlorine_min_return_psi: Number(document.getElementById("safetyChlorineMinReturn").value),
           chlorine_min_pump_output_psi: Number(document.getElementById("safetyChlorineMinPump").value),
+          chlorine_max_pump_output_psi: Number(document.getElementById("safetyChlorineMaxPump").value),
           chlorine_requires_high_speed: document.getElementById("safetyChlorineRequiresHighSpeed").checked,
           booster_max_psi: Number(document.getElementById("safetyBoosterMax").value),
           booster_min_psi: Number(document.getElementById("safetyBoosterMin").value),

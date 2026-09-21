@@ -16,7 +16,7 @@
         <div class="status-strip">
           <div class="badge-row">
             <span id="safetyBadge" class="badge">Starting</span>
-            <span id="chlorineSupplyBadge" class="badge unknown">Chlorine Remaining -- gallons, -- days</span>
+            <span id="chlorineSupplyBadge" class="badge unknown">Usable chlorine remaining -- gallons, -- days</span>
             <span id="cpuTempBadge" class="badge hidden">CPU Temp: --</span>
           </div>
           <span id="cpuLoadLine" class="timestamp hidden">CPU Load: --</span>
@@ -283,6 +283,7 @@
         <div class="config-grid">
           <label>Chlorine min return psi <input id="safetyChlorineMinReturn" type="number" step="0.1"></label>
           <label>Chlorine min pump psi <input id="safetyChlorineMinPump" type="number" step="0.1"></label>
+          <label>Chlorine max pump psi <input id="safetyChlorineMaxPump" type="number" step="0.1"></label>
           <label><span>Chlorine requires high speed</span><input id="safetyChlorineRequiresHighSpeed" type="checkbox"></label>
           <label>Booster max psi <input id="safetyBoosterMax" type="number" step="0.1"></label>
           <label>Booster min psi <input id="safetyBoosterMin" type="number" step="0.1"></label>

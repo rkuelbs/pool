@@ -199,8 +199,8 @@ Important sections:
 - `weather`: Open-Meteo location, units, and polling settings.
 - `mqtt`: MQTT connection, topics, and permission switches.
 - `notifications`: push notification provider settings and optional alert rules
-  for chlorine tank days remaining, pH, and ORP. Pushover keys can be entered
-  on the Config page or supplied through environment variables.
+  for usable chlorine tank days remaining, pH, and ORP. Pushover keys can be
+  entered on the Config page or supplied through environment variables.
 
 Schedule `start` and `end` values should be quoted strings:
 
@@ -283,8 +283,9 @@ rolling filter.
 
 - Live: schematic or mobile list view, current sensor/actuator state, quick
   pump controls, chlorination dose target, supplemental chlorine dose action,
-  FC-demand status, safety status, estimated chlorine tank gallons/days
-  remaining, CPU temperature/load/fan status on Pi, and runtime loop timing.
+  FC-demand status, safety status, estimated true chlorine tank level plus
+  usable chlorine gallons/days remaining, CPU temperature/load/fan status on Pi,
+  and runtime loop timing.
 - History: measurement/weather/test-result/chemical-addition charts with
   selectable series, hover readouts, automatic rollup resolution, past-window
   navigation, calendar/time jump, CSV export, water-test and chemical-addition
@@ -383,6 +384,16 @@ The controller:
 7. Caps duty cycle at `max_duty_cycle`.
 8. Computes an effective ON/OFF pulse schedule for that duty cycle.
 
+Normal scheduled dosing will only energize the dosing pump when the booster
+pump is off, the latest good pump-output pressure is inside the configured
+chlorine dosing pressure window, and the estimated true chlorine tank level is
+at least 2 gallons. The Pi profile defaults that pressure window to 3.0-3.5 psi
+so the interlock verifies the pump is actually running at the expected
+low-speed head pressure instead of trusting only the commanded speed bit. A
+missing pressure or tank estimate is treated as not eligible for normal dosing.
+Diagnostic prime/calibration runs remain a separate maintenance path and do not
+count toward delivered chlorine totals.
+
 This allows the same pump timer to run the pool at night for skimming or
 vacuuming while keeping the day's chlorine dose in morning and daytime windows
 before evening FC tests.
@@ -407,11 +418,14 @@ Changing `daily_dose_oz` from the dashboard applies the new duty cycle going
 forward. The controller does not try to make up for earlier parts of the day.
 When a chlorine tank level test has been entered, the dashboard estimates
 remaining tank gallons from that baseline minus logged dosing delivery plus any
-recorded tank refills. The top status strip displays `Chlorine Remaining X
-gallons, Y days`, where days are computed from the current effective daily dose.
-The status is green above 7 days remaining, yellow above 3 days, and red at 3
-days or less. If no tank level or nonzero daily dose is available, the indicator
-stays neutral.
+recorded tank refills. Tank level tests and refill records use the true tank
+level, including the 2 gallon reserve. The top status strip displays `Usable
+chlorine remaining X gallons, Y days`, where usable gallons subtract the 2
+gallon reserve from the true estimated level. Days are computed from the
+FC-demand maintenance dose when one is available; otherwise they use the current
+chlorination daily dose. The status is green above 7 usable days remaining,
+yellow above 3 days, and red at 3 days or less. If no tank level or nonzero
+daily dose is available, the indicator stays neutral.
 The Config page has diagnostic dosing-pump buttons:
 
 - `Prime Dosing Pump 30s`: runs the dosing pump continuously for 30 seconds.
@@ -429,11 +443,13 @@ loop.
 
 The Live page Quick Controls also has an `Add Chlorine` action for a one-time
 supplemental sodium-hypochlorite dose. Enter the extra fluid ounces to add; the
-runtime forces the filter pump on at low speed, doses at the configured
-`max_duty_cycle`, then keeps the pump running for `no_dose_last_minutes` after
-the final dosing pulse. This is normal pool dosing, not a diagnostic run: it
-does not bypass safety, and delivered runtime is included in logged chlorine
-delivery, daily sodium-hypochlorite totals, and FC-demand addition math.
+runtime forces the filter pump on at low speed, keeps the booster off, doses at
+the configured `max_duty_cycle`, then keeps the pump running for
+`no_dose_last_minutes` after the final dosing pulse. Supplemental dosing uses
+the same pump-output-pressure/booster-off/tank-reserve interlocks as scheduled
+normal dosing. This is normal pool dosing, not a diagnostic run: it does not
+bypass safety, and delivered runtime is included in logged chlorine delivery,
+daily sodium-hypochlorite totals, and FC-demand addition math.
 Supplemental dose planning distributes total dosing runtime into equal pulses
 instead of leaving a short final remainder; for example, a 70-second dosing
 runtime with `cycle_on_seconds: 60.0` becomes two 35-second pulses. Because this
@@ -538,11 +554,14 @@ fc_demand:
 ```
 
 If safety enforcement is enabled, dosing ON commands still pass through the
-safety gate. For low-speed scheduled dosing, set:
+safety gate. Normal dosing uses the configured pump-output pressure window for
+head-pressure qualification:
 
 ```yaml
 safety:
   thresholds:
+    chlorine_min_pump_output_psi: 3.0
+    chlorine_max_pump_output_psi: 3.5
     chlorine_requires_high_speed: false
 ```
 
@@ -738,10 +757,11 @@ notifications:
 ```
 
 Alert rules are disabled by default even when the provider block exists in the
-tracked configs. `chlorine_tank` thresholds are days remaining, computed from
-the estimated tank gallons and the current effective daily dose; tank
-notifications include both days and gallons in the message. `ph` thresholds are
-pH units, and `orp` thresholds are mV.
+tracked configs. `chlorine_tank` thresholds are usable days remaining, computed
+from the estimated true tank gallons minus the 2 gallon reserve and the
+maintenance chlorine daily estimate when available; tank notifications include
+both usable days and usable gallons in the message. `ph` thresholds are pH
+units, and `orp` thresholds are mV.
 Warning thresholds are evaluated before caution thresholds. Each signal has a
 separate caution and warning repeat interval; the throttle key is signal plus
 severity, so pH or ORP values that bounce above and below threshold do not keep

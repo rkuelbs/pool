@@ -91,7 +91,7 @@ def temperature(
 def required_chlorine_pressures(clock: SimulatedClock) -> list[Measurement]:
     return [
         pressure(clock, SensorId.RETURN_PSI, 2.0),
-        pressure(clock, SensorId.PUMP_OUTPUT_PSI, 6.0),
+        pressure(clock, SensorId.PUMP_OUTPUT_PSI, 3.2),
     ]
 
 
@@ -101,28 +101,42 @@ async def start_pump_high(clock: SimulatedClock, router: CommandRouter) -> None:
 
 
 @pytest.mark.asyncio
-async def test_chlorine_output_requires_pump_high_and_pressure() -> None:
+async def test_chlorine_output_requires_pump_and_pressure_window() -> None:
     clock, _, router = make_router()
 
     await router.route(command(clock, ActuatorId.PUMP_MOTOR, ActuatorState.ON))
 
-    speed_low_result = await router.route(
+    low_pump_result = await router.route(
         command(clock, ActuatorId.CHLORINE_DOSING_PUMP, ActuatorState.ON),
-        measurements=required_chlorine_pressures(clock),
+        measurements=[
+            pressure(clock, SensorId.RETURN_PSI, 2.0),
+            pressure(clock, SensorId.PUMP_OUTPUT_PSI, 2.9),
+        ],
     )
 
-    assert not speed_low_result.accepted
-    assert speed_low_result.rejection_reason == (
-        "chlorine output cannot turn on unless pump speed is high"
+    assert not low_pump_result.accepted
+    assert low_pump_result.rejection_reason == (
+        "chlorine output requires pump output pressure >= 3 psi"
     )
 
-    await router.route(command(clock, ActuatorId.PUMP_MOTOR_SPEED, ActuatorState.HIGH))
+    high_pump_result = await router.route(
+        command(clock, ActuatorId.CHLORINE_DOSING_PUMP, ActuatorState.ON),
+        measurements=[
+            pressure(clock, SensorId.RETURN_PSI, 2.0),
+            pressure(clock, SensorId.PUMP_OUTPUT_PSI, 3.6),
+        ],
+    )
+
+    assert not high_pump_result.accepted
+    assert high_pump_result.rejection_reason == (
+        "chlorine output requires pump output pressure <= 3.5 psi"
+    )
 
     low_return_result = await router.route(
         command(clock, ActuatorId.CHLORINE_DOSING_PUMP, ActuatorState.ON),
         measurements=[
             pressure(clock, SensorId.RETURN_PSI, 1.9),
-            pressure(clock, SensorId.PUMP_OUTPUT_PSI, 6.0),
+            pressure(clock, SensorId.PUMP_OUTPUT_PSI, 3.2),
         ],
     )
 

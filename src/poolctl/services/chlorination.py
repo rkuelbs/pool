@@ -345,6 +345,8 @@ class ChlorinationController:
             warning = "no valid dosing time in pump schedule"
         elif actuator_states.get(ActuatorId.PUMP_MOTOR) != ActuatorState.ON:
             reason = "pump motor is not on"
+        elif actuator_states.get(ActuatorId.BOOSTER_PUMP, ActuatorState.OFF) != ActuatorState.OFF:
+            reason = "booster pump is on"
         elif current_window is None:
             reason = "outside valid dosing window"
         elif cycle_period_seconds is None:

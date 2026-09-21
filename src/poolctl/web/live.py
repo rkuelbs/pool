@@ -12,7 +12,13 @@ import math
 from datetime import datetime, timedelta
 from typing import Any
 
-from poolctl.app import PoolControllerApp, TimerOverrideState
+from poolctl.app import (
+    CHLORINE_TANK_RESERVE_GAL,
+    PoolControllerApp,
+    TimerOverrideState,
+    chlorine_supply_daily_dose_oz,
+    usable_chlorine_gallons,
+)
 from poolctl.config import LiveViewConfig
 from poolctl.domain.models import ActuatorId, ChemicalType, Measurement, Quality, SensorId
 
@@ -190,10 +196,10 @@ async def build_live_snapshot(app: PoolControllerApp) -> dict[str, Any]:
     )
     if chlorine_tank_measurement is not None:
         snapshot_measurements[chlorine_tank_measurement.sensor_id] = chlorine_tank_measurement
-    daily_dose_oz = (
-        tick.chlorination_status.daily_dose_oz
-        if tick.chlorination_status is not None
-        else app.chlorination_config.daily_dose_oz
+    daily_dose_oz = chlorine_supply_daily_dose_oz(
+        chlorination_status=tick.chlorination_status,
+        fc_demand_status=tick.fc_demand_status,
+        fallback_daily_dose_oz=app.chlorination_config.daily_dose_oz,
     )
     return {
         "observed_at": tick.observed_at.isoformat(),
@@ -333,6 +339,7 @@ def chlorine_supply_payload(
     tank_measurement: Measurement | None,
     daily_dose_oz: float,
 ) -> dict[str, Any]:
+    tank_level_gal = None
     remaining_gal = None
     days_remaining = None
     reason = None
@@ -340,10 +347,12 @@ def chlorine_supply_payload(
     if tank_measurement is None:
         reason = "enter a chlorine tank level test to estimate remaining supply"
     else:
-        remaining_gal = max(0.0, float(tank_measurement.value))
-        if not math.isfinite(remaining_gal):
-            remaining_gal = None
+        tank_level_gal = max(0.0, float(tank_measurement.value))
+        if not math.isfinite(tank_level_gal):
+            tank_level_gal = None
             reason = "chlorine tank estimate is unavailable"
+        else:
+            remaining_gal = usable_chlorine_gallons(tank_level_gal)
 
     dose = float(daily_dose_oz)
     if not math.isfinite(dose) or dose <= 0:
@@ -363,6 +372,11 @@ def chlorine_supply_payload(
         if remaining_gal is not None
         else "-- gal"
     )
+    tank_level_gal_display = (
+        f"{tank_level_gal:.2f} gal"
+        if tank_level_gal is not None
+        else "-- gal"
+    )
     days_display = (
         f"{days_remaining:.1f} days"
         if days_remaining is not None
@@ -370,14 +384,19 @@ def chlorine_supply_payload(
     )
     return {
         "available": remaining_gal is not None,
+        "tank_level_gal": tank_level_gal,
+        "tank_level_gal_display": tank_level_gal_display,
         "remaining_gal": remaining_gal,
+        "usable_remaining_gal": remaining_gal,
         "remaining_gal_display": remaining_gal_display,
+        "usable_remaining_gal_display": remaining_gal_display,
+        "reserve_gal": CHLORINE_TANK_RESERVE_GAL,
         "days_remaining": days_remaining,
         "days_remaining_display": days_display,
         "daily_dose_oz": dose,
         "status": status,
         "status_label": SENSOR_STATUS_LABELS[status],
-        "display": f"Chlorine Remaining {remaining_display}, {days_display}",
+        "display": f"Usable chlorine remaining {remaining_display}, {days_display}",
         "reason": reason,
     }
 
