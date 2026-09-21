@@ -40,6 +40,7 @@ class ChlorinationConfig:
     enabled: bool = True
     daily_dose_oz: float = 0.0
     pump_output_oz_per_min: float = 1.0
+    no_dose_first_minutes: float = 1.0
     no_dose_last_minutes: float = 10.0
     max_duty_cycle: float = 0.5
     cycle_on_seconds: float = 60.0
@@ -51,6 +52,8 @@ class ChlorinationConfig:
             raise ValueError("chlorination.daily_dose_oz must be >= 0")
         if self.pump_output_oz_per_min <= 0:
             raise ValueError("chlorination.pump_output_oz_per_min must be > 0")
+        if self.no_dose_first_minutes < 0:
+            raise ValueError("chlorination.no_dose_first_minutes must be >= 0")
         if self.no_dose_last_minutes < 0:
             raise ValueError("chlorination.no_dose_last_minutes must be >= 0")
         if not 0 < self.max_duty_cycle <= 1:
@@ -80,6 +83,11 @@ class ChlorinationConfig:
                 config_data,
                 "pump_output_oz_per_min",
                 cls.pump_output_oz_per_min,
+            ),
+            no_dose_first_minutes=_float_value(
+                config_data,
+                "no_dose_first_minutes",
+                cls.no_dose_first_minutes,
             ),
             no_dose_last_minutes=_float_value(
                 config_data,
@@ -133,7 +141,6 @@ class DosingWindow:
 @dataclass(frozen=True)
 class ChlorinationStatus:
     enabled: bool
-    layer_enabled: bool
     desired_state: ActuatorState
     active: bool
     reason: str
@@ -153,6 +160,7 @@ class ChlorinationStatus:
     min_cycle_on_seconds: float
     cycle_on_seconds_reduced: bool
     min_cycle_on_seconds_limited: bool
+    no_dose_first_minutes: float
     no_dose_last_minutes: float
     eligible_window_active: bool
     duty_cycle_window_active: bool
@@ -166,7 +174,6 @@ class ChlorinationStatus:
     def as_payload(self) -> dict[str, Any]:
         return {
             "enabled": self.enabled,
-            "layer_enabled": self.layer_enabled,
             "desired_state": self.desired_state.value,
             "active": self.active,
             "reason": self.reason,
@@ -187,6 +194,7 @@ class ChlorinationStatus:
             "min_cycle_on_seconds": self.min_cycle_on_seconds,
             "cycle_on_seconds_reduced": self.cycle_on_seconds_reduced,
             "min_cycle_on_seconds_limited": self.min_cycle_on_seconds_limited,
+            "no_dose_first_minutes": self.no_dose_first_minutes,
             "no_dose_last_minutes": self.no_dose_last_minutes,
             "eligible_window_active": self.eligible_window_active,
             "duty_cycle_window_active": self.duty_cycle_window_active,
@@ -265,7 +273,6 @@ class ChlorinationController:
         now: datetime,
         pump_timer_config: PumpTimerConfig,
         actuator_states: Mapping[ActuatorId, ActuatorState],
-        layer_enabled: bool = True,
         plan_adjustment: ChlorinationPlanAdjustment | None = None,
     ) -> ChlorinationEvaluation:
         timezone = ZoneInfo(pump_timer_config.timezone)
@@ -276,6 +283,7 @@ class ChlorinationController:
         windows = valid_dosing_windows_for_day(
             pump_timer_config,
             local_now.date(),
+            no_dose_first_minutes=self.config.no_dose_first_minutes,
             no_dose_last_minutes=self.config.no_dose_last_minutes,
         )
         available_runtime_min = sum(window.duration_seconds for window in windows) / 60.0
@@ -322,6 +330,7 @@ class ChlorinationController:
         next_eligible_start = _next_eligible_start(
             pump_timer_config,
             local_now,
+            no_dose_first_minutes=self.config.no_dose_first_minutes,
             no_dose_last_minutes=self.config.no_dose_last_minutes,
         )
         desired_state = ActuatorState.OFF
@@ -334,9 +343,7 @@ class ChlorinationController:
         duty_cycle_window_active = False
         on_pulse_seconds: float | None = None
 
-        if not layer_enabled:
-            reason = "chlorination layer disabled"
-        elif not self.config.enabled:
+        if not self.config.enabled:
             reason = "chlorination disabled"
         elif effective_daily_dose_oz <= 0:
             reason = "daily dose is zero"
@@ -389,7 +396,6 @@ class ChlorinationController:
 
         status = ChlorinationStatus(
             enabled=self.config.enabled,
-            layer_enabled=layer_enabled,
             desired_state=desired_state,
             active=desired_state == ActuatorState.ON,
             reason=reason,
@@ -425,6 +431,7 @@ class ChlorinationController:
                 if cycle_timing is not None
                 else False
             ),
+            no_dose_first_minutes=self.config.no_dose_first_minutes,
             no_dose_last_minutes=self.config.no_dose_last_minutes,
             eligible_window_active=current_window is not None,
             duty_cycle_window_active=duty_cycle_window_active,
@@ -538,6 +545,7 @@ def valid_dosing_windows_for_day(
     config: PumpTimerConfig,
     day: date,
     *,
+    no_dose_first_minutes: float,
     no_dose_last_minutes: float,
 ) -> tuple[DosingWindow, ...]:
     """
@@ -551,18 +559,29 @@ def valid_dosing_windows_for_day(
         tzinfo=timezone,
     )
     day_end = day_start + timedelta(days=1)
-    raw_intervals = _raw_schedule_intervals(config, day)
-    merged_intervals = _merge_intervals(raw_intervals)
-    trim = timedelta(minutes=no_dose_last_minutes)
+    raw_allowed_intervals = _raw_schedule_intervals(config, day, allow_dosing_only=True)
+    merged_allowed_intervals = _merge_intervals(raw_allowed_intervals)
+    pump_run_intervals = _merge_intervals(
+        _raw_schedule_intervals(config, day, allow_dosing_only=False)
+    )
+    start_trim = timedelta(minutes=no_dose_first_minutes)
+    end_trim = timedelta(minutes=no_dose_last_minutes)
     windows: list[DosingWindow] = []
 
-    for raw_start, raw_end in merged_intervals:
-        # Remove the end of each pump run so the dosing pump stops while the
-        # filter pump still has time to circulate treated water.
-        valid_end = raw_end - trim
-        if valid_end <= raw_start:
+    for raw_start, raw_end in merged_allowed_intervals:
+        pump_start = _containing_interval_start(pump_run_intervals, raw_start, raw_end)
+        if pump_start is None:
             continue
-        clipped_start = max(raw_start, day_start)
+        # Remove the first part of the continuous pump run so pump output
+        # pressure and flow can stabilize. This is based on actual scheduled
+        # pump continuity, not on each allow-dosing sub-window.
+        valid_start = max(raw_start, pump_start + start_trim)
+        # Remove the end of each dosing-allowed run so the dosing pump stops
+        # while the filter pump still has time to circulate treated water.
+        valid_end = raw_end - end_trim
+        if valid_end <= valid_start:
+            continue
+        clipped_start = max(valid_start, day_start)
         clipped_end = min(valid_end, day_end)
         if clipped_end > clipped_start:
             windows.append(DosingWindow(start=clipped_start, end=clipped_end))
@@ -573,6 +592,8 @@ def valid_dosing_windows_for_day(
 def _raw_schedule_intervals(
     config: PumpTimerConfig,
     day: date,
+    *,
+    allow_dosing_only: bool,
 ) -> tuple[tuple[datetime, datetime], ...]:
     timezone = ZoneInfo(config.timezone)
     intervals: list[tuple[datetime, datetime]] = []
@@ -586,7 +607,7 @@ def _raw_schedule_intervals(
             # Some pump runs are for skimming, vacuuming, freeze protection, or
             # post-test circulation only. Those still run the pump timer, but
             # they are intentionally excluded from liquid chlorine dosing.
-            if not schedule.allow_dosing:
+            if allow_dosing_only and not schedule.allow_dosing:
                 continue
             start = _datetime_for_time_of_day(schedule_day, schedule.window.start, timezone)
             if schedule.window.start == schedule.window.end:
@@ -625,6 +646,19 @@ def _merge_intervals(
     return tuple(merged)
 
 
+def _containing_interval_start(
+    intervals: tuple[tuple[datetime, datetime], ...],
+    start: datetime,
+    end: datetime,
+) -> datetime | None:
+    for interval_start, interval_end in intervals:
+        if interval_start <= start and end <= interval_end:
+            return interval_start
+        if interval_start < end and start < interval_end:
+            return interval_start
+    return None
+
+
 def _datetime_for_time_of_day(
     day: date,
     value: TimeOfDay,
@@ -655,6 +689,7 @@ def _next_eligible_start(
     config: PumpTimerConfig,
     local_now: datetime,
     *,
+    no_dose_first_minutes: float,
     no_dose_last_minutes: float,
 ) -> datetime | None:
     for day_offset in range(3):
@@ -662,6 +697,7 @@ def _next_eligible_start(
         for window in valid_dosing_windows_for_day(
             config,
             day,
+            no_dose_first_minutes=no_dose_first_minutes,
             no_dose_last_minutes=no_dose_last_minutes,
         ):
             if local_now < window.start:

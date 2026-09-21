@@ -395,26 +395,26 @@ class NotificationService:
                 payload,
                 self.config.pushover.timeout_s,
             )
-        except Exception as error:
+        except Exception as exc:
             return NotificationResult(
                 sent=False,
                 provider=NotificationProvider.PUSHOVER,
-                error=str(error),
+                error=str(exc),
             )
 
         parsed = _json_body(body)
         pushover_status = parsed.get("status") if parsed is not None else None
         sent = 200 <= status_code < 300 and pushover_status == 1
-        error = None
+        send_error = None
         if not sent:
             errors = parsed.get("errors") if parsed is not None else None
-            error = ", ".join(str(item) for item in errors) if isinstance(errors, list) else body
+            send_error = ", ".join(str(item) for item in errors) if isinstance(errors, list) else body
 
         return NotificationResult(
             sent=sent,
             provider=NotificationProvider.PUSHOVER,
             status_code=status_code,
-            error=error,
+            error=send_error,
             response=parsed,
         )
 

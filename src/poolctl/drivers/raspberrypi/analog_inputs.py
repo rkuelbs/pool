@@ -1,10 +1,10 @@
 """
 Waveshare Modbus analog input module support.
 
-The pressure and analog pH inputs are read as voltages and then converted to
-engineering units with two-point calibration from the YAML config. The driver
-reads all channels in one Modbus request so the controller tick is not slowed by
-one serial transaction per sensor.
+The pump-output pressure input is read as voltage and converted to engineering
+units with two-point calibration from the YAML config. The driver reads all
+channels in one Modbus request so the controller tick is not slowed by one
+serial transaction per sensor.
 """
 
 from __future__ import annotations
@@ -25,11 +25,6 @@ from poolctl.services.clock import Clock
 
 SUPPORTED_ANALOG_SENSOR_IDS = {
     SensorId.PUMP_OUTPUT_PSI,
-    SensorId.FILTER_OUTPUT_PSI,
-    SensorId.RETURN_PSI,
-    SensorId.BUBBLER_PSI,
-    SensorId.BOOSTER_PSI,
-    SensorId.RAW_PH,
 }
 CHANNEL_MODE_REGISTER_BASE = 0x1000
 CHANNEL_COUNT = 8
@@ -163,13 +158,7 @@ class WaveshareAnalogInput8ChDriver:
 
     @property
     def sensor_ids(self) -> tuple[SensorId, ...]:
-        sensor_ids = [sensor.sensor_id for sensor in self._config.sensors]
-        if SensorId.RAW_PH in sensor_ids:
-            # The calibrated pH value is useful for control, while the raw
-            # voltage is useful when checking or adjusting a two-point
-            # calibration from the GUI.
-            sensor_ids.append(SensorId.RAW_PH_VOLTAGE)
-        return tuple(sensor_ids)
+        return tuple(sensor.sensor_id for sensor in self._config.sensors)
 
     async def read_all(self) -> list[Measurement]:
         await self._apply_startup_channel_mode()
@@ -185,8 +174,6 @@ class WaveshareAnalogInput8ChDriver:
         observed_at = self._clock.now()
 
         measurements: list[Measurement] = []
-        raw_ph_voltage: float | None = None
-        raw_ph_metadata: dict[str, Any] | None = None
         slave_id = self._config.device.slave_id
 
         for sensor in self._config.sensors:
@@ -200,8 +187,8 @@ class WaveshareAnalogInput8ChDriver:
                 + self._config.raw_to_volts_offset
             )
 
-            # Two-point calibration maps voltage to the engineering unit for the
-            # configured sensor: psi for pressure channels, pH for analog pH.
+            # Two-point calibration maps voltage to psi for the configured
+            # pressure channel.
             calibrated_value = sensor.calibration.apply(voltage)
 
             metadata = {
@@ -218,14 +205,8 @@ class WaveshareAnalogInput8ChDriver:
                 },
             }
 
-            if sensor.sensor_id == SensorId.RAW_PH:
-                unit = "pH"
-                rounded_value = round(calibrated_value, 2)
-                raw_ph_voltage = voltage
-                raw_ph_metadata = metadata
-            else:
-                unit = "psi"
-                rounded_value = round(calibrated_value, 2)
+            unit = "psi"
+            rounded_value = round(calibrated_value, 2)
 
             measurements.append(
                 Measurement(
@@ -236,25 +217,6 @@ class WaveshareAnalogInput8ChDriver:
                     unit=unit,
                     quality=Quality.GOOD,
                     metadata=metadata,
-                )
-            )
-
-        if raw_ph_voltage is not None:
-            # Publish a second raw-voltage measurement for the analog pH channel.
-            # It is not used as the pH value, but it makes field calibration
-            # visible on the config page and in diagnostics.
-            measurements.append(
-                Measurement(
-                    sensor_id=SensorId.RAW_PH_VOLTAGE,
-                    observed_at=observed_at,
-                    kind=MeasurementKind.RAW,
-                    value=round(raw_ph_voltage, 4),
-                    unit="V",
-                    quality=Quality.GOOD,
-                    metadata={
-                        **(raw_ph_metadata or {}),
-                        "derived_from": SensorId.RAW_PH.value,
-                    },
                 )
             )
 

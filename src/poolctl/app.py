@@ -4,7 +4,7 @@ Build and run the pool controller application.
 This module is the composition root for the project. It reads configuration,
 chooses simulated or Raspberry Pi drivers, wires the services together, and
 executes one controller "tick" at a time. A tick is one pass through timer
-control, chlorination, acquisition, safety, logging, MQTT, and notifications.
+control, chlorination, acquisition, safety, logging, and notifications.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from poolctl.config import DriverProfile, FeatureLayer, LiveViewConfig, RuntimeConfig
+from poolctl.config import DriverProfile, LiveViewConfig, RuntimeConfig
 from poolctl.config_files import load_config_with_overrides
 from poolctl.domain.models import (
     ACTUATOR_AUTO_OFF_AT_METADATA,
@@ -76,11 +76,12 @@ from poolctl.services.measurement_logging import (
     ValueSummary,
 )
 from poolctl.services.flow_estimation import (
+    FilterLoadingEstimator,
+    FilterLoadingConfig,
     FlowEstimates,
     FlowEstimationConfig,
     estimate_flows,
 )
-from poolctl.services.mqtt import MqttBridge, MqttBridgeConfig
 from poolctl.services.notifications import (
     NotificationMessage,
     NotificationResult,
@@ -100,7 +101,7 @@ from poolctl.services.weather import WeatherConfig, WeatherPollResult, WeatherSe
 
 
 FLUID_OUNCES_PER_GALLON = 128.0
-CHLORINE_TANK_RESERVE_GAL = 2.0
+DEFAULT_CHLORINE_TANK_FORECAST_RESERVE_GAL = 2.0
 DAILY_ENVIRONMENT_SUMMARY_INTERVAL_S = 3600.0
 CHLORINATION_CONTROL_SENSOR_IDS = frozenset(
     {
@@ -140,7 +141,7 @@ DAILY_MOVING_AVERAGE_SENSOR_IDS = {
 def usable_chlorine_gallons(
     tank_level_gal: float,
     *,
-    reserve_gal: float = CHLORINE_TANK_RESERVE_GAL,
+    reserve_gal: float = DEFAULT_CHLORINE_TANK_FORECAST_RESERVE_GAL,
 ) -> float:
     return max(0.0, float(tank_level_gal) - reserve_gal)
 
@@ -179,7 +180,6 @@ class AppTickResult:
     safety_results: tuple[ActuatorCommandResult, ...]
     startup_safe_off_results: tuple[ActuatorCommandResult, ...] = ()
     relay_reconciliation_results: tuple[ActuatorCommandResult, ...] = ()
-    mqtt_results: tuple[ActuatorCommandResult, ...] = ()
     logged_measurement_count: int = 0
     logged_lab_test_count: int = 0
     flow_estimates: FlowEstimates = FlowEstimates()
@@ -430,8 +430,8 @@ class PoolControllerApp:
     chemistry_sampling_refresh: ChemistrySamplingRefreshConfig = ChemistrySamplingRefreshConfig()
     sample_timer_override: TimerOverrideState | None = None
     override_audit: tuple[dict[str, Any], ...] = ()
-    mqtt_bridge: MqttBridge | None = None
     flow_estimation_config: FlowEstimationConfig = FlowEstimationConfig()
+    filter_loading_estimator: FilterLoadingEstimator | None = None
     calcium_saturation_index_config: CalciumSaturationIndexConfig = CalciumSaturationIndexConfig()
     weather_config: WeatherConfig = WeatherConfig()
     weather_service: WeatherService | None = None
@@ -518,13 +518,23 @@ class PoolControllerApp:
             else {}
         )
 
-        # Flow, filter restriction, and CSI are not directly read from sensors;
+        # Flow, filter loading, and CSI are not directly read from sensors;
         # they are derived from the latest measurements and then logged like
         # normal measurements when their source readings are due to be logged.
+        filter_loading_update = (
+            self.filter_loading_estimator.update(
+                now=self.clock.now(),
+                measurements=latest_measurements,
+                actuator_states=self.router.actuator_states,
+            )
+            if self.filter_loading_estimator is not None
+            else None
+        )
         flow_estimates = estimate_flows(
             measurements=latest_measurements,
             actuator_states=self.router.actuator_states,
             config=self.flow_estimation_config,
+            filter_loading=filter_loading_update,
         )
         flow_derived_measurements = _flow_derived_measurements(
             flow_estimates=flow_estimates,
@@ -534,15 +544,13 @@ class PoolControllerApp:
         source_logged_sensor_ids = {measurement.sensor_id for measurement in acquisition.loggable_measurements}
         flow_source_sensor_ids = {
             SensorId.PUMP_OUTPUT_PSI,
-            SensorId.FILTER_OUTPUT_PSI,
-            SensorId.RETURN_PSI,
-            SensorId.BUBBLER_PSI,
-            SensorId.BOOSTER_PSI,
         }
         # Derived flow values are stored only when at least one pressure source
-        # was already due to be logged. That avoids filling the DB with derived
-        # duplicates on every fast control tick.
-        should_log_flow_derived = bool(source_logged_sensor_ids & flow_source_sensor_ids)
+        # was already due to be logged, plus the exact tick when a standardized
+        # filter-loading test completes.
+        should_log_flow_derived = bool(source_logged_sensor_ids & flow_source_sensor_ids) or (
+            flow_estimates.filter_loading.completed_this_tick
+        )
         should_log_csi = (
             csi_measurement is not None
             and (
@@ -557,7 +565,7 @@ class PoolControllerApp:
         )
         if should_log_csi and csi_measurement is not None:
             loggable_measurements = tuple(loggable_measurements) + (csi_measurement,)
-        mqtt_results, logged_lab_test_count = await self._process_mqtt_inputs(acquisition.measurements)
+        logged_lab_test_count = 0
         logged_measurement_count = self._log_measurements(loggable_measurements)
         daily_summary_measurements = self._daily_environment_measurements(
             observed_at=self.clock.now()
@@ -583,54 +591,34 @@ class PoolControllerApp:
             )
         )
         safety_results: tuple[ActuatorCommandResult, ...] = ()
-        safety_layer_enabled = self.runtime_config.layer_enabled(
-            FeatureLayer.SAFETY_ENFORCEMENT
-        )
-        chlorination_layer_enabled = self.runtime_config.layer_enabled(
-            FeatureLayer.CHLORINATION
-        )
-        if safety_layer_enabled or chlorination_layer_enabled:
-            safety_measurements = acquisition.measurements
-            if not safety_measurements and self.acquisition_service is not None:
-                safety_measurements = tuple(
-                    self.acquisition_service.latest_measurements.values()
-                )
-            safety_measurements = self.safety_measurements(
-                safety_measurements,
-                observed_at=self.clock.now(),
-                source="safety_enforcement",
+        safety_measurements = acquisition.measurements
+        if not safety_measurements and self.acquisition_service is not None:
+            safety_measurements = tuple(
+                self.acquisition_service.latest_measurements.values()
             )
+        safety_measurements = self.safety_measurements(
+            safety_measurements,
+            observed_at=self.clock.now(),
+            source="safety_enforcement",
+        )
 
-            # Dosing diagnostic modes can run with the filter pump off, so the
-            # normal chlorine interlock would constantly fight the diagnostic.
-            # Hard lockouts such as overpressure are still honored.
-            suppressed_reason_codes = (
-                ("chlorine_interlock_lost",)
-                if self.dosing_pump_diagnostic_active()
-                else ()
+        # Dosing diagnostic modes can run with the filter pump off, so the
+        # normal chlorine interlock would constantly fight the diagnostic.
+        # Hard lockouts such as overpressure are still honored.
+        suppressed_reason_codes = (
+            ("chlorine_interlock_lost",)
+            if self.dosing_pump_diagnostic_active()
+            else ()
+        )
+        safety_results = tuple(
+            await self.router.enforce_safety(
+                measurements=safety_measurements,
+                suppressed_action_reason_codes=suppressed_reason_codes,
             )
-            if safety_layer_enabled:
-                safety_results = tuple(
-                    await self.router.enforce_safety(
-                        measurements=safety_measurements,
-                        suppressed_action_reason_codes=suppressed_reason_codes,
-                    )
-                )
-            else:
-                safety_results = tuple(
-                    await self.router.enforce_chlorine_tank_safety(
-                        measurements=safety_measurements,
-                        suppressed_action_reason_codes=suppressed_reason_codes,
-                    )
-                )
+        )
 
         relay_reconciliation_results = tuple(await self._run_relay_reconciliation())
 
-        publish_measurements = acquisition.measurements
-        if csi_measurement is not None:
-            publish_measurements = publish_measurements + (csi_measurement,)
-        publish_measurements = publish_measurements + control_measurements
-        self._publish_mqtt(publish_measurements)
         chlorine_supply_daily_dose = chlorine_supply_daily_dose_oz(
             chlorination_status=chlorination_status,
             fc_demand_status=(
@@ -654,7 +642,6 @@ class PoolControllerApp:
             safety_results=safety_results,
             startup_safe_off_results=startup_safe_off_results,
             relay_reconciliation_results=relay_reconciliation_results,
-            mqtt_results=mqtt_results,
             logged_measurement_count=logged_measurement_count,
             logged_lab_test_count=logged_lab_test_count,
             flow_estimates=flow_estimates,
@@ -675,12 +662,7 @@ class PoolControllerApp:
         Apply updated pump timer schedules to the running app.
         """
         object.__setattr__(self, "pump_timer_config", config)
-
-        if self.runtime_config.layer_enabled(FeatureLayer.PUMP_TIMER):
-            object.__setattr__(self, "pump_timer", PumpTimer(config))
-            return
-
-        object.__setattr__(self, "pump_timer", None)
+        object.__setattr__(self, "pump_timer", PumpTimer(config))
 
     def apply_chlorination_config(self, config: ChlorinationConfig) -> None:
         """
@@ -688,6 +670,9 @@ class PoolControllerApp:
         """
         object.__setattr__(self, "chlorination_config", config)
         object.__setattr__(self, "chlorination_controller", ChlorinationController(config))
+        self.router.safety_gate.set_chlorine_pump_stabilization_seconds(
+            config.no_dose_first_minutes * 60.0
+        )
 
     def apply_fc_demand_config(self, config: FcDemandConfig) -> None:
         """
@@ -713,6 +698,17 @@ class PoolControllerApp:
         """
         object.__setattr__(self, "safety_config", config)
         self.router.safety_gate.apply_config(config)
+
+    def apply_filter_loading_config(self, config: FilterLoadingConfig) -> None:
+        """
+        Apply updated standardized filter-loading settings to the running app.
+        """
+        flow_config = replace(self.flow_estimation_config, filter_loading=config)
+        object.__setattr__(self, "flow_estimation_config", flow_config)
+        if self.filter_loading_estimator is None:
+            object.__setattr__(self, "filter_loading_estimator", FilterLoadingEstimator(config))
+        else:
+            self.filter_loading_estimator.apply_config(config)
 
     def set_timer_override(
         self,
@@ -837,11 +833,9 @@ class PoolControllerApp:
         if dose_oz <= 0:
             raise ValueError("dose_oz must be > 0")
         if self.pump_timer is None:
-            raise ValueError("supplemental chlorine dose requires the pump_timer layer")
+            raise ValueError("supplemental chlorine dose requires the pump timer")
         if self.chlorination_controller is None:
-            raise ValueError(
-                "supplemental chlorine dose requires the chlorination layer"
-            )
+            raise ValueError("supplemental chlorine dose requires chlorination")
         if not self.chlorination_config.enabled:
             raise ValueError("chlorination must be enabled for a supplemental dose")
         if self.dosing_pump_diagnostic_active():
@@ -1302,7 +1296,6 @@ class PoolControllerApp:
             now=now,
             pump_timer_config=self.pump_timer_config,
             actuator_states=self.router.actuator_states,
-            layer_enabled=self.runtime_config.layer_enabled(FeatureLayer.CHLORINATION),
             plan_adjustment=plan_adjustment,
         )
 
@@ -2140,7 +2133,7 @@ class PoolControllerApp:
             return None
 
         tank_level_gal = max(0.0, float(tank_measurement.value))
-        reserve_gal = self.safety_config.chlorine_tank.low_warning_gal
+        reserve_gal = self.safety_config.chlorine_tank.forecast_reserve_gal
         remaining_gal = usable_chlorine_gallons(
             tank_level_gal,
             reserve_gal=reserve_gal,
@@ -2989,7 +2982,6 @@ class PoolControllerApp:
 
         return (
             chlorination_status.enabled,
-            chlorination_status.layer_enabled,
             dosing_state_value,
             chlorination_status.desired_state.value,
             chlorination_status.active,
@@ -3090,73 +3082,6 @@ class PoolControllerApp:
         updated = (*self.override_audit[-99:], entry)
         object.__setattr__(self, "override_audit", updated)
 
-    async def _process_mqtt_inputs(
-        self,
-        measurements: tuple[Measurement, ...],
-    ) -> tuple[tuple[ActuatorCommandResult, ...], int]:
-        if self.mqtt_bridge is None:
-            return (), 0
-
-        commands, lab_tests = self.mqtt_bridge.drain_inputs()
-        results: list[ActuatorCommandResult] = []
-        logged_lab_tests = 0
-
-        for payload in commands:
-            command = _mqtt_command_payload(payload, now=self.clock.now())
-            if command is None:
-                continue
-            result = await self.router.route(
-                command,
-                measurements=self.safety_measurements(
-                    measurements,
-                    source="mqtt_command_safety",
-                ),
-            )
-            results.append(result)
-
-        if self.measurement_logger is not None:
-            for payload in lab_tests:
-                test = _mqtt_lab_test_payload(payload, now=self.clock.now())
-                if test is None:
-                    continue
-                self.measurement_logger.log_lab_test(test)
-                logged_lab_tests += 1
-
-        return tuple(results), logged_lab_tests
-
-    def _publish_mqtt(self, measurements: tuple[Measurement, ...]) -> None:
-        if self.mqtt_bridge is None:
-            return
-
-        now = self.clock.now()
-        sensors = {
-            measurement.sensor_id.value: {
-                "value": measurement.value,
-                "unit": measurement.unit,
-                "quality": measurement.quality.value,
-                "observed_at": measurement.observed_at.isoformat(),
-            }
-            for measurement in measurements
-        }
-        live_payload = {
-            "observed_at": now.isoformat(),
-            "runtime_stage": self.runtime_config.stage.value,
-            "safety_lockout": self.router.safety_gate.locked_out,
-            "actuators": {
-                actuator_id.value: state.value
-                for actuator_id, state in self.router.actuator_states.items()
-            },
-            "sensors": sensors,
-        }
-        self.mqtt_bridge.publish_live(live_payload)
-        self.mqtt_bridge.publish_health(
-            {
-                "observed_at": now.isoformat(),
-                "safety_lockout": self.router.safety_gate.locked_out,
-                "mqtt": self.mqtt_bridge.status_payload(),
-            }
-        )
-
     def _csi_derived_measurement(
         self,
         measurements: Mapping[SensorId, Measurement],
@@ -3251,7 +3176,6 @@ def build_app_from_mapping(
     chemistry_sampling_refresh = ChemistrySamplingRefreshConfig(
         **_chemistry_sampling_refresh_values(data)
     )
-    mqtt_config = MqttBridgeConfig.from_mapping(data)
     weather_config = WeatherConfig.from_mapping(data)
     notifications_config = NotificationsConfig.from_mapping(data)
 
@@ -3304,39 +3228,29 @@ def build_app_from_mapping(
                 )
             )
 
-    safety_enabled = runtime_config.layer_enabled(FeatureLayer.SAFETY_ENFORCEMENT)
-    chlorination_enabled = runtime_config.layer_enabled(FeatureLayer.CHLORINATION)
     router = CommandRouter(
         drivers=built_actuator_drivers,
-        safety_gate=SafetyGate(safety_config),
+        safety_gate=SafetyGate(
+            safety_config,
+            chlorine_pump_stabilization_seconds=(
+                chlorination_config.no_dose_first_minutes * 60.0
+            ),
+        ),
         clock=built_clock,
-        safety_enabled=safety_enabled,
-        command_safety_enabled=safety_enabled,
-        chlorine_tank_safety_enabled=safety_enabled or chlorination_enabled,
     )
 
-    acquisition_service: AcquisitionService | None = None
-    if runtime_config.layer_enabled(FeatureLayer.ACQUISITION):
-        acquisition_service = AcquisitionService(
-            config=acquisition_config,
-            clock=built_clock,
-            sensor_drivers=built_sensor_drivers,
-            multi_sensor_drivers=built_multi_sensor_drivers,
-        )
-
-    pump_timer: PumpTimer | None = None
-    if runtime_config.layer_enabled(FeatureLayer.PUMP_TIMER):
-        pump_timer = PumpTimer(pump_timer_config)
-
+    acquisition_service = AcquisitionService(
+        config=acquisition_config,
+        clock=built_clock,
+        sensor_drivers=built_sensor_drivers,
+        multi_sensor_drivers=built_multi_sensor_drivers,
+    )
+    pump_timer = PumpTimer(pump_timer_config)
     chlorination_controller = ChlorinationController(chlorination_config)
-
-    measurement_logger: MeasurementLogger | None = None
-    if runtime_config.layer_enabled(FeatureLayer.LOGGING):
-        measurement_logger = MeasurementLogger(measurement_logging_config)
-
-    mqtt_bridge: MqttBridge | None = None
-    if runtime_config.layer_enabled(FeatureLayer.MQTT_BRIDGE) and mqtt_config.enabled:
-        mqtt_bridge = MqttBridge(mqtt_config, clock=built_clock)
+    measurement_logger = MeasurementLogger(measurement_logging_config)
+    filter_loading_estimator = FilterLoadingEstimator(
+        flow_estimation_config.filter_loading
+    )
 
     weather_service: WeatherService | None = None
     if weather_config.enabled:
@@ -3366,8 +3280,8 @@ def build_app_from_mapping(
         modbus_bus_registry=modbus_bus_registry,
         chemistry_sampling_refresh=chemistry_sampling_refresh,
         sample_timer_override=None,
-        mqtt_bridge=mqtt_bridge,
         flow_estimation_config=flow_estimation_config,
+        filter_loading_estimator=filter_loading_estimator,
         calcium_saturation_index_config=calcium_saturation_index_config,
         weather_config=weather_config,
         weather_service=weather_service,
@@ -3485,46 +3399,6 @@ def _float_value(data: Mapping[str, Any], key: str, default: float) -> float:
     if not isinstance(value, int | float):
         raise ValueError(f"{key} must be a number")
     return float(value)
-
-
-def _mqtt_command_payload(payload: dict[str, Any], *, now: datetime) -> ActuatorCommand | None:
-    raw_actuator = payload.get("actuator_id")
-    raw_state = payload.get("state")
-    reason = payload.get("reason", "mqtt remote command")
-    if not isinstance(raw_actuator, str) or not isinstance(raw_state, str):
-        return None
-    if not isinstance(reason, str):
-        reason = "mqtt remote command"
-
-    try:
-        actuator_id = ActuatorId(raw_actuator)
-        state = ActuatorState(raw_state)
-    except ValueError:
-        return None
-
-    return ActuatorCommand(
-        actuator_id=actuator_id,
-        created_at=now,
-        state=state,
-        requested_by=CommandSource.MQTT,
-        reason=reason,
-        metadata={"source": "mqtt"},
-    )
-
-
-def _mqtt_lab_test_payload(payload: dict[str, Any], *, now: datetime) -> LabTest | None:
-    raw = dict(payload)
-    sampled_at = raw.get("sampled_at", now.isoformat())
-    if not isinstance(sampled_at, str):
-        return None
-    raw["sampled_at"] = sampled_at
-    raw["entered_at"] = now.isoformat()
-    if "metadata" not in raw:
-        raw["metadata"] = {"source": "mqtt"}
-    try:
-        return LabTest.model_validate(raw)
-    except Exception:
-        return None
 
 
 def _local_day_start(value: datetime, *, timezone_name: str) -> datetime:
@@ -3854,66 +3728,42 @@ def _flow_derived_measurements(
                 metadata={"driver": "flow_estimation", "source": "pump_output_psi+pump_flow_gpm"},
             )
         )
-    if flow_estimates.return_flow_gpm is not None:
+    filter_result = flow_estimates.filter_loading.result
+    if (
+        filter_result is not None
+        and flow_estimates.filter_loading.completed_this_tick
+    ):
         measurements.append(
             Measurement(
-                sensor_id=SensorId.RETURN_FLOW_GPM,
-                observed_at=observed_at,
+                sensor_id=SensorId.FILTER_REFERENCE_PSI,
+                observed_at=filter_result.completed_at,
                 kind=MeasurementKind.ESTIMATED,
-                value=round(flow_estimates.return_flow_gpm, 3),
-                unit="gpm",
+                value=round(filter_result.reference_psi, 4),
+                unit="psi",
                 quality=Quality.GOOD,
-                metadata={"driver": "flow_estimation", "source": "return_psi"},
+                metadata={
+                    "driver": "filter_loading",
+                    "source": "standardized_pump_output_psi",
+                    "sample_count": filter_result.sample_count,
+                    "averaging_seconds": filter_result.averaging_seconds,
+                },
             )
         )
-    if flow_estimates.bubbler_flow_gpm is not None:
         measurements.append(
             Measurement(
-                sensor_id=SensorId.BUBBLER_FLOW_GPM,
-                observed_at=observed_at,
+                sensor_id=SensorId.FILTER_LOADING_PERCENT,
+                observed_at=filter_result.completed_at,
                 kind=MeasurementKind.ESTIMATED,
-                value=round(flow_estimates.bubbler_flow_gpm, 3),
-                unit="gpm",
-                quality=Quality.GOOD,
-                metadata={"driver": "flow_estimation", "source": "bubbler_psi"},
-            )
-        )
-    if flow_estimates.booster_flow_gpm is not None:
-        measurements.append(
-            Measurement(
-                sensor_id=SensorId.BOOSTER_FLOW_GPM,
-                observed_at=observed_at,
-                kind=MeasurementKind.ESTIMATED,
-                value=round(flow_estimates.booster_flow_gpm, 3),
-                unit="gpm",
-                quality=Quality.GOOD,
-                metadata={"driver": "flow_estimation", "source": "booster_psi"},
-            )
-        )
-
-    if flow_estimates.filter_restriction_metric is not None:
-        measurements.append(
-            Measurement(
-                sensor_id=SensorId.FILTER_RESTRICTION_METRIC,
-                observed_at=observed_at,
-                kind=MeasurementKind.ESTIMATED,
-                value=round(flow_estimates.filter_restriction_metric, 6),
-                unit="restriction_index",
-                quality=Quality.GOOD,
-                metadata={"driver": "flow_estimation", "source": "pump_output_psi-filter_output_psi"},
-            )
-        )
-
-    if flow_estimates.filter_restriction_percent is not None:
-        measurements.append(
-            Measurement(
-                sensor_id=SensorId.FILTER_RESTRICTION_PERCENT,
-                observed_at=observed_at,
-                kind=MeasurementKind.ESTIMATED,
-                value=round(flow_estimates.filter_restriction_percent, 3),
+                value=round(filter_result.display_loading_percent, 4),
                 unit="percent",
                 quality=Quality.GOOD,
-                metadata={"driver": "flow_estimation", "source": "filter_restriction_metric"},
+                metadata={
+                    "driver": "filter_loading",
+                    "source": "filter_reference_psi",
+                    "raw_loading_percent": filter_result.loading_percent,
+                    "sample_count": filter_result.sample_count,
+                    "averaging_seconds": filter_result.averaging_seconds,
+                },
             )
         )
 

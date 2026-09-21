@@ -11,8 +11,8 @@ def test_merge_config_mappings_recurses_mappings_and_replaces_lists() -> None:
     merged = merge_config_mappings(
         {
             "runtime": {
-                "stage": "open_loop_timer",
-                "enabled_layers": ["pump_timer"],
+                "driver_profile": "simulated",
+                "enabled_sensor_groups": ["pressures"],
             },
             "pump_timer": {
                 "timezone": "America/Chicago",
@@ -20,13 +20,13 @@ def test_merge_config_mappings_recurses_mappings_and_replaces_lists() -> None:
             },
         },
         {
-            "runtime": {"stage": "sensor_logging"},
+            "runtime": {"enabled_sensor_groups": ["chemistry_loop"]},
             "pump_timer": {"schedules": [{"name": "local"}]},
         },
     )
 
-    assert merged["runtime"]["stage"] == "sensor_logging"
-    assert merged["runtime"]["enabled_layers"] == ["pump_timer"]
+    assert merged["runtime"]["driver_profile"] == "simulated"
+    assert merged["runtime"]["enabled_sensor_groups"] == ["chemistry_loop"]
     assert merged["pump_timer"]["timezone"] == "America/Chicago"
     assert merged["pump_timer"]["schedules"] == [{"name": "local"}]
 
@@ -34,11 +34,14 @@ def test_merge_config_mappings_recurses_mappings_and_replaces_lists() -> None:
 def test_load_config_with_overrides_allows_missing_local_file(tmp_path: Path) -> None:
     base_path = tmp_path / "base.yaml"
     local_path = tmp_path / "local.yaml"
-    base_path.write_text(yaml.safe_dump({"runtime": {"stage": "base"}}), encoding="utf-8")
+    base_path.write_text(
+        yaml.safe_dump({"runtime": {"driver_profile": "simulated"}}),
+        encoding="utf-8",
+    )
 
     data = load_config_with_overrides(base_path, local_path=local_path)
 
-    assert data["runtime"]["stage"] == "base"
+    assert data["runtime"]["driver_profile"] == "simulated"
 
 
 def test_load_config_with_overrides_merges_local_file(tmp_path: Path) -> None:
@@ -48,7 +51,6 @@ def test_load_config_with_overrides_merges_local_file(tmp_path: Path) -> None:
         yaml.safe_dump(
             {
                 "runtime": {
-                    "stage": "open_loop_timer",
                     "driver_profile": "raspberry_pi",
                 },
                 "chlorination": {

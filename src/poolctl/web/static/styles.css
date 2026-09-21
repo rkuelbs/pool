@@ -165,31 +165,18 @@ h2 {
   max-width: 1320px;
 }
 
-.mobile-live-panel {
-  display: none;
+.live-layout {
+  display: block;
 }
 
-.live-mode-switch {
+.live-card-panel {
   display: grid;
-  gap: 8px;
-  grid-template-columns: 1fr 1fr;
-  margin-bottom: 10px;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
 }
 
-.live-mode-switch button {
-  background: #ffffff;
-  border: 1px solid #b8c4cf;
-  border-radius: 6px;
-  color: var(--ink);
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 700;
-  min-height: 32px;
-}
-
-.live-mode-switch button.active {
-  background: #edf5ff;
-  border-color: #7eb6ee;
+#liveControlsCard {
+  grid-column: 1 / -1;
 }
 
 .live-card {
@@ -209,14 +196,14 @@ h2 {
   font-size: 12px;
 }
 
-.mobile-control-grid {
+.quick-control-grid {
   display: grid;
   gap: 6px;
   grid-template-columns: 1fr 1fr;
 }
 
-.mobile-control-grid button,
-.mobile-timer-actions button {
+.quick-control-grid button,
+.quick-timer-actions button {
   background: #ffffff;
   border: 1px solid #b8c4cf;
   border-radius: 6px;
@@ -227,19 +214,18 @@ h2 {
   min-height: 32px;
 }
 
-.mobile-control-grid button.is-active,
-.control-grid button.is-active {
+.quick-control-grid button.is-active {
   background: #edf5ff;
   border-color: #7eb6ee;
 }
 
-.mobile-control-grid button:disabled,
-.mobile-timer-actions button:disabled {
+.quick-control-grid button:disabled,
+.quick-timer-actions button:disabled {
   color: #9aa6b2;
   cursor: wait;
 }
 
-.mobile-timer-actions {
+.quick-timer-actions {
   display: grid;
   gap: 6px;
   grid-template-columns: 1fr 1fr 1fr;
@@ -288,334 +274,11 @@ h2 {
   color: #39434c;
 }
 
-.diagram-panel,
 .panel,
 .history-panel {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 8px;
-}
-
-.diagram-panel {
-  overflow: auto;
-  padding: 14px;
-}
-
-.diagram {
-  aspect-ratio: 1088 / 560;
-  margin: 0 auto;
-  max-width: 1088px;
-  position: relative;
-  width: 100%;
-}
-
-.pipe-layer {
-  inset: 0;
-  position: absolute;
-  z-index: 0;
-}
-
-.pipe-run {
-  fill: none;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 10;
-}
-
-.component,
-.sensor,
-.port {
-  align-items: center;
-  border: 2px solid #4c555f;
-  border-radius: 5px;
-  display: flex;
-  justify-content: center;
-  position: absolute;
-  text-align: center;
-  z-index: 2;
-}
-
-.pipe-water {
-  stroke: var(--blue);
-}
-
-.pipe-suction {
-  stroke: var(--magenta);
-}
-
-.pipe-dose {
-  stroke: var(--red);
-  stroke-width: 8;
-}
-
-.component {
-  background: var(--steel);
-  color: #4c555f;
-  flex-direction: column;
-  font-size: 13px;
-  gap: 2px;
-  font-weight: 700;
-}
-
-.component strong {
-  font-size: 16px;
-  line-height: 1.1;
-}
-
-.component small {
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.component.status-off {
-  background: #d4dae0;
-  border-color: #6d7781;
-  color: #39434c;
-}
-
-.component.status-on {
-  background: #51c760;
-  border-color: #21672a;
-  color: #14391a;
-}
-
-.component.status-low {
-  background: #58a8f7;
-  border-color: #1d5f9f;
-  color: #0f3558;
-}
-
-.component.status-high {
-  background: #51c760;
-  border-color: #21672a;
-  color: #14391a;
-}
-
-.component.status-caution {
-  background: #f7cf59;
-  border-color: #8b6713;
-  color: #4b380a;
-}
-
-.component.status-alarm {
-  background: #f05245;
-  border-color: #9c1c13;
-  color: #48120d;
-}
-
-.pool {
-  background: var(--pool);
-  border: 2px solid #27689f;
-  border-radius: 5px;
-  height: 69.643%;
-  left: 1.654%;
-  position: absolute;
-  top: 29.464%;
-  width: 13.787%;
-  z-index: 1;
-}
-
-.pool-label {
-  color: #17466f;
-  font-size: 13px;
-  font-weight: 700;
-  left: 37.333%;
-  position: absolute;
-  top: 48.718%;
-}
-
-.port {
-  background: #e7edf3;
-  color: #4c555f;
-  font-size: 12px;
-  font-weight: 700;
-  height: 7.692%;
-  left: 18.667%;
-  width: 60%;
-}
-
-.cleaner {
-  top: 32.821%;
-}
-
-.bubbler {
-  top: 60.513%;
-}
-
-.pump {
-  height: 12.5%;
-  left: 18.842%;
-  top: 83.929%;
-  width: 8.272%;
-}
-
-.filter {
-  height: 12.5%;
-  left: 42.739%;
-  top: 83.929%;
-  width: 8.272%;
-}
-
-.booster {
-  height: 12.143%;
-  left: 31.25%;
-  top: 49.107%;
-  width: 8.272%;
-}
-
-.valve-two {
-  height: 12.143%;
-  left: 69.853%;
-  top: 66.071%;
-  width: 8.272%;
-}
-
-.valve-three {
-  height: 12.143%;
-  left: 83.18%;
-  top: 30.714%;
-  width: 8.272%;
-}
-
-.tank {
-  height: 11.607%;
-  left: 16.36%;
-  top: 2.679%;
-  width: 8.272%;
-}
-
-.dosing {
-  height: 12.143%;
-  left: 31.25%;
-  top: 2.679%;
-  width: 8.272%;
-}
-
-.sensor {
-  flex-direction: column;
-  font-size: 12px;
-  font-weight: 700;
-  gap: 2px;
-  min-height: 54px;
-  padding: 6px;
-}
-
-.sensor strong {
-  color: #152029;
-  font-size: 14px;
-}
-
-.sensor small {
-  color: #263442;
-  font-size: 11px;
-}
-
-.green {
-  background: var(--green);
-  border-color: #21672a;
-  color: #14391a;
-  min-width: 62px;
-}
-
-.pressure {
-  background: var(--orange);
-  border-color: #9b5b13;
-  color: #513009;
-  min-width: 68px;
-}
-
-.sensor.status-normal {
-  background: #51c760;
-  border-color: #21672a;
-  color: #14391a;
-}
-
-.sensor.status-caution {
-  background: #ffd44d;
-  border-color: #a97900;
-  color: #4f3900;
-}
-
-.sensor.status-alarm {
-  background: #f05245;
-  border-color: #9c1c13;
-  color: #48120d;
-}
-
-.sensor.status-invalid {
-  background: #c2c9d0;
-  border-color: #6d7781;
-  color: #39434c;
-}
-
-.sensor.status-unknown {
-  background: #dce2e8;
-  border-color: #8995a1;
-  color: #39434c;
-}
-
-.sensor.status-alarm strong,
-.sensor.status-alarm small,
-.sensor.status-caution strong,
-.sensor.status-caution small,
-.sensor.status-invalid strong,
-.sensor.status-invalid small,
-.sensor.status-normal strong,
-.sensor.status-normal small,
-.sensor.status-unknown strong,
-.sensor.status-unknown small {
-  color: inherit;
-}
-
-.tank-level {
-  left: 10.846%;
-  top: 3.571%;
-}
-
-.orp {
-  left: 45.956%;
-  top: 3.571%;
-}
-
-.ph {
-  left: 57.445%;
-  top: 3.571%;
-}
-
-.temp {
-  left: 68.934%;
-  top: 3.571%;
-}
-
-.return-psi {
-  left: 21.14%;
-  top: 21.071%;
-}
-
-.booster-psi {
-  left: 21.14%;
-  top: 45%;
-}
-
-.bubbler-psi {
-  left: 21.14%;
-  top: 63.75%;
-}
-
-.pump-output {
-  left: 32.169%;
-  top: 74.107%;
-}
-
-.filter-output {
-  left: 55.147%;
-  top: 83.571%;
-}
-
-.side-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
 }
 
 .panel,
@@ -663,7 +326,7 @@ h2 {
 #analogReload,
 #analogSave,
 #chlorinationDoseSave,
-#mobileChlorinationDoseSave,
+#liveChlorinationDoseSave,
 #historySelectAll,
 #historyClearAll,
 #historyExportCsv,
@@ -708,7 +371,7 @@ h2 {
 #analogReload,
 #analogSave,
 #chlorinationDoseSave,
-#mobileChlorinationDoseSave,
+#liveChlorinationDoseSave,
 #historySelectAll,
 #historyClearAll,
 #historyExportCsv,
@@ -1098,40 +761,6 @@ h2 {
   color: #6d7781;
 }
 
-.events {
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.4;
-  white-space: pre-line;
-}
-
-.control-grid {
-  display: grid;
-  gap: 8px;
-  grid-template-columns: 1fr 1fr;
-}
-
-.control-grid button {
-  background: #ffffff;
-  border: 1px solid #b8c4cf;
-  border-radius: 6px;
-  color: var(--ink);
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 700;
-  min-height: 34px;
-}
-
-.control-grid button:hover {
-  background: #edf5ff;
-  border-color: #7eb6ee;
-}
-
-.control-grid button:disabled {
-  color: #9aa6b2;
-  cursor: wait;
-}
-
 .command-status {
   color: var(--muted);
   font-size: 12px;
@@ -1143,11 +772,6 @@ h2 {
 @media (max-width: 1050px) {
   .layout {
     grid-template-columns: 1fr;
-  }
-
-  .side-panel {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
   }
 
   .history-panel {
@@ -1172,27 +796,6 @@ h2 {
 
   .badge-row {
     justify-content: flex-start;
-  }
-
-  .side-panel {
-    grid-template-columns: 1fr;
-  }
-
-  .mobile-live-panel {
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    display: grid;
-    gap: 10px;
-    padding: 10px;
-  }
-
-  body[data-live-mode="schematic"] .mobile-live-panel .live-card {
-    display: none;
-  }
-
-  body[data-live-mode="list"] .diagram-panel {
-    display: none;
   }
 
   .history-header {

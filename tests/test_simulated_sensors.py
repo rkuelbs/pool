@@ -55,15 +55,10 @@ def test_default_simulated_sensors_match_sensor_driver_protocol() -> None:
 
     assert {sensor.sensor_id for sensor in sensors} == {
         SensorId.PUMP_OUTPUT_PSI,
-        SensorId.FILTER_OUTPUT_PSI,
-        SensorId.RETURN_PSI,
-        SensorId.BUBBLER_PSI,
-        SensorId.BOOSTER_PSI,
         SensorId.RAW_ORP,
         SensorId.ORP_TEMP,
         SensorId.RAW_PH,
         SensorId.PH_TEMP,
-        SensorId.RAW_PH_VOLTAGE,
         SensorId.TEMP,
         SensorId.TANK_LEVEL,
     }
@@ -105,26 +100,6 @@ async def test_pressure_sensor_rises_when_pump_runs_high_speed() -> None:
     assert pump_off.value == 0.25
     assert pump_high.value == 12.0
     assert pump_high.value > pump_off.value
-
-
-@pytest.mark.asyncio
-async def test_booster_pressure_rises_when_booster_turns_on() -> None:
-    plant = make_plant()
-    sensor = sensor_by_id(
-        build_default_simulated_sensors(plant),
-        SensorId.BOOSTER_PSI,
-    )
-
-    plant.set_pump_motor(ActuatorState.ON)
-    plant.set_pump_motor_speed(ActuatorState.HIGH)
-    booster_off = await sensor.read()
-
-    plant.set_booster_pump(ActuatorState.ON)
-    booster_on = await sensor.read()
-
-    assert booster_off.value == 5.0
-    assert booster_on.value == 50.0
-    assert booster_on.value > booster_off.value
 
 
 @pytest.mark.asyncio

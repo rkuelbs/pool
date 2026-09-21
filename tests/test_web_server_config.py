@@ -22,6 +22,7 @@ from poolctl.web.server import (
     apply_analog_input_config_update,
     apply_acquisition_config_update,
     apply_chlorination_config_update,
+    apply_filter_loading_config_update,
     apply_fc_demand_config_update,
     apply_logging_config_update,
     apply_notifications_config_update,
@@ -40,6 +41,7 @@ from poolctl.web.server import (
     serialize_analog_input_config,
     serialize_chlorination_config,
     serialize_fc_demand_config,
+    serialize_filter_loading_config,
     serialize_ph_sensor_config,
     serialize_pump_timer_config,
     serialize_runtime_config,
@@ -61,9 +63,7 @@ def make_clock() -> SimulatedClock:
 def config_mapping() -> dict[str, object]:
     return {
         "runtime": {
-            "stage": "open_loop_timer",
             "driver_profile": "simulated",
-            "enabled_layers": ["pump_timer", "safety_enforcement"],
             "enabled_sensor_groups": [],
         },
         "pump_timer": {
@@ -86,7 +86,6 @@ def test_serialize_pump_timer_config() -> None:
 
     payload = serialize_pump_timer_config(app)
 
-    assert payload["layer_enabled"] is True
     assert payload["timezone"] == "America/Chicago"
     assert payload["schedules"] == [
         {
@@ -196,9 +195,6 @@ def test_gui_config_update_can_write_local_override_without_touching_base(tmp_pa
 
 def test_chlorination_update_applies_live_and_persists(tmp_path: Path) -> None:
     config = config_mapping()
-    runtime = dict(config["runtime"])  # type: ignore[index]
-    runtime["enabled_layers"] = ["pump_timer", "chlorination"]
-    config["runtime"] = runtime
     path = tmp_path / "pool.yaml"
     path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
     app = build_app_from_mapping(config, clock=make_clock())
@@ -210,6 +206,7 @@ def test_chlorination_update_applies_live_and_persists(tmp_path: Path) -> None:
             "enabled": True,
             "daily_dose_oz": 12.5,
             "pump_output_oz_per_min": 2.0,
+            "no_dose_first_minutes": 1.25,
             "no_dose_last_minutes": 10.0,
             "max_duty_cycle": 0.5,
             "cycle_on_seconds": 60.0,
@@ -224,13 +221,44 @@ def test_chlorination_update_applies_live_and_persists(tmp_path: Path) -> None:
     assert result["max_cycle_period_seconds"] == 1800.0
     assert result["min_cycle_on_seconds"] == 5.0
     assert app.chlorination_config.daily_dose_oz == 12.5
+    assert app.chlorination_config.no_dose_first_minutes == 1.25
     assert app.chlorination_config.max_cycle_period_seconds == 1800.0
-    assert serialize_chlorination_config(app)["layer_enabled"] is True
+    assert serialize_chlorination_config(app)["no_dose_first_minutes"] == 1.25
     saved = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert saved["chlorination"]["daily_dose_oz"] == 12.5
     assert saved["chlorination"]["pump_output_oz_per_min"] == 2.0
+    assert saved["chlorination"]["no_dose_first_minutes"] == 1.25
     assert saved["chlorination"]["max_cycle_period_seconds"] == 1800.0
     assert saved["chlorination"]["min_cycle_on_seconds"] == 5.0
+
+
+def test_filter_loading_update_applies_live_and_persists(tmp_path: Path) -> None:
+    config = config_mapping()
+    path = tmp_path / "pool.yaml"
+    path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    app = build_app_from_mapping(config, clock=make_clock())
+
+    result = apply_filter_loading_config_update(
+        app=app,
+        config_path=path,
+        payload={
+            "enabled": True,
+            "pressure_sensor": "pump_output_psi",
+            "clean_psi": 12.0,
+            "dirty_psi": 22.0,
+            "stabilization_seconds": 75.0,
+            "averaging_seconds": 180.0,
+            "max_pressure_age_seconds": 8.0,
+        },
+    )
+
+    assert result["updated"] is True
+    assert result["applied_live"] is True
+    assert app.flow_estimation_config.filter_loading.clean_psi == 12.0
+    assert serialize_filter_loading_config(app)["dirty_psi"] == 22.0
+    saved = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert saved["filter_loading"]["pressure_sensor"] == "pump_output_psi"
+    assert saved["filter_loading"]["averaging_seconds"] == 180.0
 
 
 def test_fc_demand_update_applies_live_and_persists(tmp_path: Path) -> None:
@@ -336,7 +364,6 @@ def test_start_chlorination_calibration_sets_runtime_duty_cycle() -> None:
 def test_start_chlorination_supplemental_dose_sets_runtime_plan() -> None:
     config = config_mapping()
     runtime = dict(config["runtime"])
-    runtime["enabled_layers"] = ["pump_timer", "chlorination"]
     runtime["enabled_actuators"] = [
         "pump_motor",
         "pump_motor_speed",
@@ -373,7 +400,6 @@ def test_start_chlorination_supplemental_dose_sets_runtime_plan() -> None:
 def test_supplemental_chlorine_dose_splits_runtime_into_equal_pulses() -> None:
     config = config_mapping()
     runtime = dict(config["runtime"])
-    runtime["enabled_layers"] = ["pump_timer", "chlorination"]
     runtime["enabled_actuators"] = [
         "pump_motor",
         "pump_motor_speed",
@@ -407,7 +433,6 @@ def test_supplemental_chlorine_dose_splits_runtime_into_equal_pulses() -> None:
 def test_supplemental_chlorine_dose_allows_one_off_subminimum_pulse() -> None:
     config = config_mapping()
     runtime = dict(config["runtime"])
-    runtime["enabled_layers"] = ["pump_timer", "chlorination"]
     runtime["enabled_actuators"] = [
         "pump_motor",
         "pump_motor_speed",
@@ -444,21 +469,27 @@ def test_runtime_update_writes_yaml_and_reports_restart(tmp_path: Path) -> None:
     app = build_app_from_mapping(config_mapping(), clock=make_clock())
 
     before = serialize_runtime_config(app)
-    assert before["stage"] == "open_loop_timer"
+    assert before["driver_profile"] == "simulated"
+    assert "stage" not in before
+    assert "enabled_layers" not in before
 
     result = apply_runtime_config_update(
         app=app,
         config_path=path,
         payload={
-            "stage": "windows_simulation",
             "driver_profile": "simulated",
-            "enabled_layers": ["acquisition", "safety_enforcement"],
+            "enabled_actuators": ["pump_motor", "pump_motor_speed"],
+            "enabled_sensor_groups": ["pressures"],
         },
     )
 
     assert result["requires_restart"] is True
     saved = yaml.safe_load(path.read_text(encoding="utf-8"))
-    assert saved["runtime"]["stage"] == "windows_simulation"
+    assert saved["runtime"]["driver_profile"] == "simulated"
+    assert saved["runtime"]["enabled_actuators"] == ["pump_motor", "pump_motor_speed"]
+    assert saved["runtime"]["enabled_sensor_groups"] == ["pressures"]
+    assert "stage" not in saved["runtime"]
+    assert "enabled_layers" not in saved["runtime"]
 
 
 def test_safety_update_applies_live_and_persists(tmp_path: Path) -> None:
@@ -469,8 +500,6 @@ def test_safety_update_applies_live_and_persists(tmp_path: Path) -> None:
     payload = {
         "pressure_sensor_ids": {
             "pump_output": "pump_output_psi",
-            "return_line": "return_psi",
-            "booster": "booster_psi",
         },
         "freeze_protection": {
             "enabled": True,
@@ -491,33 +520,29 @@ def test_safety_update_applies_live_and_persists(tmp_path: Path) -> None:
             "reenable_at_gal": 2.5,
         },
         "thresholds": {
-            "chlorine_min_return_psi": 2.5,
             "chlorine_min_pump_output_psi": 3.0,
             "chlorine_max_pump_output_psi": 3.5,
-            "booster_max_psi": 58.0,
-            "booster_min_psi": 29.0,
-            "pump_low_prime_min_output_psi": 1.1,
+            "chlorine_max_pressure_age_seconds": 12.0,
+            "pump_prime_min_output_psi": 1.1,
             "pump_output_overpressure_psi": 31.0,
-            "pump_high_prime_min_output_psi": 5.2,
         },
         "timeouts": {
-            "booster_low_pressure_grace_s": 11.0,
-            "pump_low_prime_seconds": 31.0,
-            "pump_high_prime_timeout_s": 32.0,
+            "pump_prime_timeout_s": 31.0,
         },
     }
     result = apply_safety_config_update(app=app, config_path=path, payload=payload)
 
     assert result["applied_live"] is True
-    assert app.safety_config.booster_max_psi == 58.0
+    assert app.safety_config.pump_prime_min_output_psi == 1.1
     assert app.safety_config.freeze_protection.enabled is True
     saved = yaml.safe_load(path.read_text(encoding="utf-8"))
-    assert saved["safety"]["thresholds"]["booster_max_psi"] == 58.0
+    assert saved["safety"]["thresholds"]["pump_prime_min_output_psi"] == 1.1
+    assert saved["safety"]["thresholds"]["chlorine_max_pressure_age_seconds"] == 12.0
     assert saved["safety"]["freeze_protection"]["source"] == "both"
     assert saved["safety"]["chlorine_tank"]["inhibit_below_gal"] == 1.25
     serialized = serialize_safety_config(app)
-    assert serialized["thresholds"]["booster_max_psi"] == 58.0
     assert serialized["thresholds"]["chlorine_max_pump_output_psi"] == 3.5
+    assert serialized["thresholds"]["pump_prime_min_output_psi"] == 1.1
     assert serialized["freeze_protection"]["high_speed_on_below_temp"] == 33.0
     assert serialized["chlorine_tank"]["reenable_at_gal"] == 2.5
 
@@ -797,14 +822,14 @@ def test_analog_input_update_writes_yaml(tmp_path: Path) -> None:
             "raw_to_volts_scale": 0.001,
             "raw_to_volts_offset": 0.0,
             "startup_channel_mode": 0,
-            "sensors": {
-                "raw_ph": {
-                    "channel": 6,
+                "sensors": {
+                    "pump_output_psi": {
+                        "channel": 1,
                     "calibration": {
                         "voltage_1": 0.0,
                         "value_1": 0.0,
                         "voltage_2": 5.0,
-                        "value_2": 14.0,
+                        "value_2": 30.0,
                     },
                 }
             },
@@ -814,7 +839,7 @@ def test_analog_input_update_writes_yaml(tmp_path: Path) -> None:
     assert result["requires_restart"] is True
 
     serialized = serialize_analog_input_config(path)
-    assert serialized["modbus_analog_input"]["sensors"]["raw_ph"]["channel"] == 6
+    assert serialized["modbus_analog_input"]["sensors"]["pump_output_psi"]["channel"] == 1
     assert serialized["modbus_analog_input"]["startup_channel_mode"] == 0
 
 
@@ -943,14 +968,13 @@ def test_health_payload_includes_status_fields() -> None:
     assert payload["status"] in {"ok", "degraded"}
     assert "modbus" in payload
     assert "acquisition" in payload
-    assert "mqtt" in payload
+    assert "mqtt" not in payload
     assert "weather" in payload
 
 
 def test_lab_test_api_helpers_store_and_list(tmp_path: Path) -> None:
     config = config_mapping()
     runtime = dict(config["runtime"])  # type: ignore[index]
-    runtime["enabled_layers"] = ["pump_timer", "logging"]
     config["runtime"] = runtime
     config["logging"] = {"database_path": str(tmp_path / "labtests.sqlite3")}
     app = build_app_from_mapping(config, clock=make_clock())
@@ -976,7 +1000,6 @@ def test_lab_test_api_helpers_store_and_list(tmp_path: Path) -> None:
 def test_lab_test_api_returns_recalculated_fc_demand_feedback(tmp_path: Path) -> None:
     config = config_mapping()
     runtime = dict(config["runtime"])  # type: ignore[index]
-    runtime["enabled_layers"] = ["pump_timer", "logging"]
     config["runtime"] = runtime
     config["logging"] = {"database_path": str(tmp_path / "fc-demand-feedback.sqlite3")}
     config["fc_demand"] = {
@@ -1021,7 +1044,6 @@ def test_lab_test_api_returns_recalculated_fc_demand_feedback(tmp_path: Path) ->
 def test_lab_test_api_accepts_sparse_payload_and_defaults_sampled_at(tmp_path: Path) -> None:
     config = config_mapping()
     runtime = dict(config["runtime"])  # type: ignore[index]
-    runtime["enabled_layers"] = ["pump_timer", "logging"]
     config["runtime"] = runtime
     config["logging"] = {"database_path": str(tmp_path / "labtests.sqlite3")}
     app = build_app_from_mapping(config, clock=make_clock())
@@ -1046,7 +1068,6 @@ def test_event_entry_api_interprets_naive_times_as_local_controller_time(
 ) -> None:
     config = config_mapping()
     runtime = dict(config["runtime"])  # type: ignore[index]
-    runtime["enabled_layers"] = ["pump_timer", "logging"]
     config["runtime"] = runtime
     config["logging"] = {"database_path": str(tmp_path / "events.sqlite3")}
     app = build_app_from_mapping(config, clock=make_clock())
@@ -1077,7 +1098,6 @@ def test_event_entry_api_interprets_naive_times_as_local_controller_time(
 def test_chemical_addition_api_helpers_store_defaults_and_list(tmp_path: Path) -> None:
     config = config_mapping()
     runtime = dict(config["runtime"])  # type: ignore[index]
-    runtime["enabled_layers"] = ["pump_timer", "logging"]
     config["runtime"] = runtime
     config["logging"] = {"database_path": str(tmp_path / "chemical.sqlite3")}
     app = build_app_from_mapping(config, clock=make_clock())
@@ -1119,7 +1139,6 @@ def test_chlorine_tank_refill_and_level_tests_update_estimate_and_audit(
 ) -> None:
     config = config_mapping()
     runtime = dict(config["runtime"])  # type: ignore[index]
-    runtime["enabled_layers"] = ["pump_timer", "logging"]
     config["runtime"] = runtime
     config["logging"] = {"database_path": str(tmp_path / "tank.sqlite3")}
     app = build_app_from_mapping(config, clock=make_clock())

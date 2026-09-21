@@ -1,14 +1,9 @@
 const SENSOR_ORDER = [
   "pump_output_psi",
-  "filter_output_psi",
-  "return_psi",
-  "bubbler_psi",
-  "booster_psi",
   "raw_orp",
   "orp_temp",
   "raw_ph",
   "ph_temp",
-  "raw_ph_voltage",
   "temp",
   "cpu_temp",
   "cpu_load_percent",
@@ -19,17 +14,10 @@ const SENSOR_ORDER = [
 
 const SENSOR_LABELS = {
   pump_output_psi: "Pump output",
-  filter_output_psi: "Filter output",
-  return_psi: "Return",
-  bubbler_psi: "Bubbler",
-  booster_psi: "Booster",
   pump_flow_gpm: "Pump flow",
   pump_dynamic_head_psi: "Pump dynamic head",
-  return_flow_gpm: "Return flow",
-  bubbler_flow_gpm: "Bubbler flow",
-  booster_flow_gpm: "Booster flow",
-  filter_restriction_metric: "Filter restriction",
-  filter_restriction_percent: "Filter restriction %",
+  filter_reference_psi: "Filter reference pressure",
+  filter_loading_percent: "Filter loading",
   calcium_saturation_index: "CSI",
   chlorine_daily_delivered_oz: "Daily chlorine delivered",
   chlorination_duty_cycle_percent: "Dosing duty cycle",
@@ -92,7 +80,6 @@ const SENSOR_LABELS = {
   orp_temp: "ORP temp",
   raw_ph: "pH",
   ph_temp: "pH temp",
-  raw_ph_voltage: "pH Vraw",
   temp: "Water temp",
   cpu_temp: "CPU temp",
   cpu_load_percent: "CPU load",
@@ -106,11 +93,8 @@ const HISTORY_SENSOR_ORDER = [
   "calcium_saturation_index",
   "pump_flow_gpm",
   "pump_dynamic_head_psi",
-  "return_flow_gpm",
-  "bubbler_flow_gpm",
-  "booster_flow_gpm",
-  "filter_restriction_metric",
-  "filter_restriction_percent",
+  "filter_reference_psi",
+  "filter_loading_percent",
   "chlorine_daily_delivered_oz",
   "chlorination_duty_cycle_percent",
   "fc_demand_ppm_per_day",
@@ -177,11 +161,6 @@ const ACQ_REDUCERS = ["last", "mean", "median", "trimmed_mean"];
 const ACQ_FILTER_TYPES = ["none", "boxcar"];
 const ANALOG_SENSOR_OPTIONS = [
   "pump_output_psi",
-  "filter_output_psi",
-  "return_psi",
-  "bubbler_psi",
-  "booster_psi",
-  "raw_ph",
 ];
 
 const ACTUATOR_ORDER = [
@@ -207,27 +186,8 @@ const SENSOR_STATUS_PRIORITY = {
   invalid: 4,
 };
 
-const RUNTIME_STAGES = [
-  "windows_simulation",
-  "open_loop_timer",
-  "sensor_logging",
-  "safety_monitor",
-  "closed_loop_control",
-];
-
-const FEATURE_LAYERS = [
-  "pump_timer",
-  "acquisition",
-  "logging",
-  "safety_enforcement",
-  "mqtt_bridge",
-  "chlorination",
-  "closed_loop_control",
-];
-
 const SVG_NS = "http://www.w3.org/2000/svg";
 const PAGE_MODE = document.body.dataset.page || "live";
-const LIVE_MODE_STORAGE_KEY = "poolctl.live_mode";
 const HISTORY_SERIES_COLORS = [
   "#1680f2",
   "#1f9d55",
@@ -252,6 +212,7 @@ let faultLoading = false;
 let lastFaultLoadedAt = 0;
 let runtimeConfigLoading = false;
 let safetyConfigLoading = false;
+let filterLoadingConfigLoading = false;
 let acquisitionConfigLoading = false;
 let loggingConfigLoading = false;
 let notificationsConfigLoading = false;
@@ -270,14 +231,13 @@ let lastTopStatusLoadedAt = 0;
 let labTestLoading = false;
 let chemicalAdditionLoading = false;
 let chlorineTankRefillLoading = false;
-let liveMode = "schematic";
 let latestLivePayload = null;
 let configAutoRefreshPaused = false;
 let configDraftDirty = false;
 let pumpPrimeThresholds = {
-  lowPrimeMinPsi: 1.0,
-  highPrimeMinPsi: 5.0,
+  primeMinPsi: 1.0,
 };
+let loadedRuntimeConfig = null;
 
 async function loadLive() {
   const response = await fetch("/api/live", { cache: "no-store" });
@@ -531,8 +491,7 @@ function setChlorinationPrimeStatus(message) {
 
 function setChlorinationQuickStatus(message) {
   [
-    "chlorinationStatus",
-    "mobileChlorinationStatus",
+    "liveChlorinationStatus",
   ].forEach((id) => {
     const node = document.getElementById(id);
     if (node) {
@@ -652,21 +611,15 @@ function render(payload) {
   renderChlorinationStatus(payload.chlorination, payload.supplemental_chlorine_dose);
   renderFcDemandStatus(payload.fc_demand, payload.dosing_prime);
   renderTimerOverride(payload.timer_override);
-  renderEvents(payload.tick);
   if (PAGE_MODE !== "live") {
     return;
   }
-  renderDiagramSensors(payload.sensors, payload.chlorine_supply);
-  renderFlowPlaceholders(payload.flows || {});
-  renderComponentStates(payload.actuators || {}, payload.sensors || {}, payload.flows || {});
-  renderMobileLive(payload.sensors || {}, payload.actuators || {}, payload.flows || {}, payload.chlorine_supply);
-  renderSensorList(payload.sensors);
-  renderActuatorList(payload.actuators);
+  renderLiveCards(payload.sensors || {}, payload.actuators || {}, payload.flows || {}, payload.chlorine_supply);
 }
 
 function renderTopStatus(payload) {
   document.getElementById("runtimeLine").textContent =
-    `${payload.runtime.stage} / ${payload.runtime.driver_profile}`;
+    payload.runtime ? payload.runtime.driver_profile : "--";
   document.getElementById("updatedAt").textContent = new Date(payload.observed_at).toLocaleString();
   const restartButton = document.getElementById("configRestartService");
   if (restartButton) {
@@ -882,7 +835,7 @@ function formatDurationShort(seconds) {
 }
 
 function renderTimerOverride(override) {
-  const statusNodes = [document.getElementById("timerOverrideStatus"), document.getElementById("mobileTimerOverrideStatus")].filter(Boolean);
+  const statusNodes = [document.getElementById("liveTimerOverrideStatus")].filter(Boolean);
   if (!statusNodes.length) {
     return;
   }
@@ -907,7 +860,7 @@ function renderTimerOverride(override) {
 }
 
 function renderFreezeStatus(safety) {
-  const nodes = [document.getElementById("freezeStatus"), document.getElementById("mobileFreezeStatus")].filter(Boolean);
+  const nodes = [document.getElementById("liveFreezeStatus")].filter(Boolean);
   if (!nodes.length) {
     return;
   }
@@ -959,9 +912,9 @@ function renderChlorinationStatus(chlorination, supplementalDose) {
       ? `Duty: ${duty.toFixed(1)}% | ${requested.toFixed(1)} / ${available.toFixed(0)} min${cycleSuffix}`
       : "Duty: --";
   const stateText = payload.active ? "ON" : "OFF";
-  const layerText = payload.layer_enabled === false ? "layer off" : String(payload.reason || "idle");
+  const reasonText = String(payload.reason || "idle");
   const warning = payload.warning ? ` | ${payload.warning}` : "";
-  let statusText = `Chlorination: ${stateText} | ${layerText}${warning}`;
+  let statusText = `Chlorination: ${stateText} | ${reasonText}${warning}`;
   if (supplemental.active) {
     const phase = supplemental.phase === "circulating" ? "circulating" : "dosing";
     const planned = Number(supplemental.planned_dose_oz);
@@ -972,20 +925,16 @@ function renderChlorinationStatus(chlorination, supplementalDose) {
   }
 
   [
-    "chlorinationDoseDisplay",
-    "mobileChlorinationDoseDisplay",
+    "liveChlorinationDoseDisplay",
   ].forEach((id) => setNodeText(id, doseText));
   [
-    "chlorinationDutyStatus",
-    "mobileChlorinationDutyStatus",
+    "liveChlorinationDutyStatus",
   ].forEach((id) => setNodeText(id, dutyText));
   [
-    "chlorinationStatus",
-    "mobileChlorinationStatus",
+    "liveChlorinationStatus",
   ].forEach((id) => setNodeText(id, statusText));
   [
-    "chlorinationDoseInput",
-    "mobileChlorinationDoseInput",
+    "liveChlorinationDoseInput",
   ].forEach((id) => {
     const input = document.getElementById(id);
     if (!input || document.activeElement === input || !Number.isFinite(dose)) {
@@ -999,8 +948,7 @@ function renderFcDemandStatus(fcDemand, dosingPrime) {
   const payload = fcDemand || {};
   const prime = dosingPrime || {};
   const nodes = [
-    document.getElementById("fcDemandStatus"),
-    document.getElementById("mobileFcDemandStatus"),
+    document.getElementById("liveFcDemandStatus"),
   ].filter(Boolean);
   if (!nodes.length) {
     return;
@@ -1072,16 +1020,6 @@ function renderAnalogLiveVoltages(sensors) {
     if (!sensor) {
       return;
     }
-    if (sensorId === "raw_ph_voltage" && sensor.value !== null && sensor.value !== undefined) {
-      rows.push({
-        key: sensorId,
-        label: SENSOR_LABELS[sensorId] || sensorId,
-        channel: sensor.metadata && sensor.metadata.channel ? sensor.metadata.channel : null,
-        volts: Number(sensor.value),
-        display: sensor.display || `${sensor.value} V`,
-      });
-      return;
-    }
     const metadata = sensor.metadata || {};
     if (!Object.prototype.hasOwnProperty.call(metadata, "raw_voltage")) {
       return;
@@ -1148,19 +1086,13 @@ async function refreshHealth(force) {
       (sum, item) => sum + Number(item.error_count || 0),
       0,
     );
-    const mqttState =
-      payload.mqtt && payload.mqtt.enabled
-        ? payload.mqtt.connected
-          ? "mqtt connected"
-          : "mqtt disconnected"
-        : "mqtt disabled";
     const notifyState =
       payload.notifications && payload.notifications.enabled
         ? payload.notifications.pushover && payload.notifications.pushover.configured
           ? "notify ready"
           : "notify not configured"
         : "notify disabled";
-    line.textContent = `Health: ${payload.status} | Modbus errors: ${modbusErrors} | ${mqttState} | ${notifyState}`;
+    line.textContent = `Health: ${payload.status} | Modbus errors: ${modbusErrors} | ${notifyState}`;
     lastHealthLoadedAt = now;
   } catch (error) {
     document.getElementById("healthLine").textContent = `Health error: ${error.message}`;
@@ -1169,155 +1101,26 @@ async function refreshHealth(force) {
   }
 }
 
-function renderDiagramSensors(sensors, chlorineSupply) {
-  document.querySelectorAll(".sensor").forEach((box) => {
-    box.classList.remove(...SENSOR_STATUS_CLASSES);
-    box.dataset.statusPriority = "-1";
-    box.removeAttribute("title");
-  });
-
-  document.querySelectorAll("[data-sensor]").forEach((node) => {
-    const sensor = sensors[node.dataset.sensor] || sensors[node.dataset.sensorFallback];
-    node.textContent = sensor ? sensor.display : "--";
-    node.classList.toggle("quality-suspect", sensor && sensor.quality !== "good");
-    applySensorBoxStatus(node.closest(".sensor"), sensor);
-  });
-
-  const tankDays = document.getElementById("tankRemainingDays");
-  if (tankDays) {
-    tankDays.textContent =
-      chlorineSupply && chlorineSupply.days_remaining_display
-        ? chlorineSupply.days_remaining_display
-        : "-- days";
+function renderLiveCards(sensors, actuators, flows, chlorineSupply) {
+  if (!document.getElementById("liveCardPanel")) {
+    return;
   }
-  const tankBox = document.querySelector(".tank-level");
-  if (tankBox && chlorineSupply && chlorineSupply.status) {
-    tankBox.classList.remove(...SENSOR_STATUS_CLASSES);
-    tankBox.classList.add(sensorStatusClass(chlorineSupply.status));
-  }
+
+  renderLivePumpCard(sensors, actuators, flows);
+  renderLiveFilterCard(sensors, flows);
+  renderLiveChemCard(sensors);
+  renderLiveTankCard(sensors, chlorineSupply);
 }
 
-function renderFlowPlaceholders(flows) {
-  document.querySelectorAll("[data-flow]").forEach((node) => {
-    const key = node.dataset.flow;
-    const flow = flows[key];
-    node.textContent = flow && flow.display ? flow.display : "-- gpm";
-  });
-}
-
-function renderComponentStates(actuators, sensors, flows) {
-  const components = document.querySelectorAll("[data-component]");
-  components.forEach((component) => {
-    component.classList.remove(
-      "status-off",
-      "status-on",
-      "status-low",
-      "status-high",
-      "status-caution",
-      "status-alarm",
-    );
-    const actuatorId = component.dataset.component;
-    if (!actuatorId) {
-      return;
-    }
-    if (actuatorId === "pump_motor") {
-      const pumpState = actuators.pump_motor ? actuators.pump_motor.state : null;
-      const speedState = actuators.pump_motor_speed ? actuators.pump_motor_speed.state : null;
-      const pumpPsi = sensors.pump_output_psi ? Number(sensors.pump_output_psi.value) : null;
-      const lowPrimeMinPsi = Number(pumpPrimeThresholds.lowPrimeMinPsi || 1.0);
-      const highPrimeMinPsi = Number(pumpPrimeThresholds.highPrimeMinPsi || 5.0);
-      const pumpIsAlarm =
-        pumpState === "on" &&
-        Number.isFinite(pumpPsi) &&
-        ((speedState === "low" && pumpPsi < lowPrimeMinPsi) ||
-          (speedState === "high" && pumpPsi < highPrimeMinPsi));
-      if (pumpState !== "on") {
-        component.classList.add("status-off");
-      } else if (pumpIsAlarm) {
-        component.classList.add("status-alarm");
-      } else if (speedState === "low") {
-        component.classList.add("status-low");
-      } else if (speedState === "high") {
-        component.classList.add("status-high");
-      } else {
-        component.classList.add("status-on");
-      }
-      return;
-    }
-
-    const actuator = actuators[actuatorId];
-    if (!actuator || actuator.state !== "on") {
-      component.classList.add("status-off");
-      return;
-    }
-    component.classList.add("status-on");
-  });
-  renderFilterComponent(flows);
-  renderControlButtonStates(actuators);
-}
-
-function renderFilterComponent(flows) {
-  const block = document.getElementById("filterBlock");
-  if (!block) {
-    return;
-  }
-
-  block.classList.remove(
-    "status-off",
-    "status-on",
-    "status-low",
-    "status-high",
-    "status-caution",
-    "status-alarm",
-  );
-
-  const pumpFlowPayload = flows ? flows.pump_flow_gpm : null;
-  const pumpFlow = pumpFlowPayload ? Number(pumpFlowPayload.value) : Number.NaN;
-  if (!Number.isFinite(pumpFlow) || pumpFlow <= 0) {
-    block.classList.add("status-off");
-    return;
-  }
-
-  const payload = flows ? flows.filter_restriction_percent : null;
-  const percent = payload ? Number(payload.value) : Number.NaN;
-  if (!Number.isFinite(percent)) {
-    block.classList.add("status-off");
-    return;
-  }
-
-  if (percent > 80) {
-    block.classList.add("status-alarm");
-    return;
-  }
-  if (percent >= 50) {
-    block.classList.add("status-caution");
-    return;
-  }
-  block.classList.add("status-on");
-}
-
-function renderMobileLive(sensors, actuators, flows, chlorineSupply) {
-  if (!document.getElementById("mobileLivePanel")) {
-    return;
-  }
-
-  renderMobilePumpCard(sensors, actuators, flows);
-  renderMobileFilterCard(sensors, flows);
-  renderMobileBranchesCard(sensors, flows);
-  renderMobileChemCard(sensors);
-  renderMobileTankCard(sensors, chlorineSupply);
-}
-
-function renderMobilePumpCard(sensors, actuators, flows) {
+function renderLivePumpCard(sensors, actuators, flows) {
   const pumpState = actuators.pump_motor ? actuators.pump_motor.state : null;
   const speedState = actuators.pump_motor_speed ? actuators.pump_motor_speed.state : null;
   const pumpPsi = sensors.pump_output_psi ? Number(sensors.pump_output_psi.value) : Number.NaN;
-  const lowPrimeMinPsi = Number(pumpPrimeThresholds.lowPrimeMinPsi || 1.0);
-  const highPrimeMinPsi = Number(pumpPrimeThresholds.highPrimeMinPsi || 5.0);
+  const primeMinPsi = Number(pumpPrimeThresholds.primeMinPsi || 1.0);
   const pumpIsAlarm =
     pumpState === "on" &&
     Number.isFinite(pumpPsi) &&
-    ((speedState === "low" && pumpPsi < lowPrimeMinPsi) || (speedState === "high" && pumpPsi < highPrimeMinPsi));
+    pumpPsi < primeMinPsi;
 
   let cardStatus = "status-off";
   let stateText = "OFF";
@@ -1335,85 +1138,64 @@ function renderMobilePumpCard(sensors, actuators, flows) {
     stateText = "ON";
   }
 
-  setMobileCardStatus("mobilePumpCard", cardStatus);
-  setNodeText("mobilePumpState", `State: ${stateText}`);
+  setLiveCardStatus("livePumpCard", cardStatus);
+  setNodeText("livePumpState", `State: ${stateText}`);
   setNodeText(
-    "mobilePumpPsi",
+    "livePumpPsi",
     `Output: ${sensorDisplay(sensors, "pump_output_psi")} | Head: ${flowDisplay(flows, "pump_dynamic_head_psi")}`,
   );
-  setNodeText("mobilePumpFlow", `Flow: ${flowDisplay(flows, "pump_flow_gpm")}`);
+  setNodeText("livePumpFlow", `Flow: ${flowDisplay(flows, "pump_flow_gpm")}`);
 }
 
-function renderMobileFilterCard(sensors, flows) {
+function renderLiveFilterCard(sensors, flows) {
   const pumpFlowPayload = flows ? flows.pump_flow_gpm : null;
   const pumpFlow = pumpFlowPayload ? Number(pumpFlowPayload.value) : Number.NaN;
-  const restrictionPayload = flows ? flows.filter_restriction_percent : null;
-  const restrictionPercent = restrictionPayload ? Number(restrictionPayload.value) : Number.NaN;
+  const loadingPayload = flows ? flows.filter_loading_percent : null;
+  const loadingPercent = loadingPayload ? Number(loadingPayload.value) : Number.NaN;
 
   let cardStatus = "status-off";
-  if (Number.isFinite(pumpFlow) && pumpFlow > 0 && Number.isFinite(restrictionPercent)) {
-    if (restrictionPercent > 80) {
+  if (Number.isFinite(loadingPercent)) {
+    if (loadingPercent > 80) {
       cardStatus = "status-alarm";
-    } else if (restrictionPercent >= 50) {
+    } else if (loadingPercent >= 50) {
       cardStatus = "status-caution";
     } else {
       cardStatus = "status-on";
     }
   }
-  setMobileCardStatus("mobileFilterCard", cardStatus);
+  setLiveCardStatus("liveFilterCard", cardStatus);
 
-  const pumpOutput = sensors.pump_output_psi ? Number(sensors.pump_output_psi.value) : Number.NaN;
-  const filterOutput = sensors.filter_output_psi ? Number(sensors.filter_output_psi.value) : Number.NaN;
-  const deltaText =
-    Number.isFinite(pumpOutput) && Number.isFinite(filterOutput)
-      ? `${(pumpOutput - filterOutput).toFixed(2)} psi`
+  const filterLoading = flows && flows.filter_loading ? flows.filter_loading : null;
+  const ageText =
+    filterLoading && Number.isFinite(Number(filterLoading.age_seconds))
+      ? `${Math.round(Number(filterLoading.age_seconds) / 60)} min old`
       : "--";
 
-  setNodeText("mobileFilterRestrictionPct", `Restriction: ${flowDisplay(flows, "filter_restriction_percent")}`);
-  setNodeText("mobileFilterRestrictionMetric", `R: ${flowDisplay(flows, "filter_restriction_metric")}`);
-  setNodeText("mobileFilterDeltaPsi", `Delta PSI: ${deltaText}`);
+  setNodeText("liveFilterLoadingPct", `Loading: ${flowDisplay(flows, "filter_loading_percent")}`);
+  setNodeText("liveFilterReferencePsi", `Reference: ${flowDisplay(flows, "filter_reference_psi")}`);
+  setNodeText("liveFilterLastTest", `Last test: ${ageText}`);
 }
 
-function renderMobileBranchesCard(sensors, flows) {
-  const returnStatus = sensorStatus(sensors, "return_psi");
-  const bubblerStatus = sensorStatus(sensors, "bubbler_psi");
-  const boosterStatus = sensorStatus(sensors, "booster_psi");
-  setMobileCardStatus("mobileBranchesCard", worstSensorCardStatus([returnStatus, bubblerStatus, boosterStatus]));
-
-  setNodeText(
-    "mobileReturnLine",
-    `Return: ${sensorDisplay(sensors, "return_psi")} | ${flowDisplay(flows, "return_flow_gpm")}`,
-  );
-  setNodeText(
-    "mobileBubblerLine",
-    `Bubbler: ${sensorDisplay(sensors, "bubbler_psi")} | ${flowDisplay(flows, "bubbler_flow_gpm")}`,
-  );
-  setNodeText(
-    "mobileBoosterLine",
-    `Booster: ${sensorDisplay(sensors, "booster_psi")} | ${flowDisplay(flows, "booster_flow_gpm")}`,
-  );
-}
-
-function renderMobileChemCard(sensors) {
+function renderLiveChemCard(sensors) {
   const tempStatus = sensorStatus(sensors, "temp");
   const phStatus = sensorStatus(sensors, "raw_ph");
   const orpStatus = sensorStatus(sensors, "raw_orp");
   const csiStatus = sensorStatus(sensors, "calcium_saturation_index");
-  setMobileCardStatus("mobileChemCard", worstSensorCardStatus([tempStatus, phStatus, orpStatus, csiStatus]));
+  setLiveCardStatus("liveChemCard", worstSensorCardStatus([tempStatus, phStatus, orpStatus, csiStatus]));
 
-  setNodeText("mobileTempLine", `Temp: ${sensorDisplay(sensors, "temp")}`);
+  setNodeText("liveTempLine", `Temp: ${sensorDisplay(sensors, "temp")}`);
   setNodeText(
-    "mobilePhLine",
+    "livePhLine",
     `pH: ${sensorDisplay(sensors, "raw_ph")} | Temp: ${sensorDisplay(sensors, "ph_temp")}`,
   );
   setNodeText(
-    "mobileOrpLine",
+    "liveOrpLine",
     `ORP: ${sensorDisplay(sensors, "raw_orp")} | Temp: ${sensorDisplay(sensors, "orp_temp")}`,
   );
-  setNodeText("mobileCsiLine", `CSI: ${sensorDisplay(sensors, "calcium_saturation_index")}`);
+  setNodeText("liveCsiLine", `CSI: ${sensorDisplay(sensors, "calcium_saturation_index")}`);
 }
 
-function renderMobileTankCard(sensors, chlorineSupply) {
+function renderLiveTankCard(sensors, chlorineSupply) {
   const sensorId = sensors.chlorine_tank_level_gal ? "chlorine_tank_level_gal" : "tank_level";
   const supplyStatus = chlorineSupply && chlorineSupply.status ? chlorineSupply.status : sensorStatus(sensors, sensorId);
   const remaining =
@@ -1424,9 +1206,9 @@ function renderMobileTankCard(sensors, chlorineSupply) {
     chlorineSupply && chlorineSupply.days_remaining_display
       ? chlorineSupply.days_remaining_display
       : "-- days";
-  setMobileCardStatus("mobileTankCard", sensorCardStatus(supplyStatus));
-  setNodeText("mobileTankLevelLine", `Usable: ${remaining}`);
-  setNodeText("mobileTankDaysLine", `Days: ${days}`);
+  setLiveCardStatus("liveTankCard", sensorCardStatus(supplyStatus));
+  setNodeText("liveTankLevelLine", `Usable: ${remaining}`);
+  setNodeText("liveTankDaysLine", `Days: ${days}`);
 }
 
 function setNodeText(id, value) {
@@ -1486,7 +1268,7 @@ function sensorCardStatus(status) {
   return "status-off";
 }
 
-function setMobileCardStatus(cardId, statusClass) {
+function setLiveCardStatus(cardId, statusClass) {
   const card = document.getElementById(cardId);
   if (!card) {
     return;
@@ -1514,135 +1296,12 @@ function renderControlButtonStates(actuators) {
 }
 
 function setCommandStatus(message) {
-  ["commandStatus", "mobileCommandStatus"].forEach((id) => {
+  ["liveCommandStatus"].forEach((id) => {
     const node = document.getElementById(id);
     if (node) {
       node.textContent = message;
     }
   });
-}
-
-function renderSensorList(sensors) {
-  const list = document.getElementById("sensorList");
-  list.innerHTML = "";
-
-  LIVE_SENSOR_ORDER.forEach((sensorId) => {
-    const sensor = sensors[sensorId];
-    if (!sensor) {
-      return;
-    }
-    list.appendChild(row(sensor.label, sensor.display, sensor.quality, sensor.status));
-  });
-}
-
-function renderActuatorList(actuators) {
-  const list = document.getElementById("actuatorList");
-  list.innerHTML = "";
-
-  ACTUATOR_ORDER.forEach((actuatorId) => {
-    const actuator = actuators[actuatorId];
-    if (!actuator) {
-      return;
-    }
-    list.appendChild(row(actuator.label, actuator.state.toUpperCase()));
-  });
-}
-
-function renderEvents(tick) {
-  const events = document.getElementById("eventList");
-  const lines = [];
-
-  if (tick.acquired_groups.length) {
-    lines.push(`Acquired: ${tick.acquired_groups.join(", ")}`);
-  }
-
-  if (tick.loggable_measurement_count) {
-    lines.push(`Loggable measurements: ${tick.loggable_measurement_count}`);
-  }
-
-  if (tick.logged_measurement_count) {
-    lines.push(`Logged measurements: ${tick.logged_measurement_count}`);
-  }
-  if (tick.logged_lab_test_count) {
-    lines.push(`Logged lab tests: ${tick.logged_lab_test_count}`);
-  }
-  if (tick.logged_weather_count) {
-    lines.push(`Logged weather rows: ${tick.logged_weather_count}`);
-  }
-  if (tick.weather_poll_error) {
-    lines.push(`Weather poll error: ${tick.weather_poll_error}`);
-  }
-  if (tick.mqtt_result_count) {
-    lines.push(`MQTT commands processed: ${tick.mqtt_result_count}`);
-  }
-
-  tick.acquisition_failures.forEach((failure) => {
-    lines.push(`${failure.driver}: ${failure.error}`);
-  });
-
-  tick.safety_results.forEach((result) => {
-    if (result.applied && result.metadata.safety_action) {
-      lines.push(`Safety action: ${result.metadata.safety_action}`);
-    }
-  });
-
-  (tick.chlorination_results || []).forEach((result) => {
-    if (result.applied) {
-      lines.push("Chlorination command applied");
-      return;
-    }
-    if (result.rejection_reason) {
-      lines.push(`Chlorination command rejected: ${result.rejection_reason}`);
-    }
-  });
-
-  (tick.mqtt_results || []).forEach((result) => {
-    const summary = result.applied ? "applied" : (result.rejection_reason || "rejected");
-    lines.push(`MQTT command: ${summary}`);
-  });
-
-  events.textContent = lines.length ? lines.join("\n") : "No new events";
-}
-
-function row(name, value, quality, status) {
-  const item = document.createElement("div");
-  item.className = "state-row";
-  if (status) {
-    item.classList.add(`status-${status}`);
-  }
-
-  const label = document.createElement("span");
-  label.className = "state-name";
-  label.textContent = name;
-
-  const display = document.createElement("span");
-  display.className = "state-value";
-  if (quality && quality !== "good") {
-    display.classList.add("quality-suspect");
-  }
-  display.textContent = value;
-
-  item.append(label, display);
-  return item;
-}
-
-function applySensorBoxStatus(box, sensor) {
-  if (!box || !sensor) {
-    return;
-  }
-
-  const status = sensor.status || "unknown";
-  const nextPriority = SENSOR_STATUS_PRIORITY[status] ?? 0;
-  const currentPriority = Number(box.dataset.statusPriority ?? "-1");
-
-  if (nextPriority < currentPriority) {
-    return;
-  }
-
-  box.classList.remove(...SENSOR_STATUS_CLASSES);
-  box.classList.add(`status-${status}`);
-  box.dataset.statusPriority = String(nextPriority);
-  box.title = `${sensor.label}: ${sensor.status_label}`;
 }
 
 async function refreshHistory(force) {
@@ -2543,10 +2202,8 @@ async function loadPumpTimerConfig() {
 
 function renderPumpTimerConfig(payload) {
   const layer = document.getElementById("timerLayerStatus");
-  layer.classList.toggle("timer-layer-disabled", !payload.layer_enabled);
-  layer.textContent = payload.layer_enabled
-    ? "Pump timer layer is enabled"
-    : "Pump timer layer is disabled in runtime.enabled_layers";
+  layer.classList.remove("timer-layer-disabled");
+  layer.textContent = "Pump timer is enabled";
 
   const rows = document.getElementById("timerRows");
   rows.replaceChildren();
@@ -2857,14 +2514,8 @@ async function loadRuntimeConfig() {
   try {
     const response = await fetch("/api/config/runtime", { cache: "no-store" });
     const payload = await parseApiResponse(response, "runtime config load failed");
-    document.getElementById("runtimeStage").value = payload.stage;
+    loadedRuntimeConfig = payload;
     document.getElementById("runtimeDriverProfile").value = payload.driver_profile;
-    FEATURE_LAYERS.forEach((layer) => {
-      const box = document.getElementById(`layer-${layer}`);
-      if (box) {
-        box.checked = payload.enabled_layers.includes(layer);
-      }
-    });
     setRuntimeStatus("Runtime config loaded");
   } catch (error) {
     setRuntimeStatus(error.message);
@@ -2874,16 +2525,16 @@ async function loadRuntimeConfig() {
 }
 
 async function saveRuntimeConfig() {
-  const enabledLayers = FEATURE_LAYERS.filter((layer) => document.getElementById(`layer-${layer}`).checked);
   setRuntimeStatus("Saving runtime config...");
+  const current = loadedRuntimeConfig || {};
   try {
     const response = await fetch("/api/config/runtime", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        stage: document.getElementById("runtimeStage").value,
         driver_profile: document.getElementById("runtimeDriverProfile").value,
-        enabled_layers: enabledLayers,
+        enabled_actuators: current.enabled_actuators || ACTUATOR_ORDER,
+        enabled_sensor_groups: current.enabled_sensor_groups || ["pressures", "chemistry_loop"],
       }),
     });
     const payload = await parseApiResponse(response, "runtime config save failed");
@@ -2899,24 +2550,6 @@ function setRuntimeStatus(message) {
 }
 
 function initializeRuntimeControls() {
-  const stageSelect = document.getElementById("runtimeStage");
-  RUNTIME_STAGES.forEach((stage) => {
-    const option = document.createElement("option");
-    option.value = stage;
-    option.textContent = stage;
-    stageSelect.appendChild(option);
-  });
-
-  const layers = document.getElementById("runtimeLayers");
-  FEATURE_LAYERS.forEach((layer) => {
-    const label = document.createElement("label");
-    const input = document.createElement("input");
-    input.type = "checkbox";
-    input.id = `layer-${layer}`;
-    label.append(input, document.createTextNode(layer));
-    layers.appendChild(label);
-  });
-
   document.getElementById("runtimeReload").addEventListener("click", loadRuntimeConfig);
   document.getElementById("runtimeSave").addEventListener("click", saveRuntimeConfig);
   loadRuntimeConfig();
@@ -2933,8 +2566,6 @@ async function loadSafetyConfig() {
     const freeze = payload.freeze_protection || {};
     const tank = payload.chlorine_tank || {};
     document.getElementById("safetySensorPumpOutput").value = payload.pressure_sensor_ids.pump_output;
-    document.getElementById("safetySensorReturn").value = payload.pressure_sensor_ids.return_line;
-    document.getElementById("safetySensorBooster").value = payload.pressure_sensor_ids.booster;
     document.getElementById("safetyFreezeEnabled").checked = Boolean(freeze.enabled);
     document.getElementById("safetyFreezeSource").value = freeze.source || "temp";
     document.getElementById("safetyFreezeTempSensor").value = freeze.temp_sensor || "temp";
@@ -2955,27 +2586,18 @@ async function loadSafetyConfig() {
       freeze.min_run_seconds ?? 600.0,
     );
     document.getElementById("safetyFreezeUnit").value = freeze.threshold_unit || "degF";
-    document.getElementById("safetyChlorineMinReturn").value = payload.thresholds.chlorine_min_return_psi;
     document.getElementById("safetyChlorineMinPump").value = payload.thresholds.chlorine_min_pump_output_psi;
     document.getElementById("safetyChlorineMaxPump").value = payload.thresholds.chlorine_max_pump_output_psi;
-    document.getElementById("safetyChlorineRequiresHighSpeed").checked =
-      payload.thresholds.chlorine_requires_high_speed !== false;
     document.getElementById("safetyChlorineTankLevelSensor").value =
       tank.level_sensor || "chlorine_tank_level_gal";
     document.getElementById("safetyChlorineTankWarningGal").value = String(tank.low_warning_gal ?? 2.0);
     document.getElementById("safetyChlorineTankInhibitGal").value = String(tank.inhibit_below_gal ?? 1.5);
     document.getElementById("safetyChlorineTankReenableGal").value = String(tank.reenable_at_gal ?? 2.0);
-    document.getElementById("safetyBoosterMax").value = payload.thresholds.booster_max_psi;
-    document.getElementById("safetyBoosterMin").value = payload.thresholds.booster_min_psi;
-    document.getElementById("safetyLowPrimeMin").value = payload.thresholds.pump_low_prime_min_output_psi;
+    document.getElementById("safetyPrimeMin").value = payload.thresholds.pump_prime_min_output_psi;
     document.getElementById("safetyOverpressure").value = payload.thresholds.pump_output_overpressure_psi;
-    document.getElementById("safetyHighPrimeMin").value = payload.thresholds.pump_high_prime_min_output_psi;
-    document.getElementById("safetyBoosterGrace").value = payload.timeouts.booster_low_pressure_grace_s;
-    document.getElementById("safetyLowPrimeSec").value = payload.timeouts.pump_low_prime_seconds;
-    document.getElementById("safetyHighPrimeTimeout").value = payload.timeouts.pump_high_prime_timeout_s;
+    document.getElementById("safetyPrimeTimeout").value = payload.timeouts.pump_prime_timeout_s;
     pumpPrimeThresholds = {
-      lowPrimeMinPsi: Number(payload.thresholds.pump_low_prime_min_output_psi ?? 1.0),
-      highPrimeMinPsi: Number(payload.thresholds.pump_high_prime_min_output_psi ?? 5.0),
+      primeMinPsi: Number(payload.thresholds.pump_prime_min_output_psi ?? 1.0),
     };
     setSafetyStatus("Safety config loaded");
   } catch (error) {
@@ -2994,8 +2616,6 @@ async function saveSafetyConfig() {
       body: JSON.stringify({
         pressure_sensor_ids: {
           pump_output: document.getElementById("safetySensorPumpOutput").value,
-          return_line: document.getElementById("safetySensorReturn").value,
-          booster: document.getElementById("safetySensorBooster").value,
         },
         freeze_protection: {
           enabled: document.getElementById("safetyFreezeEnabled").checked,
@@ -3016,20 +2636,13 @@ async function saveSafetyConfig() {
           reenable_at_gal: Number(document.getElementById("safetyChlorineTankReenableGal").value),
         },
         thresholds: {
-          chlorine_min_return_psi: Number(document.getElementById("safetyChlorineMinReturn").value),
           chlorine_min_pump_output_psi: Number(document.getElementById("safetyChlorineMinPump").value),
           chlorine_max_pump_output_psi: Number(document.getElementById("safetyChlorineMaxPump").value),
-          chlorine_requires_high_speed: document.getElementById("safetyChlorineRequiresHighSpeed").checked,
-          booster_max_psi: Number(document.getElementById("safetyBoosterMax").value),
-          booster_min_psi: Number(document.getElementById("safetyBoosterMin").value),
-          pump_low_prime_min_output_psi: Number(document.getElementById("safetyLowPrimeMin").value),
+          pump_prime_min_output_psi: Number(document.getElementById("safetyPrimeMin").value),
           pump_output_overpressure_psi: Number(document.getElementById("safetyOverpressure").value),
-          pump_high_prime_min_output_psi: Number(document.getElementById("safetyHighPrimeMin").value),
         },
         timeouts: {
-          booster_low_pressure_grace_s: Number(document.getElementById("safetyBoosterGrace").value),
-          pump_low_prime_seconds: Number(document.getElementById("safetyLowPrimeSec").value),
-          pump_high_prime_timeout_s: Number(document.getElementById("safetyHighPrimeTimeout").value),
+          pump_prime_timeout_s: Number(document.getElementById("safetyPrimeTimeout").value),
         },
       }),
     });
@@ -3063,8 +2676,6 @@ function setSafetyStatus(message) {
 function initializeSafetyControls() {
   const selects = [
     "safetySensorPumpOutput",
-    "safetySensorReturn",
-    "safetySensorBooster",
     "safetyFreezeTempSensor",
     "safetyFreezePhTempSensor",
     "safetyChlorineTankLevelSensor",
@@ -3548,11 +3159,7 @@ async function loadChlorinationConfig() {
     const response = await fetch("/api/config/chlorination", { cache: "no-store" });
     const payload = await parseApiResponse(response, "chlorination config load failed");
     renderChlorinationConfig(payload);
-    setChlorinationConfigStatus(
-      payload.layer_enabled
-        ? "Chlorination config loaded"
-        : "Chlorination config loaded; layer disabled",
-    );
+    setChlorinationConfigStatus("Chlorination config loaded");
   } catch (error) {
     setChlorinationConfigStatus(error.message);
   } finally {
@@ -3585,6 +3192,9 @@ function renderChlorinationConfig(payload) {
   document.getElementById("chlorinationPumpOutputOzPerMin").value = String(
     payload.pump_output_oz_per_min ?? 1.0,
   );
+  document.getElementById("chlorinationNoDoseFirstMinutes").value = String(
+    payload.no_dose_first_minutes ?? 1.0,
+  );
   document.getElementById("chlorinationNoDoseLastMinutes").value = String(
     payload.no_dose_last_minutes ?? 10.0,
   );
@@ -3603,6 +3213,7 @@ function collectChlorinationConfig() {
     enabled: document.getElementById("chlorinationEnabled").checked,
     daily_dose_oz: Number(document.getElementById("chlorinationDailyDoseOz").value),
     pump_output_oz_per_min: Number(document.getElementById("chlorinationPumpOutputOzPerMin").value),
+    no_dose_first_minutes: Number(document.getElementById("chlorinationNoDoseFirstMinutes").value),
     no_dose_last_minutes: Number(document.getElementById("chlorinationNoDoseLastMinutes").value),
     max_duty_cycle: Number(document.getElementById("chlorinationMaxDutyCycle").value),
     cycle_on_seconds: Number(document.getElementById("chlorinationCycleOnSeconds").value),
@@ -3634,6 +3245,87 @@ function initializeChlorinationControls() {
     stopButton.addEventListener("click", stopChlorinationDiagnostic);
   }
   loadChlorinationConfig();
+}
+
+async function loadFilterLoadingConfig() {
+  if (filterLoadingConfigLoading) {
+    return;
+  }
+  filterLoadingConfigLoading = true;
+  try {
+    const response = await fetch("/api/config/filter_loading", { cache: "no-store" });
+    const payload = await parseApiResponse(response, "filter loading config load failed");
+    renderFilterLoadingConfig(payload);
+    setFilterLoadingConfigStatus("Filter loading config loaded");
+  } catch (error) {
+    setFilterLoadingConfigStatus(error.message);
+  } finally {
+    filterLoadingConfigLoading = false;
+  }
+}
+
+async function saveFilterLoadingConfig() {
+  setFilterLoadingConfigStatus("Saving filter loading config...");
+  try {
+    const response = await fetch("/api/config/filter_loading", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(collectFilterLoadingConfig()),
+    });
+    const payload = await parseApiResponse(response, "filter loading config save failed");
+    renderFilterLoadingConfig(payload);
+    setFilterLoadingConfigStatus(
+      payload.applied_live ? "Filter loading config saved and applied live" : "Filter loading config saved",
+    );
+    clearConfigDraftState(true);
+  } catch (error) {
+    setFilterLoadingConfigStatus(error.message);
+  }
+}
+
+function renderFilterLoadingConfig(payload) {
+  document.getElementById("filterLoadingEnabled").checked = payload.enabled !== false;
+  document.getElementById("filterLoadingPressureSensor").value = payload.pressure_sensor || "pump_output_psi";
+  document.getElementById("filterLoadingCleanPsi").value = String(payload.clean_psi ?? 10.0);
+  document.getElementById("filterLoadingDirtyPsi").value = String(payload.dirty_psi ?? 25.0);
+  document.getElementById("filterLoadingStabilizationSeconds").value = String(payload.stabilization_seconds ?? 60.0);
+  document.getElementById("filterLoadingAveragingSeconds").value = String(payload.averaging_seconds ?? 120.0);
+  document.getElementById("filterLoadingMaxPressureAgeSeconds").value = String(payload.max_pressure_age_seconds ?? 10.0);
+}
+
+function collectFilterLoadingConfig() {
+  return {
+    enabled: document.getElementById("filterLoadingEnabled").checked,
+    pressure_sensor: document.getElementById("filterLoadingPressureSensor").value,
+    clean_psi: Number(document.getElementById("filterLoadingCleanPsi").value),
+    dirty_psi: Number(document.getElementById("filterLoadingDirtyPsi").value),
+    stabilization_seconds: Number(document.getElementById("filterLoadingStabilizationSeconds").value),
+    averaging_seconds: Number(document.getElementById("filterLoadingAveragingSeconds").value),
+    max_pressure_age_seconds: Number(document.getElementById("filterLoadingMaxPressureAgeSeconds").value),
+  };
+}
+
+function setFilterLoadingConfigStatus(message) {
+  const status = document.getElementById("filterLoadingConfigStatus");
+  if (status) {
+    status.textContent = message;
+  }
+}
+
+function initializeFilterLoadingControls() {
+  const pressureSelect = document.getElementById("filterLoadingPressureSensor");
+  if (!pressureSelect) {
+    return;
+  }
+  ["pump_output_psi"].forEach((sensorId) => {
+    const option = document.createElement("option");
+    option.value = sensorId;
+    option.textContent = sensorId;
+    pressureSelect.appendChild(option);
+  });
+  document.getElementById("filterLoadingReload").addEventListener("click", loadFilterLoadingConfig);
+  document.getElementById("filterLoadingSave").addEventListener("click", saveFilterLoadingConfig);
+  loadFilterLoadingConfig();
 }
 
 async function loadFcDemandConfig() {
@@ -4534,8 +4226,7 @@ function initializeFaultTimelineControls() {
 
 function initializeTimerOverrideControls() {
   [
-    "overridePumpOnHour",
-    "mobileOverridePumpOnHour",
+    "liveOverridePumpOnHour",
   ].forEach((id) => {
     const node = document.getElementById(id);
     if (!node) {
@@ -4553,8 +4244,7 @@ function initializeTimerOverrideControls() {
   });
 
   [
-    "overridePumpOffManual",
-    "mobileOverridePumpOffManual",
+    "liveOverridePumpOffManual",
   ].forEach((id) => {
     const node = document.getElementById(id);
     if (!node) {
@@ -4569,8 +4259,7 @@ function initializeTimerOverrideControls() {
   });
 
   [
-    "overrideResumeSchedule",
-    "mobileOverrideResumeSchedule",
+    "liveOverrideResumeSchedule",
   ].forEach((id) => {
     const node = document.getElementById(id);
     if (!node) {
@@ -4586,8 +4275,7 @@ function initializeTimerOverrideControls() {
 
 function initializeChlorinationQuickControls() {
   [
-    ["chlorinationDoseSave", "chlorinationDoseInput"],
-    ["mobileChlorinationDoseSave", "mobileChlorinationDoseInput"],
+    ["liveChlorinationDoseSave", "liveChlorinationDoseInput"],
   ].forEach(([buttonId, inputId]) => {
     const button = document.getElementById(buttonId);
     const input = document.getElementById(inputId);
@@ -4603,8 +4291,7 @@ function initializeChlorinationQuickControls() {
   });
 
   [
-    ["supplementalChlorineDoseStart", "supplementalChlorineDoseInput"],
-    ["mobileSupplementalChlorineDoseStart", "mobileSupplementalChlorineDoseInput"],
+    ["liveSupplementalChlorineDoseStart", "liveSupplementalChlorineDoseInput"],
   ].forEach(([buttonId, inputId]) => {
     const button = document.getElementById(buttonId);
     const input = document.getElementById(inputId);
@@ -4620,8 +4307,7 @@ function initializeChlorinationQuickControls() {
   });
 
   [
-    "supplementalChlorineDoseStop",
-    "mobileSupplementalChlorineDoseStop",
+    "liveSupplementalChlorineDoseStop",
   ].forEach((buttonId) => {
     const button = document.getElementById(buttonId);
     if (!button) {
@@ -4629,38 +4315,6 @@ function initializeChlorinationQuickControls() {
     }
     button.addEventListener("click", stopSupplementalChlorineDose);
   });
-}
-
-function initializeLiveModeControls() {
-  const panel = document.getElementById("mobileLivePanel");
-  const listButton = document.getElementById("liveModeList");
-  const schematicButton = document.getElementById("liveModeSchematic");
-  if (!panel || !listButton || !schematicButton) {
-    return;
-  }
-
-  const storedMode = window.localStorage.getItem(LIVE_MODE_STORAGE_KEY);
-  const defaultMode = window.matchMedia("(max-width: 760px)").matches ? "list" : "schematic";
-  setLiveMode(storedMode === "list" || storedMode === "schematic" ? storedMode : defaultMode);
-
-  listButton.addEventListener("click", () => setLiveMode("list"));
-  schematicButton.addEventListener("click", () => setLiveMode("schematic"));
-}
-
-function setLiveMode(mode) {
-  liveMode = mode === "list" ? "list" : "schematic";
-  document.body.dataset.liveMode = liveMode;
-  const listButton = document.getElementById("liveModeList");
-  const schematicButton = document.getElementById("liveModeSchematic");
-  if (listButton) {
-    listButton.classList.toggle("active", liveMode === "list");
-    listButton.setAttribute("aria-pressed", liveMode === "list" ? "true" : "false");
-  }
-  if (schematicButton) {
-    schematicButton.classList.toggle("active", liveMode === "schematic");
-    schematicButton.setAttribute("aria-pressed", liveMode === "schematic" ? "true" : "false");
-  }
-  window.localStorage.setItem(LIVE_MODE_STORAGE_KEY, liveMode);
 }
 
 async function poll() {
@@ -4693,9 +4347,9 @@ async function poll() {
       badge.classList.add("fault");
       badge.textContent = "Dashboard error";
     }
-    const events = document.getElementById("eventList");
-    if (events) {
-      events.textContent = error.message;
+    const status = document.getElementById("liveCommandStatus");
+    if (status) {
+      status.textContent = error.message;
     }
   } finally {
     const intervalMs = PAGE_MODE === "live" ? 2000 : 10000;
@@ -4722,7 +4376,6 @@ function setActiveNavPage() {
 
 function initializeForPage() {
   if (PAGE_MODE === "live") {
-    initializeLiveModeControls();
     initializeTimerOverrideControls();
     initializeChlorinationQuickControls();
     return;
@@ -4749,6 +4402,7 @@ function initializeForPage() {
     initializeAnalogControls();
     initializePhSensorControls();
     initializeChlorinationControls();
+    initializeFilterLoadingControls();
     initializeFcDemandControls();
     return;
   }

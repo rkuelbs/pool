@@ -78,6 +78,7 @@ def test_valid_dosing_windows_trim_last_minutes_of_merged_run() -> None:
     windows = valid_dosing_windows_for_day(
         config,
         at(0).date(),
+        no_dose_first_minutes=0.0,
         no_dose_last_minutes=10.0,
     )
 
@@ -95,6 +96,7 @@ def test_valid_dosing_windows_ignore_schedules_that_disallow_dosing() -> None:
     windows = valid_dosing_windows_for_day(
         config,
         at(0).date(),
+        no_dose_first_minutes=0.0,
         no_dose_last_minutes=10.0,
     )
 
@@ -110,6 +112,7 @@ def test_non_dosing_overlap_does_not_extend_allowed_dosing_window() -> None:
     windows = valid_dosing_windows_for_day(
         config,
         at(0).date(),
+        no_dose_first_minutes=0.0,
         no_dose_last_minutes=10.0,
     )
 
@@ -125,6 +128,7 @@ def test_valid_dosing_windows_handle_overnight_schedules_without_midnight_trim()
     windows = valid_dosing_windows_for_day(
         config,
         at(0).date(),
+        no_dose_first_minutes=0.0,
         no_dose_last_minutes=10.0,
     )
 
@@ -140,6 +144,7 @@ def test_controller_turns_dosing_on_for_first_minute_of_duty_cycle() -> None:
         ChlorinationConfig(
             daily_dose_oz=4.0,
             pump_output_oz_per_min=1.0,
+            no_dose_first_minutes=0.0,
             cycle_on_seconds=60.0,
         )
     )
@@ -148,7 +153,6 @@ def test_controller_turns_dosing_on_for_first_minute_of_duty_cycle() -> None:
         now=at(8),
         pump_timer_config=timer_config(schedule()),
         actuator_states=dosing_actuator_states(dosing_pump=ActuatorState.OFF),
-        layer_enabled=True,
     )
 
     assert evaluation.status.available_runtime_min_per_day == 110.0
@@ -171,6 +175,7 @@ def test_controller_turns_dosing_off_after_one_minute_on_interval() -> None:
         ChlorinationConfig(
             daily_dose_oz=4.0,
             pump_output_oz_per_min=1.0,
+            no_dose_first_minutes=0.0,
             cycle_on_seconds=60.0,
         )
     )
@@ -179,7 +184,6 @@ def test_controller_turns_dosing_off_after_one_minute_on_interval() -> None:
         now=at(8, 1),
         pump_timer_config=timer_config(schedule()),
         actuator_states=dosing_actuator_states(dosing_pump=ActuatorState.ON),
-        layer_enabled=True,
     )
 
     assert evaluation.status.active is False
@@ -194,6 +198,7 @@ def test_controller_requires_booster_off_for_dosing() -> None:
         ChlorinationConfig(
             daily_dose_oz=4.0,
             pump_output_oz_per_min=1.0,
+            no_dose_first_minutes=0.0,
             cycle_on_seconds=60.0,
         )
     )
@@ -205,7 +210,6 @@ def test_controller_requires_booster_off_for_dosing() -> None:
             dosing_pump=ActuatorState.ON,
             booster=ActuatorState.ON,
         ),
-        layer_enabled=True,
     )
 
     assert evaluation.status.active is False
@@ -218,6 +222,7 @@ def test_controller_shortens_on_time_when_low_duty_would_exceed_max_cycle() -> N
         ChlorinationConfig(
             daily_dose_oz=2.0,
             pump_output_oz_per_min=1.0,
+            no_dose_first_minutes=0.0,
             cycle_on_seconds=60.0,
             max_cycle_period_seconds=1800.0,
             min_cycle_on_seconds=5.0,
@@ -228,7 +233,6 @@ def test_controller_shortens_on_time_when_low_duty_would_exceed_max_cycle() -> N
         now=at(8, 0, 32),
         pump_timer_config=timer_config(schedule()),
         actuator_states=dosing_actuator_states(dosing_pump=ActuatorState.OFF),
-        layer_enabled=True,
     )
 
     assert round(on_evaluation.status.duty_cycle, 4) == 0.0182
@@ -244,7 +248,6 @@ def test_controller_shortens_on_time_when_low_duty_would_exceed_max_cycle() -> N
         now=at(8, 0, 33),
         pump_timer_config=timer_config(schedule()),
         actuator_states=dosing_actuator_states(dosing_pump=ActuatorState.ON),
-        layer_enabled=True,
     )
 
     assert off_evaluation.status.active is False
@@ -256,6 +259,7 @@ def test_controller_uses_minimum_on_time_for_extremely_low_duty_cycle() -> None:
         ChlorinationConfig(
             daily_dose_oz=0.22,
             pump_output_oz_per_min=1.0,
+            no_dose_first_minutes=0.0,
             cycle_on_seconds=60.0,
             max_cycle_period_seconds=1800.0,
             min_cycle_on_seconds=5.0,
@@ -266,7 +270,6 @@ def test_controller_uses_minimum_on_time_for_extremely_low_duty_cycle() -> None:
         now=at(8, 0, 4),
         pump_timer_config=timer_config(schedule()),
         actuator_states=dosing_actuator_states(dosing_pump=ActuatorState.OFF),
-        layer_enabled=True,
     )
 
     assert round(on_evaluation.status.duty_cycle, 4) == 0.002
@@ -281,7 +284,6 @@ def test_controller_uses_minimum_on_time_for_extremely_low_duty_cycle() -> None:
         now=at(8, 0, 6),
         pump_timer_config=timer_config(schedule()),
         actuator_states=dosing_actuator_states(dosing_pump=ActuatorState.ON),
-        layer_enabled=True,
     )
 
     assert off_evaluation.status.active is False
@@ -290,14 +292,17 @@ def test_controller_uses_minimum_on_time_for_extremely_low_duty_cycle() -> None:
 
 def test_controller_prohibits_dosing_during_final_no_dose_buffer() -> None:
     controller = ChlorinationController(
-        ChlorinationConfig(daily_dose_oz=4.0, pump_output_oz_per_min=1.0)
+        ChlorinationConfig(
+            daily_dose_oz=4.0,
+            pump_output_oz_per_min=1.0,
+            no_dose_first_minutes=0.0,
+        )
     )
 
     evaluation = controller.evaluate(
         now=at(9, 55),
         pump_timer_config=timer_config(schedule()),
         actuator_states=dosing_actuator_states(dosing_pump=ActuatorState.ON),
-        layer_enabled=True,
     )
 
     assert evaluation.status.active is False
@@ -307,14 +312,17 @@ def test_controller_prohibits_dosing_during_final_no_dose_buffer() -> None:
 
 def test_controller_caps_duty_cycle_and_reports_warning() -> None:
     controller = ChlorinationController(
-        ChlorinationConfig(daily_dose_oz=100.0, pump_output_oz_per_min=1.0)
+        ChlorinationConfig(
+            daily_dose_oz=100.0,
+            pump_output_oz_per_min=1.0,
+            no_dose_first_minutes=0.0,
+        )
     )
 
     evaluation = controller.evaluate(
         now=at(8),
         pump_timer_config=timer_config(schedule()),
         actuator_states=dosing_actuator_states(dosing_pump=ActuatorState.OFF),
-        layer_enabled=True,
     )
 
     assert evaluation.status.duty_cycle == 0.5
@@ -344,20 +352,24 @@ def test_config_rejects_impossible_cycle_timing() -> None:
         raise AssertionError("nominal ON time above max cycle period should be rejected")
 
 
-def test_controller_keeps_dosing_off_when_layer_disabled() -> None:
+def test_controller_keeps_dosing_off_when_chlorination_disabled() -> None:
     controller = ChlorinationController(
-        ChlorinationConfig(daily_dose_oz=4.0, pump_output_oz_per_min=1.0)
+        ChlorinationConfig(
+            enabled=False,
+            daily_dose_oz=4.0,
+            pump_output_oz_per_min=1.0,
+            no_dose_first_minutes=0.0,
+        )
     )
 
     evaluation = controller.evaluate(
         now=at(8),
         pump_timer_config=timer_config(schedule()),
         actuator_states=dosing_actuator_states(dosing_pump=ActuatorState.ON),
-        layer_enabled=False,
     )
 
     assert evaluation.status.active is False
-    assert evaluation.status.reason == "chlorination layer disabled"
+    assert evaluation.status.reason == "chlorination disabled"
     assert evaluation.commands[0].state == ActuatorState.OFF
 
 
@@ -366,6 +378,7 @@ def test_controller_delays_dosing_by_eligible_minutes_without_changing_duty() ->
         ChlorinationConfig(
             daily_dose_oz=4.0,
             pump_output_oz_per_min=1.0,
+            no_dose_first_minutes=0.0,
             no_dose_last_minutes=10.0,
             cycle_on_seconds=60.0,
         )
@@ -376,7 +389,6 @@ def test_controller_delays_dosing_by_eligible_minutes_without_changing_duty() ->
         now=at(11, 0),
         pump_timer_config=config,
         actuator_states=dosing_actuator_states(dosing_pump=ActuatorState.ON),
-        layer_enabled=True,
         plan_adjustment=ChlorinationPlanAdjustment(
             delay_eligible_seconds=210.0 * 60.0,
             source="fc_demand",
@@ -395,7 +407,6 @@ def test_controller_delays_dosing_by_eligible_minutes_without_changing_duty() ->
         now=at(11, 30),
         pump_timer_config=config,
         actuator_states=dosing_actuator_states(dosing_pump=ActuatorState.OFF),
-        layer_enabled=True,
         plan_adjustment=ChlorinationPlanAdjustment(
             delay_eligible_seconds=210.0 * 60.0,
             source="fc_demand",

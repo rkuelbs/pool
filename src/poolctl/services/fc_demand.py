@@ -1523,6 +1523,7 @@ def _available_minutes_for_day(
         for window in valid_dosing_windows_for_day(
             pump_timer_config,
             day,
+            no_dose_first_minutes=chlorination_config.no_dose_first_minutes,
             no_dose_last_minutes=chlorination_config.no_dose_last_minutes,
         )
     ) / 60.0

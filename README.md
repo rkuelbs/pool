@@ -9,7 +9,7 @@ The project is intentionally layered:
 - Domain models define stable actuator, sensor, command, and measurement types.
 - Drivers isolate simulated hardware, Modbus relay hardware, and Modbus sensors.
 - Services implement acquisition, logging, timers, safety, flow estimation,
-  chlorination, weather logging, MQTT, and derived chemistry metrics.
+  chlorination, weather logging, notifications, and derived chemistry metrics.
 - The web server owns the live dashboard, history charts, config forms, and the
   dedicated runtime tick loop.
 
@@ -25,17 +25,19 @@ The project is intentionally layered:
   module turns the relay off even if the Pi process dies mid-pulse.
 - Optional FC-demand controller based on manual FC tests and logged chlorine
   delivery/additions. ORP and pH are not used by this controller.
-- Safety enforcement layer with configurable pressure gates and lockouts.
+- Always-present SafetyGate with configurable pump-output pressure gates,
+  chlorine tank hysteresis, freeze protection, and lockouts.
 - Freeze protection with hysteresis and minimum runtime.
 - Sensor acquisition with per-group read/log rates, optional burst
   oversampling, and rolling boxcar filters.
+- Standardized filter-loading estimates based on qualifying high-speed
+  pump-output pressure tests.
 - SQLite logging for measurements, weather, test results, and chemical additions.
 - Live web GUI, mobile-friendly live list view, config forms, schedule editor,
   test result entry, chemical addition entry, and history charts.
 - Raspberry Pi CPU temperature, CPU load, and CPU fan RPM live display and
   logging.
 - Hourly Open-Meteo weather observation logging plus a 48-hour in-memory forecast.
-- MQTT telemetry and selected input support when enabled.
 - Optional Pushover notification provider with a dashboard test button.
 - Systemd deployment with automatic restart and SQLite backup timer.
 - Repo-level `AGENTS.md` guidance for future Codex agents.
@@ -51,7 +53,7 @@ deploy/systemd/
   *.tmpl                  Service and backup script templates.
 src/poolctl/
   app.py                  Runtime composition and continuous tick logic.
-  config.py               Runtime stage, layer, and live view config models.
+  config.py               Runtime hardware profile and live view config models.
   domain/models.py        Stable domain identifiers and data models.
   drivers/                Simulated and Raspberry Pi hardware drivers.
   services/               Acquisition, timer, safety, logging, weather, etc.
@@ -76,7 +78,7 @@ From a PowerShell terminal in the repo root:
 py -3.13 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-python -m pip install -e ".[dev,mqtt]"
+python -m pip install -e ".[dev]"
 ```
 
 The Raspberry Pi hardware extras are not needed on Windows. Install
@@ -174,13 +176,14 @@ made on the Pi.
 
 Important sections:
 
-- `runtime`: stage, driver profile, enabled feature layers, enabled actuators,
-  enabled sensor groups.
+- `runtime`: driver profile, installed actuators, and enabled acquisition
+  sensor groups.
 - `pump_timer`: local timezone, daily pump/booster schedule windows, and whether
   each window is eligible for chlorine dosing.
 - `chlorination`: open-loop liquid chlorine dose settings.
 - `fc_demand`: optional free-chlorine demand estimator settings.
-- `safety`: pressure interlocks, lockout thresholds, freeze protection.
+- `safety`: pump-output pressure interlocks, tank hysteresis, lockout
+  thresholds, and freeze protection.
 - `acquisition`: sensor groups, read intervals, log intervals, validation rules,
   optional burst oversampling, rolling filters, chemistry refresh runs.
 - `logging`: SQLite database path and controller-state snapshot interval.
@@ -194,10 +197,11 @@ Important sections:
   calibration.
 - `modbus_orp_sensor`: ORP sensor serial settings.
 - `modbus_ph_sensor`: pH sensor serial settings.
-- `flow_estimation`: pump/branch flow constants and filter restriction limits.
+- `flow_estimation`: pump-output-pressure flow constants.
+- `filter_loading`: standardized high-speed pump-output pressure test
+  calibration and timing.
 - `live_view`: dashboard display limits.
 - `weather`: Open-Meteo location, units, and polling settings.
-- `mqtt`: MQTT connection, topics, and permission switches.
 - `notifications`: push notification provider settings and optional alert rules
   for usable chlorine tank days remaining, pH, and ORP. Pushover keys can be
   entered on the Config page or supplied through environment variables.
@@ -220,23 +224,21 @@ pump_timer:
 night, vacuum, or skimming-only windows where the pump should run but chlorine
 should not be injected.
 
-## Feature Layers
+## Runtime Architecture
 
-Feature layers let the same software move through staged hardware bring-up:
+The web server/API is the intended remote interface. There is no separate
+message bus or staged runtime mode. The app builder always wires the scheduler,
+acquisition, logging, SafetyGate, chlorination controller, FC-demand estimator,
+weather service, and notification service from the active config.
 
-- `pump_timer`: controls pump motor, pump speed, and booster from schedules.
-- `acquisition`: reads configured sensors.
-- `logging`: writes measurements and events to SQLite.
-- `safety_enforcement`: enforces pressure, prime, booster, chlorine, and freeze
-  interlocks.
-- `chlorination`: runs the open-loop chlorine dosing duty-cycle controller.
-- `mqtt_bridge`: publishes telemetry and optionally accepts selected inputs.
-- `closed_loop_control`: reserved for later closed-loop control work.
+`runtime.enabled_actuators` describes which outputs are physically installed.
+`runtime.enabled_sensor_groups` selects acquisition groups from the YAML. Service
+behavior is controlled by each service's own `enabled` or calibration fields.
+SafetyGate itself is not optional.
 
-For the Pi dumb-timer phase, `pi-prod.yaml` can run without
-`safety_enforcement`. That allows pump and booster operation before pressure
-sensors are installed. Add safety only after the required pressure readings are
-wired, calibrated, and verified.
+The current hydraulic safety instrumentation is `pump_output_psi`. Return,
+booster, bubbler, and filter-output pressure channels are not part of the active
+architecture.
 
 ## Acquisition and Filtering
 
@@ -281,11 +283,11 @@ rolling filter.
 
 ## Dashboard Pages
 
-- Live: schematic or mobile list view, current sensor/actuator state, quick
-  pump controls, chlorination dose target, supplemental chlorine dose action,
-  FC-demand status, safety status, estimated true chlorine tank level plus
-  usable chlorine gallons/days remaining, CPU temperature/load/fan status on Pi,
-  and runtime loop timing.
+- Live: responsive card view with current sensor/actuator state, quick pump
+  controls, pump-output pressure, filter loading, chlorination dose target,
+  supplemental chlorine dose action, FC-demand status, safety status, estimated
+  true chlorine tank level plus usable chlorine gallons/days remaining, CPU
+  temperature/load/fan status on Pi, and runtime loop timing.
 - History: measurement/weather/test-result/chemical-addition charts with
   selectable series, hover readouts, automatic rollup resolution, past-window
   navigation, calendar/time jump, CSV export, water-test and chemical-addition
@@ -293,9 +295,9 @@ rolling filter.
   depending on selected signal ranges.
 - Schedule: pump timer schedule editor, including a per-window dosing checkbox
   for excluding cleaning/night runs from liquid chlorine dosing.
-- Config: forms for runtime layers, safety, chlorination, FC demand,
-  acquisition, logging, analog input calibration/raw voltage display, pH sensor
-  enable/calibration, notifications, and diagnostic dosing-pump
+- Config: forms for runtime hardware profile, safety, chlorination, filter
+  loading, FC demand, acquisition, logging, pressure analog input calibration,
+  pH sensor enable/calibration, notifications, and diagnostic dosing-pump
   prime/calibration tests.
 
 Some config changes apply live. Others write YAML and require restart because
@@ -353,8 +355,9 @@ configured pump-timer timezone.
 
 ## Open-loop Chlorination
 
-Liquid chlorine dosing is implemented as the `chlorination` layer. On Raspberry
-Pi hardware, the chlorine dosing pump is mapped to relay 7 by default.
+Liquid chlorine dosing is implemented by the chlorination controller. On
+Raspberry Pi hardware, the chlorine dosing pump is mapped to relay 7 by
+default.
 
 On the Waveshare Modbus relay module, normal pump and booster outputs use
 latched relay writes. The chlorine dosing relay uses the module's flash-on
@@ -381,29 +384,29 @@ The controller:
 
 1. Uses only pump timer schedules with `allow_dosing: true`.
 2. Merges overlapping or adjacent dosing-allowed pump timer windows.
-3. Removes the final `no_dose_last_minutes` from each continuous allowed run.
-4. Computes total valid daily dosing minutes.
-5. Converts `daily_dose_oz` to dosing pump minutes using
+3. Removes the first `no_dose_first_minutes` from each continuous pump run so
+   pump output pressure and flow can stabilize.
+4. Removes the final `no_dose_last_minutes` from each continuous allowed run.
+5. Computes total valid daily dosing minutes.
+6. Converts `daily_dose_oz` to dosing pump minutes using
    `pump_output_oz_per_min`.
-6. Computes duty cycle as requested minutes divided by available minutes.
-7. Caps duty cycle at `max_duty_cycle`.
-8. Computes an effective ON/OFF pulse schedule for that duty cycle.
+7. Computes duty cycle as requested minutes divided by available minutes.
+8. Caps duty cycle at `max_duty_cycle`.
+9. Computes an effective ON/OFF pulse schedule for that duty cycle.
 
-Normal scheduled dosing will only energize the dosing pump when the booster
-pump is off, the latest good pump-output pressure is inside the configured
-chlorine dosing pressure window, and SafetyGate allows the estimated true
-chlorine tank level. Tank safety uses hysteresis: the dashboard warns at
-`low_warning_gal` (default 2.0 gal), normal dosing is inhibited at or below
-`inhibit_below_gal` (default 1.5 gal), and dosing is not re-enabled until the
-estimate reaches `reenable_at_gal` (default 2.0 gal). The Pi profile defaults
-the pressure window to 3.0-3.5 psi so the interlock verifies the pump is
-actually running at the expected low-speed head pressure instead of trusting
-only the commanded speed bit. A missing pressure or tank estimate is treated as
-not eligible for normal dosing. The chlorine tank gate is enforced by
-SafetyGate for normal dosing commands even when the broader continuous
-`safety_enforcement` layer is not enabled. Diagnostic prime/calibration runs
-remain a separate explicit bypass path and do not count toward delivered
-chlorine totals.
+Normal scheduled dosing will only energize the dosing pump when the main pump
+has continuously run for `no_dose_first_minutes`, the booster pump is off, the
+latest good pump-output pressure is inside the configured chlorine dosing
+pressure window, and SafetyGate allows the estimated true chlorine tank level.
+Tank safety uses hysteresis: the dashboard warns at `low_warning_gal` (default
+2.0 gal), normal dosing is inhibited at or below `inhibit_below_gal` (default
+1.5 gal), and dosing is not re-enabled until the estimate reaches
+`reenable_at_gal` (default 2.0 gal). The Pi profile defaults the pressure
+window to 3.0-3.5 psi so the interlock verifies the pump is actually running at
+the expected low-speed head pressure instead of trusting only the commanded
+speed bit. A missing pressure or tank estimate is treated as not eligible for
+normal dosing. Diagnostic prime/calibration runs remain a separate explicit
+bypass path and do not count toward delivered chlorine totals.
 
 This allows the same pump timer to run the pool at night for skimming or
 vacuuming while keeping the day's chlorine dose in morning and daytime windows
@@ -519,11 +522,16 @@ Example:
 
 ```yaml
 runtime:
-  enabled_layers:
-  - pump_timer
-  - logging
-  - acquisition
-  - chlorination
+  driver_profile: raspberry_pi
+  enabled_actuators:
+  - pump_motor
+  - pump_motor_speed
+  - booster_pump
+  - chlorine_dosing_pump
+  enabled_sensor_groups:
+  - pressures
+  - chemistry_loop
+  - chemical_tank
 
 modbus_relay:
   dosing_uses_flash: true
@@ -536,6 +544,7 @@ chlorination:
   enabled: true
   daily_dose_oz: 0.0
   pump_output_oz_per_min: 1.0
+  no_dose_first_minutes: 1.0
   no_dose_last_minutes: 10.0
   max_duty_cycle: 0.5
   cycle_on_seconds: 60.0
@@ -565,9 +574,8 @@ fc_demand:
   max_daily_dose_oz: 256.0
 ```
 
-If safety enforcement is enabled, dosing ON commands still pass through the
-safety gate. Normal dosing uses the configured pump-output pressure window for
-head-pressure qualification:
+All normal dosing ON commands pass through SafetyGate. Normal dosing uses the
+configured pump-output pressure window for head-pressure qualification:
 
 ```yaml
 safety:
@@ -579,8 +587,35 @@ safety:
   thresholds:
     chlorine_min_pump_output_psi: 3.0
     chlorine_max_pump_output_psi: 3.5
-    chlorine_requires_high_speed: false
+    chlorine_max_pressure_age_seconds: 10.0
+    pump_prime_min_output_psi: 1.0
+    pump_output_overpressure_psi: 30.0
+  timeouts:
+    pump_prime_timeout_s: 30.0
 ```
+
+## Filter Loading
+
+Filter loading is a standardized estimate based only on `pump_output_psi`.
+It assumes valve positions are repeatable, the main pump HIGH state is
+repeatable, and the booster is OFF. It is a trend/proxy, not a true differential
+pressure measurement.
+
+Software does not create a special morning test schedule. Add a normal
+5-10 minute pump HIGH schedule window. When the system enters main pump ON,
+speed HIGH, booster OFF, with a fresh pump-output pressure measurement, the
+estimator starts a qualifying session. It ignores the first
+`filter_loading.stabilization_seconds` (default 60 s), averages valid
+`pump_output_psi` samples for `averaging_seconds` (default 120 s), then publishes
+and logs:
+
+- `filter_reference_psi`: the standardized pump discharge pressure.
+- `filter_loading_percent`: `100 * (reference - clean) / (dirty - clean)`,
+  clamped to 0-100 for display.
+
+The last completed result stays latched when the pump drops to LOW/OFF or the
+booster turns ON. The dashboard shows its timestamp/age so a retained result is
+not mistaken for a live reading.
 
 On Raspberry Pi profiles, `startup_safe_off` defaults to `true` and
 `reconciliation_interval_s` defaults to `30.0`. Startup safe-off uses safe
@@ -850,7 +885,7 @@ Create and populate the venv:
 python3 -m venv venv
 source venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install -e ".[raspberrypi,mqtt]"
+python -m pip install -e ".[raspberrypi]"
 ```
 
 Install the services:
@@ -890,7 +925,7 @@ cd /home/pool/projects/pool
 git status --short
 git pull --ff-only
 source venv/bin/activate
-python -m pip install -e ".[raspberrypi,mqtt]"
+python -m pip install -e ".[raspberrypi]"
 sudo systemctl restart poolctl.service
 ```
 
@@ -1026,10 +1061,6 @@ The pH sensor produces:
 - `raw_ph`: pH units from register `0x0000`.
 - `ph_temp`: probe temperature from register `0x0001`, converted from C to F
   before display and logging.
-
-Analog pH channels also publish `raw_ph` as calibrated pH units. When an analog
-pH channel is configured, Poolctl additionally records `raw_ph_voltage` as the
-diagnostic input voltage used for calibration and troubleshooting.
 
 The DFRobot ORP and pH drivers have a small circuit breaker so a missing or
 failing chemistry probe does not repeatedly block the control loop with Modbus

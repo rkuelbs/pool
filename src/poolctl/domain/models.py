@@ -41,21 +41,13 @@ class SensorId(str, Enum):
       - dashboards
       - estimator logic
       - controller logic
-      - MQTT topics later
     """
 
     PUMP_OUTPUT_PSI = "pump_output_psi"
-    FILTER_OUTPUT_PSI = "filter_output_psi"
-    RETURN_PSI = "return_psi"
-    BUBBLER_PSI = "bubbler_psi"
-    BOOSTER_PSI = "booster_psi"
     PUMP_FLOW_GPM = "pump_flow_gpm"
     PUMP_DYNAMIC_HEAD_PSI = "pump_dynamic_head_psi"
-    RETURN_FLOW_GPM = "return_flow_gpm"
-    BUBBLER_FLOW_GPM = "bubbler_flow_gpm"
-    BOOSTER_FLOW_GPM = "booster_flow_gpm"
-    FILTER_RESTRICTION_METRIC = "filter_restriction_metric"
-    FILTER_RESTRICTION_PERCENT = "filter_restriction_percent"
+    FILTER_REFERENCE_PSI = "filter_reference_psi"
+    FILTER_LOADING_PERCENT = "filter_loading_percent"
     CALCIUM_SATURATION_INDEX = "calcium_saturation_index"
     CHLORINE_DAILY_DELIVERED_OZ = "chlorine_daily_delivered_oz"
     CHLORINATION_DUTY_CYCLE_PERCENT = "chlorination_duty_cycle_percent"
@@ -97,7 +89,6 @@ class SensorId(str, Enum):
 
     RAW_PH = "raw_ph"
     PH_TEMP = "ph_temp"
-    RAW_PH_VOLTAGE = "raw_ph_voltage"
 
     TEMP = "temp"
     CPU_TEMP = "cpu_temp"
@@ -187,7 +178,6 @@ class CommandSource(str, Enum):
     TIMER = "timer"
     LOCAL_GUI = "local_gui"
     REMOTE_GUI = "remote_gui"
-    MQTT = "mqtt"
     CONTROLLER = "controller"
     MANUAL = "manual"
     SYSTEM = "system"
@@ -204,19 +194,6 @@ class Measurement(BaseModel):
         kind = MeasurementKind.RAW
         value = 7.42
         unit = "pH"
-
-      raw_ph_voltage:
-        sensor_id = SensorId.RAW_PH_VOLTAGE
-        kind = MeasurementKind.RAW
-        value = 2.650
-        unit = "V"
-
-      calibrated pH estimate later:
-        sensor_id = SensorId.RAW_PH
-        kind = MeasurementKind.CALIBRATED
-        value = 7.42
-        unit = "pH"
-        source_measurement_ids = ["..."]
 
     In the first stage, most chemical sensors should be stored as RAW so
     calibration and estimation can improve later without destroying the
@@ -406,7 +383,7 @@ class ChlorineTankRefill(BaseModel):
 
 class ControlMode(str, Enum):
     """
-    Future operating modes for controller-generated decisions.
+    FC-demand operating modes for chlorine dose recommendations.
     """
 
     OBSERVE_ONLY = "observe_only"

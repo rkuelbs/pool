@@ -401,7 +401,7 @@ def _raw_write_single_coil_request(
     value: int,
 ) -> Any:
     try:
-        from pymodbus.pdu import ModbusPDU  # type: ignore[import-not-found]
+        from pymodbus.pdu import ModbusPDU
 
         base_class: Any = ModbusPDU
     except ImportError:
@@ -412,7 +412,7 @@ def _raw_write_single_coil_request(
         except ImportError as error:
             raise RuntimeError("pymodbus is required for raw Modbus relay writes") from error
 
-    class RawWriteSingleCoilRequest(base_class):  # type: ignore[misc, valid-type]
+    class RawWriteSingleCoilRequest(base_class):  # type: ignore[misc]
         function_code = 0x05
         rtu_frame_size = 8
 

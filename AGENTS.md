@@ -9,7 +9,7 @@ operation, deployment, and bring-up:
 
 - `README.md`: architecture, runtime behavior, Windows simulation, Raspberry Pi
   deployment, Modbus bring-up, configuration, dashboard, chlorination, FC
-  demand, MQTT, weather, notifications, and operational notes.
+  demand, weather, notifications, and operational notes.
 - `deploy/systemd/README.md`: systemd service installation, update flow,
   runtime loop, and database backup behavior.
 
@@ -30,21 +30,21 @@ configs/
 deploy/systemd/           Pi service and backup installer/templates.
 src/poolctl/
   app.py                  Runtime composition and continuous tick orchestration.
-  config.py               Runtime stage, layers, and live-view config.
+  config.py               Runtime hardware profile and live-view config.
   domain/models.py        Stable domain IDs and Measurement/command models.
   drivers/                Hardware/simulation boundaries.
   drivers/modbus/         Shared Modbus RTU bus/register helpers.
   drivers/raspberrypi/    Real Pi relay, analog, ORP, pH, CPU sensors.
   drivers/simulated/      Windows-safe plant, sensors, actuators.
   services/               Acquisition, timer, safety, chlorination, logging,
-                           flow estimation, FC demand, weather, MQTT, etc.
+                           flow estimation, FC demand, weather, notifications.
   tools/                  Modbus bring-up/configuration CLI helpers.
   web/                    HTTP server and static dashboard files.
 tests/                    Unit and integration-style tests.
 ```
 
-Python support is `>=3.11,<3.14`. Keep syntax compatible with Raspberry Pi OS
-Python 3.11.2.
+Python support is `>=3.13,<3.14`. Current deployments target Raspberry Pi OS
+64-bit Trixie with Python 3.13.
 
 ## Architectural Rules
 
@@ -52,9 +52,14 @@ Python 3.11.2.
   protocols and domain models, not Pi-specific libraries.
 - Keep Windows development fully functional with simulated drivers.
 - Use `Measurement` models for sensor values. Preserve stable `SensorId` names;
-  they are used by logging, GUI, MQTT, estimators, and configs.
+  they are used by logging, GUI, estimators, and configs.
 - Keep chemical readings in real engineering units where the system expects
   them. pH is pH units, ORP is mV, temperatures are normalized as documented.
+- The active hydraulic pressure input is `pump_output_psi`. Do not add return,
+  booster, bubbler, or filter-output pressure dependencies without a deliberate
+  hardware change.
+- pH is RS485 only. Keep analog pressure support, but do not reintroduce analog
+  pH voltage paths.
 - Actuators accept only simple states: `ON/OFF` or `LOW/HIGH`. Duration and duty
   decisions belong in scheduler/controller services, not drivers.
 - Configurable thresholds belong in YAML and GUI config where appropriate.
@@ -126,7 +131,8 @@ change to chlorination, FC-demand, diagnostic dosing, or relay mapping.
 
 - Safety thresholds are configurable. Do not hard-code pool-specific pressure
   values in services unless they are defaults that can be overridden.
-- Safety lockouts should fail safe and remain cleared only by explicit action.
+- SafetyGate is always active. Safety lockouts should fail safe and remain
+  cleared only by explicit action.
 - Freeze protection uses raw temperature availability as documented.
 - Pi `pi-prod.yaml` is a real deployment config. Treat changes carefully and
   keep them deployable.
@@ -204,6 +210,6 @@ entry points, or Pi config, update deployment docs and mention whether the Pi
 needs:
 
 - `git pull`
-- `python -m pip install -e ".[raspberrypi,mqtt]"`
+- `python -m pip install -e ".[raspberrypi]"`
 - rerunning `deploy/systemd/install-pi-services.sh`
 - `sudo systemctl restart poolctl.service`

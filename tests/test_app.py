@@ -2,7 +2,7 @@
 Tests for the composed PoolControllerApp runtime.
 
 This file exercises whole-application behavior: building from config, ticking
-services together, logging derived values, weather polling, and MQTT inputs.
+services together, logging derived values, and weather polling.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from poolctl.app import (
     build_app_from_mapping,
     chlorine_supply_daily_dose_oz,
 )
-from poolctl.config import DriverProfile, FeatureLayer, RuntimeStage
+from poolctl.config import DriverProfile
 from poolctl.domain.models import (
     ACTUATOR_AUTO_OFF_AT_METADATA,
     ACTUATOR_ON_PULSE_SECONDS_METADATA,
@@ -154,10 +154,6 @@ def seed_chlorine_tank_level(
 def add_dosing_pressure_acquisition(config: dict[str, object]) -> None:
     runtime = config["runtime"]
     assert isinstance(runtime, dict)
-    runtime["enabled_layers"] = [
-        *tuple(runtime.get("enabled_layers", ())),
-        "acquisition",
-    ]
     runtime["enabled_sensor_groups"] = ["pressures"]
     config["acquisition"] = {
         "groups": {
@@ -247,9 +243,7 @@ def active_pump_timer_config() -> dict[str, object]:
 def simulated_runtime_config() -> dict[str, object]:
     return {
         "runtime": {
-            "stage": "windows_simulation",
             "driver_profile": "simulated",
-            "enabled_layers": ["acquisition", "safety_enforcement"],
             "enabled_actuators": [
                 "pump_motor",
                 "pump_motor_speed",
@@ -272,9 +266,7 @@ async def test_build_simulated_app_wires_acquisition_and_router() -> None:
     app = build_app_from_mapping(config, clock=clock)
     result = await app.tick(force_acquisition=True)
 
-    assert app.runtime_config.stage == RuntimeStage.WINDOWS_SIMULATION
     assert app.runtime_config.driver_profile == DriverProfile.SIMULATED
-    assert app.runtime_config.layer_enabled(FeatureLayer.ACQUISITION)
     assert app.acquisition_service is not None
     assert app.simulated_plant is not None
     assert result.acquisition.group_names == ("pressures",)
@@ -284,13 +276,11 @@ async def test_build_simulated_app_wires_acquisition_and_router() -> None:
 
 
 @pytest.mark.asyncio
-async def test_open_loop_timer_stage_can_run_without_acquisition() -> None:
+async def test_runtime_can_run_pump_timer_without_acquisition() -> None:
     clock = make_clock()
     config = {
         "runtime": {
-            "stage": "open_loop_timer",
             "driver_profile": "simulated",
-            "enabled_layers": ["pump_timer", "safety_enforcement"],
             "enabled_actuators": [
                 "pump_motor",
                 "pump_motor_speed",
@@ -304,7 +294,8 @@ async def test_open_loop_timer_stage_can_run_without_acquisition() -> None:
     app = build_app_from_mapping(config, clock=clock)
     result = await app.tick()
 
-    assert app.acquisition_service is None
+    assert app.acquisition_service is not None
+    assert app.acquisition_config.groups == ()
     assert result.measurements == ()
     assert result.loggable_measurements == ()
     assert len(result.timer_results) == 2
@@ -323,7 +314,7 @@ async def test_open_loop_timer_stage_can_run_without_acquisition() -> None:
             created_at=clock.now(),
             state=ActuatorState.ON,
             requested_by=CommandSource.MANUAL,
-            reason="should not be available in open loop timer stage",
+            reason="should not be available without a dosing driver",
         )
     )
 
@@ -340,9 +331,7 @@ async def test_tick_runs_open_loop_chlorination_after_pump_timer(
     clock = make_clock()
     config = {
         "runtime": {
-            "stage": "open_loop_timer",
             "driver_profile": "simulated",
-            "enabled_layers": ["pump_timer", "chlorination", "logging"],
             "enabled_actuators": [
                 "pump_motor",
                 "pump_motor_speed",
@@ -370,6 +359,7 @@ async def test_tick_runs_open_loop_chlorination_after_pump_timer(
             "enabled": True,
             "daily_dose_oz": 4.0,
             "pump_output_oz_per_min": 1.0,
+            "no_dose_first_minutes": 0.0,
             "no_dose_last_minutes": 10.0,
             "max_duty_cycle": 0.5,
             "cycle_on_seconds": 60.0,
@@ -402,9 +392,7 @@ async def test_tick_blocks_open_loop_chlorination_below_tank_reserve(
     clock = make_clock()
     config = {
         "runtime": {
-            "stage": "open_loop_timer",
             "driver_profile": "simulated",
-            "enabled_layers": ["pump_timer", "chlorination", "logging"],
             "enabled_actuators": [
                 "pump_motor",
                 "pump_motor_speed",
@@ -432,6 +420,7 @@ async def test_tick_blocks_open_loop_chlorination_below_tank_reserve(
             "enabled": True,
             "daily_dose_oz": 4.0,
             "pump_output_oz_per_min": 1.0,
+            "no_dose_first_minutes": 0.0,
             "no_dose_last_minutes": 10.0,
             "max_duty_cycle": 0.5,
             "cycle_on_seconds": 60.0,
@@ -472,9 +461,7 @@ async def test_tick_stops_active_open_loop_chlorination_when_tank_becomes_low(
     clock = make_clock()
     config = {
         "runtime": {
-            "stage": "open_loop_timer",
             "driver_profile": "simulated",
-            "enabled_layers": ["pump_timer", "chlorination", "logging"],
             "enabled_actuators": [
                 "pump_motor",
                 "pump_motor_speed",
@@ -502,6 +489,7 @@ async def test_tick_stops_active_open_loop_chlorination_when_tank_becomes_low(
             "enabled": True,
             "daily_dose_oz": 4.0,
             "pump_output_oz_per_min": 1.0,
+            "no_dose_first_minutes": 0.0,
             "no_dose_last_minutes": 10.0,
             "max_duty_cycle": 0.5,
             "cycle_on_seconds": 60.0,
@@ -546,9 +534,7 @@ async def test_tick_blocks_open_loop_chlorination_outside_pressure_window_withou
     clock = make_clock()
     config = {
         "runtime": {
-            "stage": "open_loop_timer",
             "driver_profile": "simulated",
-            "enabled_layers": ["pump_timer", "chlorination", "logging"],
             "enabled_actuators": [
                 "pump_motor",
                 "pump_motor_speed",
@@ -576,6 +562,7 @@ async def test_tick_blocks_open_loop_chlorination_outside_pressure_window_withou
             "enabled": True,
             "daily_dose_oz": 4.0,
             "pump_output_oz_per_min": 1.0,
+            "no_dose_first_minutes": 0.0,
             "no_dose_last_minutes": 10.0,
             "max_duty_cycle": 0.5,
             "cycle_on_seconds": 60.0,
@@ -614,9 +601,7 @@ async def test_tick_confirms_dosing_flash_off_after_auto_off_expires(
     dosing_driver = PulseAwareDosingActuator(clock)
     config = {
         "runtime": {
-            "stage": "open_loop_timer",
             "driver_profile": "simulated",
-            "enabled_layers": ["pump_timer", "chlorination", "logging"],
             "enabled_actuators": [
                 "pump_motor",
                 "pump_motor_speed",
@@ -643,9 +628,15 @@ async def test_tick_confirms_dosing_flash_off_after_auto_off_expires(
             "enabled": True,
             "daily_dose_oz": 4.0,
             "pump_output_oz_per_min": 1.0,
+            "no_dose_first_minutes": 0.0,
             "no_dose_last_minutes": 10.0,
             "max_duty_cycle": 0.5,
             "cycle_on_seconds": 60.0,
+        },
+        "safety": {
+            "thresholds": {
+                "chlorine_max_pressure_age_seconds": 2000.0,
+            },
         },
     }
     actuator_drivers = [
@@ -686,9 +677,7 @@ async def test_tick_logs_chlorine_delivery_when_dosing_pulse_finishes(
     dosing_driver = PulseAwareDosingActuator(clock)
     config = {
         "runtime": {
-            "stage": "open_loop_timer",
             "driver_profile": "simulated",
-            "enabled_layers": ["pump_timer", "chlorination", "logging"],
             "enabled_actuators": [
                 "pump_motor",
                 "pump_motor_speed",
@@ -716,9 +705,15 @@ async def test_tick_logs_chlorine_delivery_when_dosing_pulse_finishes(
             "enabled": True,
             "daily_dose_oz": 4.0,
             "pump_output_oz_per_min": 1.0,
+            "no_dose_first_minutes": 0.0,
             "no_dose_last_minutes": 10.0,
             "max_duty_cycle": 0.5,
             "cycle_on_seconds": 60.0,
+        },
+        "safety": {
+            "thresholds": {
+                "chlorine_max_pressure_age_seconds": 2000.0,
+            },
         },
     }
     actuator_drivers = [
@@ -775,7 +770,7 @@ async def test_tick_logs_chlorine_delivery_when_dosing_pulse_finishes(
     assert cumulative_records[1].metadata["snapshot_boundary"] == "start"
     assert cumulative_records[-1].metadata["snapshot_boundary"] == "end"
 
-    await clock.advance(1589.9)
+    await clock.advance(1590.0)
     fourth = await app.tick()
     assert fourth.logged_chlorine_delivery_count == 0
     cumulative_records = app.measurement_logger.history(
@@ -784,7 +779,8 @@ async def test_tick_logs_chlorine_delivery_when_dosing_pulse_finishes(
     )
 
     assert len(cumulative_records) == 4
-    assert cumulative_records[-1].observed_at == start + timedelta(seconds=1650)
+    assert cumulative_records[-1].observed_at == fourth.observed_at
+    assert cumulative_records[-1].observed_at > start + timedelta(seconds=1650)
     assert round(cumulative_records[-1].value, 3) == 1.0
     assert cumulative_records[-1].metadata["snapshot_boundary"] == "start"
 
@@ -798,9 +794,7 @@ async def test_chlorination_control_history_is_throttled_between_state_changes(
     dosing_driver = PulseAwareDosingActuator(clock)
     config = {
         "runtime": {
-            "stage": "open_loop_timer",
             "driver_profile": "simulated",
-            "enabled_layers": ["pump_timer", "chlorination", "logging"],
             "enabled_actuators": [
                 "pump_motor",
                 "pump_motor_speed",
@@ -830,6 +824,7 @@ async def test_chlorination_control_history_is_throttled_between_state_changes(
             "enabled": True,
             "daily_dose_oz": 4.0,
             "pump_output_oz_per_min": 1.0,
+            "no_dose_first_minutes": 0.0,
             "no_dose_last_minutes": 10.0,
             "max_duty_cycle": 0.5,
             "cycle_on_seconds": 60.0,
@@ -931,9 +926,7 @@ async def test_supplemental_chlorine_dose_runs_pump_low_and_logs_delivery(
     dosing_driver = PulseAwareDosingActuator(clock)
     config = {
         "runtime": {
-            "stage": "open_loop_timer",
             "driver_profile": "simulated",
-            "enabled_layers": ["pump_timer", "chlorination", "logging"],
             "enabled_actuators": [
                 "pump_motor",
                 "pump_motor_speed",
@@ -950,6 +943,7 @@ async def test_supplemental_chlorine_dose_runs_pump_low_and_logs_delivery(
             "enabled": True,
             "daily_dose_oz": 0.0,
             "pump_output_oz_per_min": 1.0,
+            "no_dose_first_minutes": 0.0,
             "no_dose_last_minutes": 10.0,
             "max_duty_cycle": 0.5,
             "cycle_on_seconds": 60.0,
@@ -1026,9 +1020,7 @@ async def test_supplemental_chlorine_dose_blocks_below_tank_reserve(
     dosing_driver = PulseAwareDosingActuator(clock)
     config = {
         "runtime": {
-            "stage": "open_loop_timer",
             "driver_profile": "simulated",
-            "enabled_layers": ["pump_timer", "chlorination", "logging"],
             "enabled_actuators": [
                 "pump_motor",
                 "pump_motor_speed",
@@ -1045,6 +1037,7 @@ async def test_supplemental_chlorine_dose_blocks_below_tank_reserve(
             "enabled": True,
             "daily_dose_oz": 0.0,
             "pump_output_oz_per_min": 1.0,
+            "no_dose_first_minutes": 0.0,
             "no_dose_last_minutes": 10.0,
             "max_duty_cycle": 0.5,
             "cycle_on_seconds": 60.0,
@@ -1093,9 +1086,7 @@ async def test_stopping_supplemental_chlorine_dose_logs_partial_delivery(
     dosing_driver = PulseAwareDosingActuator(clock)
     config = {
         "runtime": {
-            "stage": "open_loop_timer",
             "driver_profile": "simulated",
-            "enabled_layers": ["pump_timer", "chlorination", "logging"],
             "enabled_actuators": [
                 "pump_motor",
                 "pump_motor_speed",
@@ -1112,6 +1103,7 @@ async def test_stopping_supplemental_chlorine_dose_logs_partial_delivery(
             "enabled": True,
             "daily_dose_oz": 0.0,
             "pump_output_oz_per_min": 1.0,
+            "no_dose_first_minutes": 0.0,
             "no_dose_last_minutes": 10.0,
             "max_duty_cycle": 0.5,
             "cycle_on_seconds": 60.0,
@@ -1159,9 +1151,7 @@ async def test_supplemental_chlorine_dose_hands_off_from_active_scheduled_pulse(
     dosing_driver = PulseAwareDosingActuator(clock)
     config = {
         "runtime": {
-            "stage": "open_loop_timer",
             "driver_profile": "simulated",
-            "enabled_layers": ["pump_timer", "chlorination", "logging"],
             "enabled_actuators": [
                 "pump_motor",
                 "pump_motor_speed",
@@ -1190,6 +1180,7 @@ async def test_supplemental_chlorine_dose_hands_off_from_active_scheduled_pulse(
             "enabled": True,
             "daily_dose_oz": 4.0,
             "pump_output_oz_per_min": 1.0,
+            "no_dose_first_minutes": 0.0,
             "no_dose_last_minutes": 10.0,
             "max_duty_cycle": 0.5,
             "cycle_on_seconds": 60.0,
@@ -1240,9 +1231,7 @@ def test_daily_sodium_hypochlorite_summary_totals_automated_and_manual_additions
     clock = make_clock()
     config = {
         "runtime": {
-            "stage": "sensor_logging",
             "driver_profile": "simulated",
-            "enabled_layers": ["logging"],
             "enabled_actuators": [],
             "enabled_sensor_groups": [],
         },
@@ -1364,9 +1353,7 @@ def test_chlorine_tank_estimate_uses_latest_level_refills_and_delivery(
     clock = make_clock()
     config = {
         "runtime": {
-            "stage": "sensor_logging",
             "driver_profile": "simulated",
-            "enabled_layers": ["logging"],
             "enabled_actuators": [],
             "enabled_sensor_groups": [],
         },
@@ -1429,9 +1416,7 @@ async def test_tick_logs_fc_demand_estimate_when_ready(tmp_path: Path) -> None:
     clock = make_clock()
     config = {
         "runtime": {
-            "stage": "sensor_logging",
             "driver_profile": "simulated",
-            "enabled_layers": ["logging"],
             "enabled_actuators": [],
             "enabled_sensor_groups": [],
         },
@@ -1515,9 +1500,7 @@ async def test_dosing_prime_runs_for_30_seconds_and_then_releases() -> None:
     clock = make_clock()
     config = {
         "runtime": {
-            "stage": "open_loop_timer",
             "driver_profile": "simulated",
-            "enabled_layers": ["chlorination"],
             "enabled_actuators": ["chlorine_dosing_pump"],
             "enabled_sensor_groups": [],
         },
@@ -1525,6 +1508,7 @@ async def test_dosing_prime_runs_for_30_seconds_and_then_releases() -> None:
             "enabled": True,
             "daily_dose_oz": 0.0,
             "pump_output_oz_per_min": 1.0,
+            "no_dose_first_minutes": 0.0,
             "no_dose_last_minutes": 10.0,
             "max_duty_cycle": 0.5,
             "cycle_on_seconds": 60.0,
@@ -1551,9 +1535,7 @@ async def test_dosing_calibration_uses_duty_cycle_and_bypasses_interlock(
     clock = make_clock()
     config = {
         "runtime": {
-            "stage": "open_loop_timer",
             "driver_profile": "simulated",
-            "enabled_layers": ["chlorination", "logging", "safety_enforcement"],
             "enabled_actuators": ["chlorine_dosing_pump"],
             "enabled_sensor_groups": [],
         },
@@ -1564,6 +1546,7 @@ async def test_dosing_calibration_uses_duty_cycle_and_bypasses_interlock(
             "enabled": True,
             "daily_dose_oz": 0.0,
             "pump_output_oz_per_min": 1.0,
+            "no_dose_first_minutes": 0.0,
             "no_dose_last_minutes": 10.0,
             "max_duty_cycle": 0.5,
             "cycle_on_seconds": 60.0,
@@ -1604,9 +1587,7 @@ async def test_stop_dosing_diagnostic_turns_dosing_pump_off() -> None:
     clock = make_clock()
     config = {
         "runtime": {
-            "stage": "open_loop_timer",
             "driver_profile": "simulated",
-            "enabled_layers": ["chlorination"],
             "enabled_actuators": ["chlorine_dosing_pump"],
             "enabled_sensor_groups": [],
         },
@@ -1614,6 +1595,7 @@ async def test_stop_dosing_diagnostic_turns_dosing_pump_off() -> None:
             "enabled": True,
             "daily_dose_oz": 0.0,
             "pump_output_oz_per_min": 1.0,
+            "no_dose_first_minutes": 0.0,
             "no_dose_last_minutes": 10.0,
             "max_duty_cycle": 0.5,
             "cycle_on_seconds": 60.0,
@@ -1639,9 +1621,7 @@ async def test_dosing_prime_is_excluded_from_delivery_and_fc_demand(
     clock = make_clock()
     config = {
         "runtime": {
-            "stage": "open_loop_timer",
             "driver_profile": "simulated",
-            "enabled_layers": ["chlorination", "logging"],
             "enabled_actuators": ["chlorine_dosing_pump"],
             "enabled_sensor_groups": [],
         },
@@ -1652,6 +1632,7 @@ async def test_dosing_prime_is_excluded_from_delivery_and_fc_demand(
             "enabled": True,
             "daily_dose_oz": 0.0,
             "pump_output_oz_per_min": 1.0,
+            "no_dose_first_minutes": 0.0,
             "no_dose_last_minutes": 10.0,
             "max_duty_cycle": 0.5,
             "cycle_on_seconds": 60.0,
@@ -1727,9 +1708,7 @@ def test_raspberry_pi_profile_can_use_injected_drivers() -> None:
     plant = SimulatedPlant(clock=clock)
     config = {
         "runtime": {
-            "stage": "open_loop_timer",
             "driver_profile": "raspberry_pi",
-            "enabled_layers": ["pump_timer", "safety_enforcement"],
             "enabled_actuators": [
                 "pump_motor",
                 "pump_motor_speed",
@@ -1747,7 +1726,8 @@ def test_raspberry_pi_profile_can_use_injected_drivers() -> None:
 
     assert app.runtime_config.driver_profile == DriverProfile.RASPBERRY_PI
     assert app.simulated_plant is None
-    assert app.acquisition_service is None
+    assert app.acquisition_service is not None
+    assert app.acquisition_config.groups == ()
 
 
 @pytest.mark.asyncio
@@ -1756,9 +1736,7 @@ async def test_raspberry_pi_profile_safe_stops_outputs_on_first_tick() -> None:
     plant = SimulatedPlant(clock=clock)
     config = {
         "runtime": {
-            "stage": "open_loop_timer",
             "driver_profile": "raspberry_pi",
-            "enabled_layers": ["pump_timer"],
             "enabled_actuators": [
                 "pump_motor",
                 "pump_motor_speed",
@@ -1792,9 +1770,7 @@ def test_poll_weather_due_fetches_weather_and_logs_hourly_observation(
     clock = make_clock()
     config = {
         "runtime": {
-            "stage": "sensor_logging",
             "driver_profile": "simulated",
-            "enabled_layers": ["logging"],
             "enabled_sensor_groups": [],
         },
         "logging": {
@@ -1822,7 +1798,7 @@ def test_poll_weather_due_fetches_weather_and_logs_hourly_observation(
         hourly_units: dict[str, str] = {"time": "iso8601"}
         for index, field in enumerate(weather_service_module.WEATHER_FIELDS):
             hourly[field] = [float(index), float(index + 1), float(index + 2), float(index + 3)]
-            hourly_units[field] = "°F" if "temperature" in field else "mm"
+            hourly_units[field] = "Â°F" if "temperature" in field else "mm"
         hourly_units["cloud_cover"] = "%"
         hourly_units["uv_index"] = "index"
         return {"hourly": hourly, "hourly_units": hourly_units}
@@ -1854,9 +1830,7 @@ async def test_tick_logs_daily_environment_summaries_from_orp_temp_and_weather(
     clock = make_clock()
     config = {
         "runtime": {
-            "stage": "sensor_logging",
             "driver_profile": "simulated",
-            "enabled_layers": ["logging"],
             "enabled_sensor_groups": [],
         },
         "logging": {
@@ -2004,7 +1978,6 @@ def test_raspberry_pi_profile_builds_modbus_relay_actuators_from_config() -> Non
     clock = make_clock()
     config = {
         "runtime": {
-            "stage": "open_loop_timer",
             "driver_profile": "raspberry_pi",
             "enabled_actuators": [
                 "pump_motor",
@@ -2020,7 +1993,8 @@ def test_raspberry_pi_profile_builds_modbus_relay_actuators_from_config() -> Non
 
     assert app.runtime_config.driver_profile == DriverProfile.RASPBERRY_PI
     assert app.simulated_plant is None
-    assert app.acquisition_service is None
+    assert app.acquisition_service is not None
+    assert app.acquisition_config.groups == ()
 
 
 def test_raspberry_pi_sensor_logging_stage_builds_modbus_sensor_drivers(
@@ -2029,9 +2003,7 @@ def test_raspberry_pi_sensor_logging_stage_builds_modbus_sensor_drivers(
     clock = make_clock()
     config = {
         "runtime": {
-            "stage": "sensor_logging",
             "driver_profile": "raspberry_pi",
-            "enabled_layers": ["pump_timer", "acquisition", "logging"],
             "enabled_actuators": [
                 "pump_motor",
                 "pump_motor_speed",
@@ -2118,9 +2090,7 @@ async def test_chemistry_sampling_refresh_triggers_pump_run_after_long_off_time(
         **simulated_runtime_config(),
         **minimal_acquisition_config(),
         "runtime": {
-            "stage": "sensor_logging",
             "driver_profile": "simulated",
-            "enabled_layers": ["pump_timer", "acquisition", "safety_enforcement"],
             "enabled_actuators": [
                 "pump_motor",
                 "pump_motor_speed",
@@ -2177,9 +2147,7 @@ async def test_tick_computes_csi_from_valid_live_temp_ph_and_latest_sparse_lab_v
     )
     config = {
         "runtime": {
-            "stage": "sensor_logging",
             "driver_profile": "simulated",
-            "enabled_layers": ["acquisition", "logging", "safety_enforcement"],
             "enabled_actuators": [
                 "pump_motor",
                 "pump_motor_speed",
@@ -2245,9 +2213,7 @@ async def test_tick_sends_notification_alerts_with_repeat_throttle() -> None:
     )
     config = {
         "runtime": {
-            "stage": "sensor_logging",
             "driver_profile": "simulated",
-            "enabled_layers": ["acquisition"],
             "enabled_actuators": [],
             "enabled_sensor_groups": ["chemistry_loop"],
         },

@@ -33,129 +33,6 @@
         <a href="/config" data-nav-page="config">Config</a>
       </nav>
 
-      <section class="layout" data-view-section="live">
-        <section class="diagram-panel" aria-label="Pool system live diagram">
-          <div class="diagram">
-            <svg class="pipe-layer" viewBox="0 0 1088 560" aria-hidden="true">
-              <path class="pipe-run pipe-water" d="M168 205 H420 V125 H875 V205 H905"></path>
-              <path class="pipe-run pipe-water" d="M995 205 H1030 V397 H850"></path>
-              <path class="pipe-run pipe-water" d="M168 397 H760"></path>
-              <path class="pipe-run pipe-water" d="M430 305 H805 V370"></path>
-              <path class="pipe-run pipe-water" d="M295 505 H465"></path>
-              <path class="pipe-run pipe-water" d="M555 505 H805 V438"></path>
-              <path class="pipe-run pipe-water" d="M168 305 H340"></path>
-              <path class="pipe-run pipe-suction" d="M168 505 H205"></path>
-              <path class="pipe-run pipe-dose" d="M268 48 H340"></path>
-              <path class="pipe-run pipe-dose" d="M430 48 H470 V205"></path>
-            </svg>
-
-            <div class="pool">
-              <span class="pool-label">POOL</span>
-              <span class="port cleaner">CLEANER</span>
-              <span class="port bubbler">BUBBLER</span>
-            </div>
-
-            <div class="component pump" data-component="pump_motor">
-              <span>PUMP</span>
-              <strong data-sensor="pump_output_psi">--</strong>
-              <small data-flow="pump_dynamic_head_psi">-- psi</small>
-              <small data-flow="pump_flow_gpm">-- gpm</small>
-            </div>
-            <div class="component filter" id="filterBlock">
-              <span>FILTER</span>
-              <strong data-flow="filter_restriction_percent">--%</strong>
-              <small data-flow="filter_restriction_metric">-- R</small>
-            </div>
-            <div class="component booster" data-component="booster_pump">
-              <span>BOOSTER</span>
-            </div>
-            <div class="component valve valve-two">2-PORT<br>VALVE</div>
-            <div class="component valve valve-three">3-PORT<br>VALVE</div>
-            <div class="component tank">NaOCl<br>TANK</div>
-            <div class="component dosing" data-component="chlorine_dosing_pump">
-              <span>DOSING</span>
-              <small>PUMP</small>
-            </div>
-
-            <div class="sensor green tank-level">
-              <span>LEVEL</span>
-              <strong data-sensor="chlorine_tank_level_gal" data-sensor-fallback="tank_level">--</strong>
-              <small id="tankRemainingDays">-- days</small>
-            </div>
-            <div class="sensor green orp">
-              <span>ORP</span>
-              <strong data-sensor="raw_orp">--</strong>
-              <small data-sensor="orp_temp">--</small>
-            </div>
-            <div class="sensor green ph">
-              <span>pH</span>
-              <strong data-sensor="raw_ph">--</strong>
-              <small data-sensor="ph_temp">--</small>
-            </div>
-            <div class="sensor green temp">
-              <span>WATER</span>
-              <strong data-sensor="temp">--</strong>
-            </div>
-
-            <div class="sensor pressure filter-output">
-              <span>FILTER</span>
-              <strong data-sensor="filter_output_psi">--</strong>
-            </div>
-            <div class="sensor pressure return-psi">
-              <span>RETURN</span>
-              <strong data-sensor="return_psi">--</strong>
-              <small data-flow="return_flow_gpm">-- gpm</small>
-            </div>
-            <div class="sensor pressure bubbler-psi">
-              <span>BUBBLER</span>
-              <strong data-sensor="bubbler_psi">--</strong>
-              <small data-flow="bubbler_flow_gpm">-- gpm</small>
-            </div>
-            <div class="sensor pressure booster-psi">
-              <span>BOOSTER</span>
-              <strong data-sensor="booster_psi">--</strong>
-              <small data-flow="booster_flow_gpm">-- gpm</small>
-            </div>
-          </div>
-        </section>
-
-        <aside class="side-panel">
-          <section class="panel">
-            <h2>Controls</h2>
-            <div class="control-grid">
-              <button data-command="pump_motor:on">Pump On</button>
-              <button data-command="pump_motor:off">Pump Off</button>
-              <button data-command="pump_motor_speed:low">Speed Low</button>
-              <button data-command="pump_motor_speed:high">Speed High</button>
-              <button data-command="booster_pump:on">Booster On</button>
-              <button data-command="booster_pump:off">Booster Off</button>
-              <button data-command="chlorine_dosing_pump:on">Dose On</button>
-              <button data-command="chlorine_dosing_pump:off">Dose Off</button>
-            </div>
-            <div class="timer-actions">
-              <button id="overridePumpOnHour" type="button">Pump ON 1h</button>
-              <button id="overridePumpOffManual" type="button">Pump OFF</button>
-              <button id="overrideResumeSchedule" type="button">Resume Timer</button>
-            </div>
-            <div id="timerOverrideStatus" class="history-status">Schedule mode</div>
-            <div id="freezeStatus" class="history-status">Freeze protection: --</div>
-            <div id="commandStatus" class="command-status">--</div>
-          </section>
-          <section class="panel">
-            <h2>Actuators</h2>
-            <div id="actuatorList" class="state-list"></div>
-          </section>
-          <section class="panel">
-            <h2>Sensors</h2>
-            <div id="sensorList" class="state-list"></div>
-          </section>
-          <section class="panel">
-            <h2>Events</h2>
-            <div id="eventList" class="events">--</div>
-          </section>
-        </aside>
-      </section>
-
       <section class="history-panel" aria-label="Measurement history" data-view-section="history">
         <div class="history-header">
           <h2>History</h2>
@@ -223,9 +100,6 @@
           <button id="runtimeReload" type="button">Reload</button>
         </div>
         <div class="config-grid">
-          <label>Stage
-            <select id="runtimeStage"></select>
-          </label>
           <label>Driver
             <select id="runtimeDriverProfile">
               <option value="simulated">simulated</option>
@@ -233,7 +107,6 @@
             </select>
           </label>
         </div>
-        <div id="runtimeLayers" class="layer-grid"></div>
         <div class="timer-actions">
           <button id="runtimeSave" type="button">Save Runtime</button>
         </div>
@@ -248,12 +121,6 @@
         <div class="config-grid">
           <label>Pump output sensor
             <select id="safetySensorPumpOutput"></select>
-          </label>
-          <label>Return sensor
-            <select id="safetySensorReturn"></select>
-          </label>
-          <label>Booster sensor
-            <select id="safetySensorBooster"></select>
           </label>
         </div>
         <div class="config-grid">
@@ -284,17 +151,11 @@
           </label>
         </div>
         <div class="config-grid">
-          <label>Chlorine min return psi <input id="safetyChlorineMinReturn" type="number" step="0.1"></label>
           <label>Chlorine min pump psi <input id="safetyChlorineMinPump" type="number" step="0.1"></label>
           <label>Chlorine max pump psi <input id="safetyChlorineMaxPump" type="number" step="0.1"></label>
-          <label>Booster max psi <input id="safetyBoosterMax" type="number" step="0.1"></label>
-          <label>Booster min psi <input id="safetyBoosterMin" type="number" step="0.1"></label>
-          <label>Pump low prime min psi <input id="safetyLowPrimeMin" type="number" step="0.1"></label>
+          <label>Pump prime min psi <input id="safetyPrimeMin" type="number" step="0.1"></label>
           <label>Pump overpressure psi <input id="safetyOverpressure" type="number" step="0.1"></label>
-          <label>Pump high prime min psi <input id="safetyHighPrimeMin" type="number" step="0.1"></label>
-          <label>Booster low grace s <input id="safetyBoosterGrace" type="number" step="0.1"></label>
-          <label>Pump low prime s <input id="safetyLowPrimeSec" type="number" step="0.1"></label>
-          <label>Pump high prime timeout s <input id="safetyHighPrimeTimeout" type="number" step="0.1"></label>
+          <label>Pump prime timeout s <input id="safetyPrimeTimeout" type="number" step="0.1"></label>
         </div>
         <div class="timer-actions">
           <button id="safetySave" type="button">Save Safety</button>

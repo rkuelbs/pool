@@ -1,12 +1,5 @@
 runtime:
-  stage: windows_simulation
   driver_profile: simulated
-  enabled_layers:
-  - acquisition
-  - logging
-  - pump_timer
-  - safety_enforcement
-  - chlorination
   enabled_actuators:
   - pump_motor
   - pump_motor_speed
@@ -41,6 +34,7 @@ chlorination:
   enabled: true
   daily_dose_oz: 96.0
   pump_output_oz_per_min: 1.0
+  no_dose_first_minutes: 1.0
   no_dose_last_minutes: 10.0
   max_duty_cycle: 0.5
   cycle_on_seconds: 60.0
@@ -70,8 +64,6 @@ fc_demand:
 safety:
   pressure_sensor_ids:
     pump_output: pump_output_psi
-    return_line: return_psi
-    booster: booster_psi
   freeze_protection:
     enabled: true
     source: temp
@@ -89,39 +81,15 @@ safety:
     inhibit_below_gal: 1.5
     reenable_at_gal: 2.0
   thresholds:
-    chlorine_min_return_psi: 2
     chlorine_min_pump_output_psi: 3
     chlorine_max_pump_output_psi: 4.2
-    chlorine_requires_high_speed: false
-    booster_max_psi: 60
-    booster_min_psi: 30
-    pump_low_prime_min_output_psi: 1
+    pump_prime_min_output_psi: 1
     pump_output_overpressure_psi: 30
-    pump_high_prime_min_output_psi: 5
   timeouts:
-    booster_low_pressure_grace_s: 10
-    pump_low_prime_seconds: 30
-    pump_high_prime_timeout_s: 30
+    pump_prime_timeout_s: 30
 logging:
   database_path: data\windows-dev.sqlite3
   control_measurement_interval_s: 30.0
-mqtt:
-  enabled: false
-  host: 127.0.0.1
-  port: 1883
-  keepalive_s: 30
-  client_id: poolctl-windows
-  topic_prefix: poolctl
-  command_topic: command/set
-  lab_test_topic: lab_test/add
-  publish_live_topic: telemetry/live
-  publish_health_topic: telemetry/health
-  qos: 0
-  retain: false
-  publish_live: true
-  publish_health: true
-  allow_remote_commands: false
-  allow_remote_lab_tests: true
 notifications:
   enabled: false
   provider: pushover
@@ -161,10 +129,6 @@ acquisition:
     pressures:
       sensor_ids:
       - pump_output_psi
-      - filter_output_psi
-      - return_psi
-      - bubbler_psi
-      - booster_psi
       read_interval_s: 0.5
       log_interval_s: 30
       requires_pump_flow: false
@@ -185,7 +149,6 @@ acquisition:
       - orp_temp
       - raw_ph
       - ph_temp
-      - raw_ph_voltage
       - temp
       read_interval_s: 5
       log_interval_s: 120
@@ -230,26 +193,6 @@ live_view:
       normal_min: 0.0
       normal_max: 25.0
       caution_max: 30.0
-    filter_output_psi:
-      caution_min: 0.0
-      normal_min: 0.0
-      normal_max: 25.0
-      caution_max: 30.0
-    return_psi:
-      caution_min: 0.0
-      normal_min: 0.0
-      normal_max: 18.0
-      caution_max: 25.0
-    bubbler_psi:
-      caution_min: 0.0
-      normal_min: 0.0
-      normal_max: 18.0
-      caution_max: 25.0
-    booster_psi:
-      caution_min: 0.0
-      normal_min: 0.0
-      normal_max: 55.0
-      caution_max: 60.0
     raw_orp:
       caution_min: 400.0
       normal_min: 600.0
@@ -270,11 +213,6 @@ live_view:
       normal_min: 65.0
       normal_max: 90.0
       caution_max: 100.0
-    raw_ph_voltage:
-      caution_min: 0.0
-      normal_min: 0.2
-      normal_max: 4.8
-      caution_max: 5.0
     temp:
       caution_min: 35.0
       normal_min: 65.0
@@ -309,41 +247,6 @@ modbus_analog_input:
         value_1: 0.0
         voltage_2: 5.0
         value_2: 30.0
-    filter_output_psi:
-      channel: 2
-      calibration:
-        voltage_1: 0.0
-        value_1: 0.0
-        voltage_2: 5.0
-        value_2: 30.0
-    return_psi:
-      channel: 3
-      calibration:
-        voltage_1: 0.0
-        value_1: 0.0
-        voltage_2: 5.0
-        value_2: 20.0
-    bubbler_psi:
-      channel: 4
-      calibration:
-        voltage_1: 0.0
-        value_1: 0.0
-        voltage_2: 5.0
-        value_2: 20.0
-    booster_psi:
-      channel: 5
-      calibration:
-        voltage_1: 0.0
-        value_1: 0.0
-        voltage_2: 5.0
-        value_2: 80.0
-    raw_ph:
-      channel: 6
-      calibration:
-        voltage_1: 0.0
-        value_1: 0.0
-        voltage_2: 5.0
-        value_2: 14.0
 flow_estimation:
   pump_pressure:
     pressure_scale_psi: 0.4335
@@ -351,19 +254,14 @@ flow_estimation:
     c_suction: 0.00035
     c_no_flow_low: 22.25
     c_no_flow_high: 93.5
-  branch_pressure:
-    return_flow:
-      a: 0.0
-      b: 1.0
-    bubbler_flow:
-      a: 0.0
-      b: 1.0
-    booster_flow:
-      a: 0.0
-      b: 1.0
-  filter_restriction:
-    clean_value: 2.0
-    dirty_value: 8.0
+filter_loading:
+  enabled: true
+  pressure_sensor: pump_output_psi
+  clean_psi: 10.0
+  dirty_psi: 25.0
+  stabilization_seconds: 60
+  averaging_seconds: 120
+  max_pressure_age_seconds: 10
 weather:
   enabled: true
   latitude: 32.9949

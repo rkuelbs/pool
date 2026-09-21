@@ -27,8 +27,8 @@ from typing import Any, Literal, TypeVar
 from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from poolctl.app import PoolControllerApp, build_app_from_config
-from poolctl.config import DriverProfile, FeatureLayer, RuntimeConfig
+from poolctl.app import ChlorineTankEstimate, PoolControllerApp, build_app_from_config
+from poolctl.config import DriverProfile, RuntimeConfig
 from poolctl.config_files import (
     config_write_path,
     load_config_with_overrides,
@@ -58,6 +58,7 @@ from poolctl.services.acquisition import AcquisitionConfig
 from poolctl.services.chlorination import ChlorinationConfig
 from poolctl.services.clock import AcceleratedClock, Clock
 from poolctl.services.fc_demand import FcDemandConfig
+from poolctl.services.flow_estimation import FilterLoadingConfig
 from poolctl.services.measurement_logging import MeasurementLoggingConfig
 from poolctl.services.notifications import NotificationsConfig
 from poolctl.services.pump_timer import PumpTimerConfig, PumpTimerOverride
@@ -406,6 +407,10 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             self._serve_chlorination_config()
             return
 
+        if path == "/api/config/filter_loading":
+            self._serve_filter_loading_config()
+            return
+
         if path == "/api/config/fc_demand":
             self._serve_fc_demand_config()
             return
@@ -453,6 +458,10 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
 
         if path == "/api/config/chlorination":
             self._serve_update_chlorination_config()
+            return
+
+        if path == "/api/config/filter_loading":
+            self._serve_update_filter_loading_config()
             return
 
         if path == "/api/config/fc_demand":
@@ -799,6 +808,24 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
         try:
             payload = self._read_json_body()
             result = apply_chlorination_config_update(
+                app=self.app,
+                config_path=self.config_path,
+                local_config_path=self.local_config_path,
+                payload=payload,
+            )
+        except ValueError as error:
+            self._serve_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        self._serve_json(result)
+
+    def _serve_filter_loading_config(self) -> None:
+        self._serve_json(serialize_filter_loading_config(self.app))
+
+    def _serve_update_filter_loading_config(self) -> None:
+        try:
+            payload = self._read_json_body()
+            result = apply_filter_loading_config_update(
                 app=self.app,
                 config_path=self.config_path,
                 local_config_path=self.local_config_path,
@@ -1323,7 +1350,7 @@ def _enum_payload_value(
         raise ValueError(f"{key} must be a string")
 
     try:
-        return enum_type(value)  # type: ignore[call-arg]
+        return enum_type(value)
     except ValueError as error:
         raise ValueError(f"invalid {key}: {value}") from error
 
@@ -1334,11 +1361,11 @@ def _enum_payload_optional(
     key: str,
     default: EnumT,
 ) -> EnumT:
-    value = payload.get(key, default.value)  # type: ignore[attr-defined]
+    value = payload.get(key, default.value)
     if not isinstance(value, str):
         raise ValueError(f"{key} must be a string")
     try:
-        return enum_type(value)  # type: ignore[call-arg]
+        return enum_type(value)
     except ValueError as error:
         raise ValueError(f"invalid {key}: {value}") from error
 
@@ -1917,7 +1944,9 @@ def _chlorine_tank_refill_payload(refill: ChlorineTankRefill) -> dict[str, Any]:
     }
 
 
-def _chlorine_tank_estimate_payload(estimate: Any) -> dict[str, Any] | None:
+def _chlorine_tank_estimate_payload(
+    estimate: ChlorineTankEstimate | None,
+) -> dict[str, Any] | None:
     if estimate is None:
         return None
     return estimate.as_payload()
@@ -1981,7 +2010,6 @@ def build_health_payload(app: PoolControllerApp) -> dict[str, Any]:
         "observed_at": now.isoformat(),
         "status": "degraded" if app.router.safety_gate.locked_out else "ok",
         "safety_lockout": app.router.safety_gate.locked_out,
-        "active_layers": sorted(layer.value for layer in app.runtime_config.enabled_layers),
         "timer_override": serialize_timer_override(app),
         "acquisition": {
             "sensor_count": len(latest),
@@ -1991,11 +2019,6 @@ def build_health_payload(app: PoolControllerApp) -> dict[str, Any]:
             "bus_count": len(modbus_stats),
             "ports": modbus_stats,
         },
-        "mqtt": (
-            app.mqtt_bridge.status_payload()
-            if app.mqtt_bridge is not None
-            else {"enabled": False, "connected": False}
-        ),
         "weather": (
             app.weather_service.status_payload()
             if app.weather_service is not None
@@ -2010,9 +2033,11 @@ def build_health_payload(app: PoolControllerApp) -> dict[str, Any]:
 def serialize_runtime_config(app: PoolControllerApp) -> dict[str, Any]:
     runtime = app.runtime_config
     return {
-        "stage": runtime.stage.value,
         "driver_profile": runtime.driver_profile.value,
-        "enabled_layers": sorted(layer.value for layer in runtime.enabled_layers),
+        "enabled_actuators": sorted(
+            actuator_id.value for actuator_id in runtime.enabled_actuators
+        ),
+        "enabled_sensor_groups": sorted(runtime.enabled_sensor_groups),
         "requires_restart": True,
     }
 
@@ -2024,39 +2049,42 @@ def apply_runtime_config_update(
     local_config_path: Path | None = None,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
-    stage = payload.get("stage")
     driver_profile = payload.get("driver_profile")
-    enabled_layers = payload.get("enabled_layers")
+    enabled_actuators = payload.get("enabled_actuators")
+    enabled_sensor_groups = payload.get("enabled_sensor_groups")
 
-    if not isinstance(stage, str):
-        raise ValueError("stage must be a string")
     if not isinstance(driver_profile, str):
         raise ValueError("driver_profile must be a string")
-    if not isinstance(enabled_layers, list) or not all(
-        isinstance(item, str) for item in enabled_layers
+    if not isinstance(enabled_actuators, list) or not all(
+        isinstance(item, str) for item in enabled_actuators
     ):
-        raise ValueError("enabled_layers must be a list of strings")
+        raise ValueError("enabled_actuators must be a list of strings")
+    if not isinstance(enabled_sensor_groups, list) or not all(
+        isinstance(item, str) for item in enabled_sensor_groups
+    ):
+        raise ValueError("enabled_sensor_groups must be a list of strings")
 
     config_data = _load_config_write_mapping(config_path, local_config_path=local_config_path)
     runtime_data = config_data.setdefault("runtime", {})
     if not isinstance(runtime_data, dict):
         raise ValueError("runtime must be a mapping in config")
 
-    runtime_data["stage"] = stage
     runtime_data["driver_profile"] = driver_profile
-    runtime_data["enabled_layers"] = enabled_layers
+    runtime_data["enabled_actuators"] = enabled_actuators
+    runtime_data["enabled_sensor_groups"] = enabled_sensor_groups
+    runtime_data.pop("stage", None)
+    runtime_data.pop("enabled_layers", None)
     _save_config_write_mapping(config_path, local_config_path=local_config_path, data=config_data)
 
     return {
         "updated": True,
         "requires_restart": True,
-        "message": "Runtime config updated on disk. Restart is required to apply layer wiring changes.",
+        "message": "Runtime config updated on disk. Restart is required to rebuild drivers.",
     }
 
 
 def serialize_pump_timer_config(app: PoolControllerApp) -> dict[str, Any]:
     return {
-        "layer_enabled": app.runtime_config.layer_enabled(FeatureLayer.PUMP_TIMER),
         "timezone": app.pump_timer_config.timezone,
         "schedules": [
             {
@@ -2112,8 +2140,6 @@ def serialize_safety_config(app: PoolControllerApp) -> dict[str, Any]:
     return {
         "pressure_sensor_ids": {
             "pump_output": config.pressure_sensors.pump_output.value,
-            "return_line": config.pressure_sensors.return_line.value,
-            "booster": config.pressure_sensors.booster.value,
         },
         "freeze_protection": {
             "enabled": config.freeze_protection.enabled,
@@ -2132,22 +2158,19 @@ def serialize_safety_config(app: PoolControllerApp) -> dict[str, Any]:
             "low_warning_gal": config.chlorine_tank.low_warning_gal,
             "inhibit_below_gal": config.chlorine_tank.inhibit_below_gal,
             "reenable_at_gal": config.chlorine_tank.reenable_at_gal,
+            "forecast_reserve_gal": config.chlorine_tank.forecast_reserve_gal,
         },
         "thresholds": {
-            "chlorine_min_return_psi": config.chlorine_min_return_psi,
             "chlorine_min_pump_output_psi": config.chlorine_min_pump_output_psi,
             "chlorine_max_pump_output_psi": config.chlorine_max_pump_output_psi,
-            "chlorine_requires_high_speed": config.chlorine_requires_high_speed,
-            "booster_max_psi": config.booster_max_psi,
-            "booster_min_psi": config.booster_min_psi,
-            "pump_low_prime_min_output_psi": config.pump_low_prime_min_output_psi,
+            "chlorine_max_pressure_age_seconds": (
+                config.chlorine_max_pressure_age_seconds
+            ),
+            "pump_prime_min_output_psi": config.pump_prime_min_output_psi,
             "pump_output_overpressure_psi": config.pump_output_overpressure_psi,
-            "pump_high_prime_min_output_psi": config.pump_high_prime_min_output_psi,
         },
         "timeouts": {
-            "booster_low_pressure_grace_s": config.booster_low_pressure_grace_s,
-            "pump_low_prime_seconds": config.pump_low_prime_seconds,
-            "pump_high_prime_timeout_s": config.pump_high_prime_timeout_s,
+            "pump_prime_timeout_s": config.pump_prime_timeout_s,
         },
     }
 
@@ -2159,24 +2182,36 @@ def apply_safety_config_update(
     local_config_path: Path | None = None,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
+    current = serialize_safety_config(app)
+    pressure_sensor_ids = payload.get(
+        "pressure_sensor_ids",
+        current["pressure_sensor_ids"],
+    )
+    freeze_protection = payload.get(
+        "freeze_protection",
+        current["freeze_protection"],
+    )
+    chlorine_tank = payload.get("chlorine_tank", current["chlorine_tank"])
+    thresholds = payload.get("thresholds", current["thresholds"])
+    timeouts = payload.get("timeouts", current["timeouts"])
     safety_data = {
         "safety": {
-            "pressure_sensor_ids": payload.get("pressure_sensor_ids", {}),
-            "freeze_protection": payload.get("freeze_protection", {}),
-            "chlorine_tank": payload.get("chlorine_tank", {}),
-            "thresholds": payload.get("thresholds", {}),
-            "timeouts": payload.get("timeouts", {}),
+            "pressure_sensor_ids": pressure_sensor_ids,
+            "freeze_protection": freeze_protection,
+            "chlorine_tank": chlorine_tank,
+            "thresholds": thresholds,
+            "timeouts": timeouts,
         }
     }
     proposed = SafetyConfig.from_mapping(safety_data)
 
     config_data = _load_config_write_mapping(config_path, local_config_path=local_config_path)
     config_data["safety"] = {
-        "pressure_sensor_ids": payload.get("pressure_sensor_ids", {}),
-        "freeze_protection": payload.get("freeze_protection", {}),
-        "chlorine_tank": payload.get("chlorine_tank", {}),
-        "thresholds": payload.get("thresholds", {}),
-        "timeouts": payload.get("timeouts", {}),
+        "pressure_sensor_ids": pressure_sensor_ids,
+        "freeze_protection": freeze_protection,
+        "chlorine_tank": chlorine_tank,
+        "thresholds": thresholds,
+        "timeouts": timeouts,
     }
     _save_config_write_mapping(config_path, local_config_path=local_config_path, data=config_data)
 
@@ -2191,10 +2226,10 @@ def apply_safety_config_update(
 def serialize_chlorination_config(app: PoolControllerApp) -> dict[str, Any]:
     config = app.chlorination_config
     return {
-        "layer_enabled": app.runtime_config.layer_enabled(FeatureLayer.CHLORINATION),
         "enabled": config.enabled,
         "daily_dose_oz": config.daily_dose_oz,
         "pump_output_oz_per_min": config.pump_output_oz_per_min,
+        "no_dose_first_minutes": config.no_dose_first_minutes,
         "no_dose_last_minutes": config.no_dose_last_minutes,
         "max_duty_cycle": config.max_duty_cycle,
         "cycle_on_seconds": config.cycle_on_seconds,
@@ -2218,6 +2253,7 @@ def apply_chlorination_config_update(
         "enabled": proposed.enabled,
         "daily_dose_oz": proposed.daily_dose_oz,
         "pump_output_oz_per_min": proposed.pump_output_oz_per_min,
+        "no_dose_first_minutes": proposed.no_dose_first_minutes,
         "no_dose_last_minutes": proposed.no_dose_last_minutes,
         "max_duty_cycle": proposed.max_duty_cycle,
         "cycle_on_seconds": proposed.cycle_on_seconds,
@@ -2231,6 +2267,49 @@ def apply_chlorination_config_update(
         "updated": True,
         "applied_live": True,
         **serialize_chlorination_config(app),
+    }
+
+
+def serialize_filter_loading_config(app: PoolControllerApp) -> dict[str, Any]:
+    config = app.flow_estimation_config.filter_loading
+    return {
+        "enabled": config.enabled,
+        "pressure_sensor": config.pressure_sensor.value,
+        "clean_psi": config.clean_psi,
+        "dirty_psi": config.dirty_psi,
+        "stabilization_seconds": config.stabilization_seconds,
+        "averaging_seconds": config.averaging_seconds,
+        "max_pressure_age_seconds": config.max_pressure_age_seconds,
+        "applied_live": True,
+    }
+
+
+def apply_filter_loading_config_update(
+    *,
+    app: PoolControllerApp,
+    config_path: Path,
+    local_config_path: Path | None = None,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    proposed = FilterLoadingConfig.from_mapping({"filter_loading": payload})
+
+    config_data = _load_config_write_mapping(config_path, local_config_path=local_config_path)
+    config_data["filter_loading"] = {
+        "enabled": proposed.enabled,
+        "pressure_sensor": proposed.pressure_sensor.value,
+        "clean_psi": proposed.clean_psi,
+        "dirty_psi": proposed.dirty_psi,
+        "stabilization_seconds": proposed.stabilization_seconds,
+        "averaging_seconds": proposed.averaging_seconds,
+        "max_pressure_age_seconds": proposed.max_pressure_age_seconds,
+    }
+    _save_config_write_mapping(config_path, local_config_path=local_config_path, data=config_data)
+
+    app.apply_filter_loading_config(proposed)
+    return {
+        "updated": True,
+        "applied_live": True,
+        **serialize_filter_loading_config(app),
     }
 
 
@@ -2458,7 +2537,6 @@ def serialize_logging_config(app: PoolControllerApp) -> dict[str, Any]:
         "control_measurement_interval_s": (
             app.measurement_logging_config.control_measurement_interval_s
         ),
-        "layer_enabled": app.runtime_config.layer_enabled(FeatureLayer.LOGGING),
         "requires_restart": True,
     }
 

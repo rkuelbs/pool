@@ -24,10 +24,6 @@ api = [
     "uvicorn[standard]",
 ]
 
-mqtt = [
-    "paho-mqtt",
-]
-
 raspberrypi = [
     "gpiozero",
     "smbus2",

@@ -40,7 +40,11 @@ def make_router(
     plant = SimulatedPlant(clock=clock)
     router = CommandRouter(
         drivers=build_default_simulated_actuators(plant),
-        safety_gate=safety_gate if safety_gate is not None else SafetyGate(),
+        safety_gate=(
+            safety_gate
+            if safety_gate is not None
+            else SafetyGate(chlorine_pump_stabilization_seconds=0.0)
+        ),
         clock=clock,
     )
 
@@ -100,7 +104,6 @@ def temperature(
 
 def required_chlorine_pressures(clock: SimulatedClock) -> list[Measurement]:
     return [
-        pressure(clock, SensorId.RETURN_PSI, 2.0),
         pressure(clock, SensorId.PUMP_OUTPUT_PSI, 3.2),
         chlorine_tank_level(clock, 5.0),
     ]
@@ -120,8 +123,8 @@ async def test_chlorine_output_requires_pump_and_pressure_window() -> None:
     low_pump_result = await router.route(
         command(clock, ActuatorId.CHLORINE_DOSING_PUMP, ActuatorState.ON),
         measurements=[
-            pressure(clock, SensorId.RETURN_PSI, 2.0),
             pressure(clock, SensorId.PUMP_OUTPUT_PSI, 2.9),
+            chlorine_tank_level(clock, 5.0),
         ],
     )
 
@@ -133,27 +136,14 @@ async def test_chlorine_output_requires_pump_and_pressure_window() -> None:
     high_pump_result = await router.route(
         command(clock, ActuatorId.CHLORINE_DOSING_PUMP, ActuatorState.ON),
         measurements=[
-            pressure(clock, SensorId.RETURN_PSI, 2.0),
             pressure(clock, SensorId.PUMP_OUTPUT_PSI, 3.6),
+            chlorine_tank_level(clock, 5.0),
         ],
     )
 
     assert not high_pump_result.accepted
     assert high_pump_result.rejection_reason == (
         "chlorine output requires pump output pressure <= 3.5 psi"
-    )
-
-    low_return_result = await router.route(
-        command(clock, ActuatorId.CHLORINE_DOSING_PUMP, ActuatorState.ON),
-        measurements=[
-            pressure(clock, SensorId.RETURN_PSI, 1.9),
-            pressure(clock, SensorId.PUMP_OUTPUT_PSI, 3.2),
-        ],
-    )
-
-    assert not low_return_result.accepted
-    assert low_return_result.rejection_reason == (
-        "chlorine output requires return pressure >= 2 psi"
     )
 
     accepted_result = await router.route(
@@ -174,7 +164,6 @@ async def test_chlorine_tank_hysteresis_blocks_and_reenables_dosing() -> None:
     inhibited = await router.route(
         command(clock, ActuatorId.CHLORINE_DOSING_PUMP, ActuatorState.ON),
         measurements=[
-            pressure(clock, SensorId.RETURN_PSI, 2.0),
             pressure(clock, SensorId.PUMP_OUTPUT_PSI, 3.2),
             chlorine_tank_level(clock, 1.5),
         ],
@@ -182,7 +171,6 @@ async def test_chlorine_tank_hysteresis_blocks_and_reenables_dosing() -> None:
     still_inhibited = await router.route(
         command(clock, ActuatorId.CHLORINE_DOSING_PUMP, ActuatorState.ON),
         measurements=[
-            pressure(clock, SensorId.RETURN_PSI, 2.0),
             pressure(clock, SensorId.PUMP_OUTPUT_PSI, 3.2),
             chlorine_tank_level(clock, 1.8),
         ],
@@ -190,7 +178,6 @@ async def test_chlorine_tank_hysteresis_blocks_and_reenables_dosing() -> None:
     reenabled = await router.route(
         command(clock, ActuatorId.CHLORINE_DOSING_PUMP, ActuatorState.ON),
         measurements=[
-            pressure(clock, SensorId.RETURN_PSI, 2.0),
             pressure(clock, SensorId.PUMP_OUTPUT_PSI, 3.2),
             chlorine_tank_level(clock, 2.0),
         ],
@@ -217,7 +204,6 @@ async def test_active_chlorine_dose_stops_when_tank_inhibits() -> None:
 
     results = await router.enforce_safety(
         measurements=[
-            pressure(clock, SensorId.RETURN_PSI, 2.0),
             pressure(clock, SensorId.PUMP_OUTPUT_PSI, 3.2),
             chlorine_tank_level(clock, 1.4),
         ]
@@ -294,67 +280,6 @@ async def test_booster_pump_requires_pump_motor_on() -> None:
 
 
 @pytest.mark.asyncio
-async def test_booster_overpressure_shuts_off_booster() -> None:
-    clock, _, router = make_router()
-
-    await router.route(command(clock, ActuatorId.PUMP_MOTOR, ActuatorState.ON))
-    await router.route(command(clock, ActuatorId.BOOSTER_PUMP, ActuatorState.ON))
-
-    results = await router.enforce_safety(
-        measurements=[pressure(clock, SensorId.BOOSTER_PSI, 61.0)]
-    )
-
-    assert len(results) == 1
-    assert results[0].metadata["safety_action"] == "booster_overpressure"
-    assert router.actuator_states[ActuatorId.BOOSTER_PUMP] == ActuatorState.OFF
-
-
-@pytest.mark.asyncio
-async def test_booster_low_pressure_after_grace_shuts_off_booster() -> None:
-    clock, _, router = make_router()
-
-    await router.route(command(clock, ActuatorId.PUMP_MOTOR, ActuatorState.ON))
-    await router.route(command(clock, ActuatorId.BOOSTER_PUMP, ActuatorState.ON))
-    await clock.advance(11.0)
-
-    results = await router.enforce_safety(
-        measurements=[pressure(clock, SensorId.BOOSTER_PSI, 20.0)]
-    )
-
-    assert len(results) == 1
-    assert results[0].metadata["safety_action"] == "booster_low_pressure_timeout"
-    assert router.actuator_states[ActuatorId.BOOSTER_PUMP] == ActuatorState.OFF
-
-
-@pytest.mark.asyncio
-async def test_low_speed_pump_switches_high_for_prime_then_returns_low() -> None:
-    clock, _, router = make_router()
-
-    await router.route(command(clock, ActuatorId.PUMP_MOTOR, ActuatorState.ON))
-
-    prime_results = await router.enforce_safety(
-        measurements=[pressure(clock, SensorId.PUMP_OUTPUT_PSI, 0.5)]
-    )
-
-    assert len(prime_results) == 1
-    assert prime_results[0].metadata["safety_action"] == "pump_low_speed_prime"
-    assert router.actuator_states[ActuatorId.PUMP_MOTOR_SPEED] == ActuatorState.HIGH
-
-    await router.enforce_safety(
-        measurements=[pressure(clock, SensorId.PUMP_OUTPUT_PSI, 6.0)]
-    )
-    await clock.advance(30.0)
-
-    restore_results = await router.enforce_safety(
-        measurements=[pressure(clock, SensorId.PUMP_OUTPUT_PSI, 6.0)]
-    )
-
-    assert len(restore_results) == 1
-    assert restore_results[0].metadata["safety_action"] == "pump_low_speed_prime_complete"
-    assert router.actuator_states[ActuatorId.PUMP_MOTOR_SPEED] == ActuatorState.LOW
-
-
-@pytest.mark.asyncio
 async def test_pump_output_overpressure_shuts_down_and_locks_out_until_clear() -> None:
     clock, _, router = make_router()
 
@@ -368,8 +293,7 @@ async def test_pump_output_overpressure_shuts_down_and_locks_out_until_clear() -
     results = await router.enforce_safety(
         measurements=[
             pressure(clock, SensorId.PUMP_OUTPUT_PSI, 31.0),
-            pressure(clock, SensorId.RETURN_PSI, 3.0),
-            pressure(clock, SensorId.BOOSTER_PSI, 40.0),
+            chlorine_tank_level(clock, 5.0),
         ]
     )
 

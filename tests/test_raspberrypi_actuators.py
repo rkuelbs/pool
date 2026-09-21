@@ -216,7 +216,6 @@ async def test_command_router_expires_flash_dosing_state_without_off_write() -> 
         drivers=drivers,
         safety_gate=SafetyGate(),
         clock=clock,
-        safety_enabled=False,
     )
     auto_off_at = clock.now() + timedelta(seconds=30.0)
 
@@ -229,7 +228,8 @@ async def test_command_router_expires_flash_dosing_state_without_off_write() -> 
                 ACTUATOR_ON_PULSE_SECONDS_METADATA: 30.0,
                 ACTUATOR_AUTO_OFF_AT_METADATA: auto_off_at.isoformat(),
             },
-        )
+        ),
+        bypass_safety=True,
     )
     await clock.advance(30.1)
 
@@ -247,7 +247,6 @@ async def test_reconciliation_corrects_pump_relay_that_does_not_match_desired_st
         drivers=drivers,
         safety_gate=SafetyGate(),
         clock=clock,
-        safety_enabled=False,
     )
 
     await router.route(command(clock, ActuatorId.PUMP_MOTOR, ActuatorState.ON))
@@ -270,7 +269,6 @@ async def test_reconciliation_sends_off_when_dosing_relay_is_on_after_auto_off()
         drivers=drivers,
         safety_gate=SafetyGate(),
         clock=clock,
-        safety_enabled=False,
     )
     auto_off_at = clock.now() + timedelta(seconds=30.0)
     await router.route(
@@ -282,7 +280,8 @@ async def test_reconciliation_sends_off_when_dosing_relay_is_on_after_auto_off()
                 ACTUATOR_ON_PULSE_SECONDS_METADATA: 30.0,
                 ACTUATOR_AUTO_OFF_AT_METADATA: auto_off_at.isoformat(),
             },
-        )
+        ),
+        bypass_safety=True,
     )
     await clock.advance(30.1)
     assert router.actuator_states[ActuatorId.CHLORINE_DOSING_PUMP] == ActuatorState.OFF

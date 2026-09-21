@@ -2,8 +2,9 @@
 Parse high-level runtime and GUI configuration.
 
 Most other modules use small service-specific config dataclasses. This module
-holds the broad switches that decide which deployment stage is active, which
-driver profile is used, and how the live dashboard should present sensors.
+keeps only the deployment facts the app builder needs: which driver family to
+use, which physical outputs are present, which acquisition groups are active,
+and how the live dashboard should present sensors.
 """
 
 from __future__ import annotations
@@ -30,36 +31,6 @@ class DriverProfile(str, Enum):
     RASPBERRY_PI = "raspberry_pi"
 
 
-class RuntimeStage(str, Enum):
-    """
-    Coarse deployment stage.
-
-    These stages are intentionally operational. They let the same software move
-    from a dumb timer to sensor logging and later closed-loop control without
-    changing code paths for every deployment.
-    """
-
-    WINDOWS_SIMULATION = "windows_simulation"
-    OPEN_LOOP_TIMER = "open_loop_timer"
-    SENSOR_LOGGING = "sensor_logging"
-    SAFETY_MONITOR = "safety_monitor"
-    CLOSED_LOOP_CONTROL = "closed_loop_control"
-
-
-class FeatureLayer(str, Enum):
-    """
-    Functional layers that can be enabled as hardware and software mature.
-    """
-
-    PUMP_TIMER = "pump_timer"
-    ACQUISITION = "acquisition"
-    LOGGING = "logging"
-    SAFETY_ENFORCEMENT = "safety_enforcement"
-    CHLORINATION = "chlorination"
-    CLOSED_LOOP_CONTROL = "closed_loop_control"
-    MQTT_BRIDGE = "mqtt_bridge"
-
-
 DEFAULT_SENSOR_GROUPS = frozenset(
     {
         "pressures",
@@ -72,28 +43,19 @@ DEFAULT_SENSOR_GROUPS = frozenset(
 @dataclass(frozen=True)
 class RuntimeConfig:
     """
-    Runtime feature gates for a deployment.
+    Runtime hardware profile for a deployment.
 
-    Detailed threshold and sampling settings still live in their own safety and
-    acquisition config sections. This config controls which pieces the app
-    builder should wire into the running system.
+    Service-specific enabled flags still live in their own config sections.
+    Safety is always wired by the app builder and is not a feature switch.
     """
 
-    stage: RuntimeStage
     driver_profile: DriverProfile
-    enabled_layers: frozenset[FeatureLayer]
     enabled_actuators: frozenset[ActuatorId]
     enabled_sensor_groups: frozenset[str]
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> RuntimeConfig:
         runtime_data = _mapping_value(data, "runtime", default=data)
-        stage = _enum_value(
-            RuntimeStage,
-            runtime_data,
-            "stage",
-            RuntimeStage.WINDOWS_SIMULATION,
-        )
         driver_profile = _enum_value(
             DriverProfile,
             runtime_data,
@@ -102,24 +64,14 @@ class RuntimeConfig:
         )
 
         return cls(
-            stage=stage,
             driver_profile=driver_profile,
-            enabled_layers=_feature_layers_value(
-                runtime_data,
-                stage,
-            ),
             enabled_actuators=_actuator_ids_value(
                 runtime_data,
-                stage,
             ),
             enabled_sensor_groups=_sensor_groups_value(
                 runtime_data,
-                stage,
             ),
         )
-
-    def layer_enabled(self, layer: FeatureLayer) -> bool:
-        return layer in self.enabled_layers
 
     def actuator_enabled(self, actuator_id: ActuatorId) -> bool:
         return actuator_id in self.enabled_actuators
@@ -198,88 +150,19 @@ def load_runtime_config(path: str | Path) -> RuntimeConfig:
     return RuntimeConfig.from_mapping(data)
 
 
-def default_layers_for_stage(stage: RuntimeStage) -> frozenset[FeatureLayer]:
-    if stage == RuntimeStage.OPEN_LOOP_TIMER:
-        return frozenset(
-            {
-                FeatureLayer.PUMP_TIMER,
-                FeatureLayer.SAFETY_ENFORCEMENT,
-            }
-        )
-
-    if stage == RuntimeStage.SENSOR_LOGGING:
-        return frozenset(
-            {
-                FeatureLayer.PUMP_TIMER,
-                FeatureLayer.ACQUISITION,
-                FeatureLayer.LOGGING,
-            }
-        )
-
-    if stage == RuntimeStage.SAFETY_MONITOR:
-        return frozenset(
-            {
-                FeatureLayer.PUMP_TIMER,
-                FeatureLayer.ACQUISITION,
-                FeatureLayer.LOGGING,
-                FeatureLayer.SAFETY_ENFORCEMENT,
-            }
-        )
-
-    if stage == RuntimeStage.CLOSED_LOOP_CONTROL:
-        return frozenset(FeatureLayer)
-
-    return frozenset(
-        {
-            FeatureLayer.ACQUISITION,
-            FeatureLayer.SAFETY_ENFORCEMENT,
-        }
-    )
-
-
-def default_actuators_for_stage(stage: RuntimeStage) -> frozenset[ActuatorId]:
-    if stage in {
-        RuntimeStage.OPEN_LOOP_TIMER,
-        RuntimeStage.SENSOR_LOGGING,
-        RuntimeStage.SAFETY_MONITOR,
-    }:
-        return frozenset(
-            {
-                ActuatorId.PUMP_MOTOR,
-                ActuatorId.PUMP_MOTOR_SPEED,
-                ActuatorId.BOOSTER_PUMP,
-            }
-        )
-
+def default_actuators() -> frozenset[ActuatorId]:
     return frozenset(ActuatorId)
 
 
-def default_sensor_groups_for_stage(stage: RuntimeStage) -> frozenset[str]:
-    if stage == RuntimeStage.OPEN_LOOP_TIMER:
-        return frozenset()
-
+def default_sensor_groups() -> frozenset[str]:
     return DEFAULT_SENSOR_GROUPS
-
-
-def _feature_layers_value(
-    data: Mapping[str, Any],
-    stage: RuntimeStage,
-) -> frozenset[FeatureLayer]:
-    if "enabled_layers" not in data:
-        return default_layers_for_stage(stage)
-
-    return frozenset(
-        _enum_item_value(FeatureLayer, item, "enabled_layers")
-        for item in _string_list_value(data, "enabled_layers")
-    )
 
 
 def _actuator_ids_value(
     data: Mapping[str, Any],
-    stage: RuntimeStage,
 ) -> frozenset[ActuatorId]:
     if "enabled_actuators" not in data:
-        return default_actuators_for_stage(stage)
+        return default_actuators()
 
     return frozenset(
         _enum_item_value(ActuatorId, item, "enabled_actuators")
@@ -289,10 +172,9 @@ def _actuator_ids_value(
 
 def _sensor_groups_value(
     data: Mapping[str, Any],
-    stage: RuntimeStage,
 ) -> frozenset[str]:
     if "enabled_sensor_groups" not in data:
-        return default_sensor_groups_for_stage(stage)
+        return default_sensor_groups()
 
     return frozenset(_string_list_value(data, "enabled_sensor_groups"))
 

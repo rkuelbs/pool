@@ -97,14 +97,14 @@ def test_measurement_logger_ignores_duplicate_measurement_ids(tmp_path: Path) ->
         MeasurementLoggingConfig(database_path=tmp_path / "measurements.sqlite3")
     )
     measurement = Measurement(
-        sensor_id=SensorId.RETURN_PSI,
+        sensor_id=SensorId.PUMP_OUTPUT_PSI,
         value=5.0,
         unit="psi",
     )
 
     assert logger.log_measurements((measurement,)) == 1
     assert logger.log_measurements((measurement,)) == 0
-    assert len(logger.history(sensor_id=SensorId.RETURN_PSI)) == 1
+    assert len(logger.history(sensor_id=SensorId.PUMP_OUTPUT_PSI)) == 1
 
 
 def test_measurement_logger_history_can_filter_by_quality(tmp_path: Path) -> None:
@@ -433,7 +433,7 @@ def test_measurement_logger_history_with_rollup_respects_max_points(tmp_path: Pa
     start = datetime(2026, 5, 22, 0, 0, tzinfo=timezone.utc)
     samples = tuple(
         Measurement(
-            sensor_id=SensorId.RETURN_PSI,
+            sensor_id=SensorId.PUMP_OUTPUT_PSI,
             observed_at=start + timedelta(minutes=index),
             value=float(index),
             unit="psi",
@@ -444,7 +444,7 @@ def test_measurement_logger_history_with_rollup_respects_max_points(tmp_path: Pa
     logger.log_measurements(samples)
 
     records = logger.history_with_rollup(
-        sensor_id=SensorId.RETURN_PSI,
+        sensor_id=SensorId.PUMP_OUTPUT_PSI,
         since=start,
         until=start + timedelta(hours=12),
         limit=2000,

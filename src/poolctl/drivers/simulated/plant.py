@@ -171,10 +171,6 @@ class SimulatedPlant:
 
         Supported sensor_name values:
             pump_output_psi
-            filter_output_psi
-            return_psi
-            bubbler_psi
-            booster_psi
         """
         self.update()
 
@@ -187,21 +183,8 @@ class SimulatedPlant:
 
         if sensor_name == "pump_output_psi":
             base = 12.0 * speed
-        elif sensor_name == "filter_output_psi":
-            base = 6.0 * speed
-        elif sensor_name == "return_psi":
-            base = 5.5 * speed
-        elif sensor_name == "bubbler_psi":
-            base = 5.0 * speed
-        elif sensor_name == "booster_psi":
-            base = 5.0 * speed
         else:
             base = 0.0
-
-        if sensor_name == "booster_psi" and self.booster_is_on():
-            # The booster branch gets a large bump so booster safety rules and
-            # GUI coloring can be exercised in simulation.
-            base += 45.0
 
         return max(0.0, self._noisy(base, 0.35))
 
@@ -211,18 +194,6 @@ class SimulatedPlant:
         """
         self.update()
         return self._noisy(self.water_temp_f, 0.15)
-
-    def raw_ph_voltage(self) -> float:
-        """
-        Return simulated raw pH probe voltage.
-
-        The default transfer model is linear and intentionally simple:
-          0.0 V -> pH 0.0
-          5.0 V -> pH 14.0
-        """
-        self.update()
-        voltage = (self.simulated_ph / 14.0) * 5.0
-        return self._noisy(clamp(voltage, 0.0, 5.0), 0.005)
 
     def orp_probe_temp_f(self) -> float:
         """

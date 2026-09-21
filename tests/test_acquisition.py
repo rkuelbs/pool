@@ -129,7 +129,7 @@ acquisition:
     pressures:
       sensor_ids:
         - pump_output_psi
-        - return_psi
+        - raw_orp
       read_interval_s: 0.5
       log_interval_s: 30
       requires_pump_flow: false
@@ -151,7 +151,7 @@ acquisition:
     assert config.groups[0].name == "pressures"
     assert config.groups[0].sensor_ids == (
         SensorId.PUMP_OUTPUT_PSI,
-        SensorId.RETURN_PSI,
+        SensorId.RAW_ORP,
     )
     assert config.groups[0].read_interval_s == 0.5
     assert config.groups[0].log_interval_s == 30.0
@@ -326,8 +326,8 @@ async def test_multi_sensor_drivers_are_skipped_when_their_sensor_ids_are_not_du
     pressure_driver = FakeMultiSensor(
         name="pressure_module",
         clock=clock,
-        sensor_ids=(SensorId.PUMP_OUTPUT_PSI, SensorId.FILTER_OUTPUT_PSI),
-        values={SensorId.PUMP_OUTPUT_PSI: 7.0, SensorId.FILTER_OUTPUT_PSI: 5.0},
+        sensor_ids=(SensorId.PUMP_OUTPUT_PSI, SensorId.RAW_ORP),
+        values={SensorId.PUMP_OUTPUT_PSI: 7.0, SensorId.RAW_ORP: 650.0},
     )
     chemistry_driver = FakeMultiSensor(
         name="orp_module",
@@ -524,10 +524,10 @@ async def test_log_interval_does_not_block_when_clock_moves_backwards() -> None:
 async def test_sensor_failures_do_not_block_other_measurements() -> None:
     clock = make_clock()
     good_sensor = FakeSensor(
-        name="return_pressure",
-        sensor_id=SensorId.RETURN_PSI,
+        name="orp",
+        sensor_id=SensorId.RAW_ORP,
         clock=clock,
-        values=[4.0],
+        values=[650.0],
     )
     failing_sensor = FakeSensor(
         name="pump_output",
@@ -541,7 +541,7 @@ async def test_sensor_failures_do_not_block_other_measurements() -> None:
             groups=(
                 AcquisitionGroupConfig(
                     name="pressures",
-                    sensor_ids=(SensorId.PUMP_OUTPUT_PSI, SensorId.RETURN_PSI),
+                    sensor_ids=(SensorId.PUMP_OUTPUT_PSI, SensorId.RAW_ORP),
                     read_interval_s=1.0,
                     log_interval_s=30.0,
                 ),
@@ -558,7 +558,7 @@ async def test_sensor_failures_do_not_block_other_measurements() -> None:
     )
 
     assert [measurement.sensor_id for measurement in result.measurements] == [
-        SensorId.RETURN_PSI,
+        SensorId.RAW_ORP,
     ]
     assert len(result.failures) == 1
     assert result.failures[0].sensor_id == SensorId.PUMP_OUTPUT_PSI

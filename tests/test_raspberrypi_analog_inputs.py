@@ -2,7 +2,7 @@
 Tests for Raspberry Pi Waveshare analog input drivers.
 
 The tests protect bulk register reads, voltage scaling, two-point calibration,
-startup channel-mode writes, and raw pH voltage exposure.
+and startup channel-mode writes.
 """
 
 from __future__ import annotations
@@ -69,15 +69,6 @@ def analog_mapping() -> dict[str, object]:
                         "value_2": 30.0,
                     },
                 },
-                "raw_ph": {
-                    "channel": 2,
-                    "calibration": {
-                        "voltage_1": 0.0,
-                        "value_1": 0.0,
-                        "voltage_2": 5.0,
-                        "value_2": 14.0,
-                    },
-                },
             },
         }
     }
@@ -87,9 +78,8 @@ def test_waveshare_analog_config_parses_channels_and_calibration() -> None:
     config = WaveshareAnalogInputConfig.from_mapping(analog_mapping())
 
     assert config.device.slave_id == 4
-    assert len(config.sensors) == 2
+    assert len(config.sensors) == 1
     assert config.sensors[0].sensor_id == SensorId.PUMP_OUTPUT_PSI
-    assert config.sensors[1].sensor_id == SensorId.RAW_PH
 
 
 @pytest.mark.asyncio
@@ -110,10 +100,6 @@ async def test_waveshare_analog_driver_emits_calibrated_measurements() -> None:
 
     assert by_sensor[SensorId.PUMP_OUTPUT_PSI].value == 15.0
     assert by_sensor[SensorId.PUMP_OUTPUT_PSI].unit == "psi"
-    assert by_sensor[SensorId.RAW_PH].value == 7.84
-    assert by_sensor[SensorId.RAW_PH].unit == "pH"
-    assert by_sensor[SensorId.RAW_PH_VOLTAGE].value == 2.8
-    assert by_sensor[SensorId.RAW_PH_VOLTAGE].unit == "V"
 
 
 @pytest.mark.asyncio

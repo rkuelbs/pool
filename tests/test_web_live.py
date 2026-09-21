@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, cast
 
 import pytest
 
@@ -48,9 +47,7 @@ def make_clock() -> SimulatedClock:
 def live_config() -> dict[str, object]:
     return {
         "runtime": {
-            "stage": "windows_simulation",
             "driver_profile": "simulated",
-            "enabled_layers": ["acquisition", "safety_enforcement"],
             "enabled_actuators": [
                 "pump_motor",
                 "pump_motor_speed",
@@ -64,8 +61,6 @@ def live_config() -> dict[str, object]:
                 "pressures": {
                     "sensor_ids": [
                         "pump_output_psi",
-                        "filter_output_psi",
-                        "return_psi",
                     ],
                     "read_interval_s": 0.5,
                     "log_interval_s": 30.0,
@@ -86,12 +81,6 @@ def live_config() -> dict[str, object]:
                     "normal_max": 25.0,
                     "caution_max": 30.0,
                 },
-                "return_psi": {
-                    "caution_min": 0.0,
-                    "normal_min": 0.0,
-                    "normal_max": 18.0,
-                    "caution_max": 25.0,
-                },
             }
         },
     }
@@ -99,9 +88,6 @@ def live_config() -> dict[str, object]:
 
 def logging_live_config(database_path: str) -> dict[str, object]:
     config = live_config()
-    runtime = dict(cast(dict[str, Any], config["runtime"]))
-    runtime["enabled_layers"] = ["acquisition", "logging", "safety_enforcement"]
-    config["runtime"] = runtime
     config["logging"] = {"database_path": database_path}
     return config
 
@@ -109,9 +95,7 @@ def logging_live_config(database_path: str) -> dict[str, object]:
 def control_config() -> dict[str, object]:
     return {
         "runtime": {
-            "stage": "windows_simulation",
             "driver_profile": "simulated",
-            "enabled_layers": ["safety_enforcement"],
             "enabled_actuators": [
                 "pump_motor",
                 "pump_motor_speed",
@@ -156,7 +140,6 @@ async def test_build_live_snapshot_includes_runtime_sensors_and_actuators() -> N
 
     snapshot = await build_live_snapshot(app)
 
-    assert snapshot["runtime"]["stage"] == "windows_simulation"
     assert snapshot["runtime"]["driver_profile"] == "simulated"
     assert SensorId.PUMP_OUTPUT_PSI.value in snapshot["sensors"]
     assert snapshot["sensors"][SensorId.PUMP_OUTPUT_PSI.value]["unit"] == "psi"
@@ -167,17 +150,15 @@ async def test_build_live_snapshot_includes_runtime_sensors_and_actuators() -> N
     assert snapshot["safety"]["fault"] is None
     assert snapshot["safety"]["freeze_protection"]["enabled"] is False
     assert snapshot["safety"]["freeze_protection"]["active"] is False
-    assert snapshot["chlorination"]["layer_enabled"] is False
     assert snapshot["chlorination"]["daily_dose_oz"] == 0.0
     assert snapshot["chlorination"]["active"] is False
     assert snapshot["supplemental_chlorine_dose"]["active"] is False
     assert snapshot["flows"]["pump_flow_gpm"]["display"] == "0.0 gpm"
     assert snapshot["flows"]["pump_dynamic_head_psi"]["display"] == "0.0 psi"
-    assert snapshot["flows"]["return_flow_gpm"]["value"] == 0.0
-    assert snapshot["flows"]["bubbler_flow_gpm"]["value"] == 0.0
-    assert snapshot["flows"]["booster_flow_gpm"]["value"] == 0.0
-    assert snapshot["flows"]["filter_restriction_metric"]["display"] == "-- R"
-    assert snapshot["flows"]["filter_restriction_percent"]["display"] == "--%"
+    assert snapshot["flows"]["pump_flow_low_gpm"]["display"] == "0.0 gpm"
+    assert snapshot["flows"]["pump_flow_high_gpm"]["display"] == "-- gpm"
+    assert snapshot["flows"]["filter_reference_psi"]["display"] == "-- psi"
+    assert snapshot["flows"]["filter_loading_percent"]["display"] == "--%"
     assert snapshot["tick"]["duration_s"] >= 0.0
     assert snapshot["tick"]["control_duration_s"] >= 0.0
 
@@ -189,9 +170,9 @@ async def test_build_live_snapshot_reuses_latest_measurements_when_group_not_due
     first = await build_live_snapshot(app)
     second = await build_live_snapshot(app)
 
-    assert first["tick"]["measurement_count"] == 3
+    assert first["tick"]["measurement_count"] == 1
     assert second["tick"]["measurement_count"] == 0
-    assert SensorId.RETURN_PSI.value in second["sensors"]
+    assert SensorId.PUMP_OUTPUT_PSI.value in second["sensors"]
 
 
 @pytest.mark.asyncio
@@ -220,12 +201,6 @@ async def test_build_live_snapshot_logs_loggable_measurements(tmp_path: Path) ->
         hours=1.0,
         limit=10,
     )
-    return_flow_history = build_history_payload(
-        app,
-        sensor_id=SensorId.RETURN_FLOW_GPM,
-        hours=1.0,
-        limit=10,
-    )
     delivered_history = build_history_payload(
         app,
         sensor_id=SensorId.CHLORINE_DAILY_DELIVERED_OZ,
@@ -251,15 +226,13 @@ async def test_build_live_snapshot_logs_loggable_measurements(tmp_path: Path) ->
         limit=10,
     )
 
-    assert snapshot["tick"]["logged_measurement_count"] == 15
+    assert snapshot["tick"]["logged_measurement_count"] == 10
     assert len(history["points"]) == 1
     assert history["points"][0]["sensor_id"] == SensorId.PUMP_OUTPUT_PSI.value
     assert len(flow_history["points"]) == 1
     assert flow_history["points"][0]["sensor_id"] == SensorId.PUMP_FLOW_GPM.value
     assert len(dynamic_head_history["points"]) == 1
     assert dynamic_head_history["points"][0]["sensor_id"] == SensorId.PUMP_DYNAMIC_HEAD_PSI.value
-    assert len(return_flow_history["points"]) == 1
-    assert return_flow_history["points"][0]["sensor_id"] == SensorId.RETURN_FLOW_GPM.value
     assert delivered_history["points"][0]["value"] == 0.0
     assert delivered_history["points"][0]["metadata"]["snapshot_boundary"] == "reset"
     assert daily_chlorine_history["points"][0]["value"] == 0.0
@@ -274,9 +247,7 @@ async def test_build_live_snapshot_includes_csi_when_inputs_are_available(
     clock = make_clock()
     config = {
         "runtime": {
-            "stage": "sensor_logging",
             "driver_profile": "simulated",
-            "enabled_layers": ["acquisition", "logging", "safety_enforcement"],
             "enabled_actuators": [
                 "pump_motor",
                 "pump_motor_speed",
@@ -731,7 +702,7 @@ def test_history_series_payload_accepts_multiple_standard_sensor_id_strings(tmp_
                 quality=Quality.GOOD,
             ),
             Measurement(
-                sensor_id=SensorId.FILTER_OUTPUT_PSI,
+                sensor_id=SensorId.FILTER_REFERENCE_PSI,
                 observed_at=now,
                 value=9.5,
                 unit="psi",
@@ -742,7 +713,7 @@ def test_history_series_payload_accepts_multiple_standard_sensor_id_strings(tmp_
 
     payload = build_history_series_payload(
         app,
-        sensor_ids=("pump_output_psi", "filter_output_psi"),
+        sensor_ids=("pump_output_psi", "filter_reference_psi"),
         hours=24.0,
         limit=100,
         validated_only=True,
@@ -750,7 +721,7 @@ def test_history_series_payload_accepts_multiple_standard_sensor_id_strings(tmp_
 
     by_id = {series["sensor_id"]: series for series in payload["series"]}
     assert by_id["pump_output_psi"]["points"][0]["value"] == 12.0
-    assert by_id["filter_output_psi"]["points"][0]["value"] == 9.5
+    assert by_id["filter_reference_psi"]["points"][0]["value"] == 9.5
 
 
 def test_history_series_payload_can_include_weather_signals(tmp_path: Path) -> None:

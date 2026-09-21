@@ -29,6 +29,7 @@ chlorination:
   enabled: true
   daily_dose_oz: 24.0
   pump_output_oz_per_min: 1.0
+  no_dose_first_minutes: 1.0
   no_dose_last_minutes: 10.0
   max_duty_cycle: 0.5
   cycle_on_seconds: 60.0
@@ -63,6 +64,17 @@ fc_demand:
 #   thresholds:
 #     chlorine_min_pump_output_psi: 3.0
 #     chlorine_max_pump_output_psi: 3.5
+
+# Optional site-specific filter loading calibration. Schedule a normal HIGH-speed,
+# booster-off pump period long enough to cover stabilization plus averaging.
+# filter_loading:
+#   enabled: true
+#   pressure_sensor: pump_output_psi
+#   clean_psi: 10.0
+#   dirty_psi: 25.0
+#   stabilization_seconds: 60
+#   averaging_seconds: 120
+#   max_pressure_age_seconds: 10
 
 # Optional site-specific paths. Leave these out if pi-prod.yaml is correct.
 # logging:

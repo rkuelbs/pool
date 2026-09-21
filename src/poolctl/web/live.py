@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from poolctl.app import (
-    CHLORINE_TANK_RESERVE_GAL,
+    DEFAULT_CHLORINE_TANK_FORECAST_RESERVE_GAL,
     PoolControllerApp,
     TimerOverrideState,
     chlorine_supply_daily_dose_oz,
@@ -25,17 +25,10 @@ from poolctl.domain.models import ActuatorId, ChemicalType, Measurement, Quality
 
 SENSOR_LABELS = {
     SensorId.PUMP_OUTPUT_PSI: "Pump output",
-    SensorId.FILTER_OUTPUT_PSI: "Filter output",
-    SensorId.RETURN_PSI: "Return",
-    SensorId.BUBBLER_PSI: "Bubbler",
-    SensorId.BOOSTER_PSI: "Booster",
     SensorId.PUMP_FLOW_GPM: "Pump flow",
     SensorId.PUMP_DYNAMIC_HEAD_PSI: "Pump dynamic head",
-    SensorId.RETURN_FLOW_GPM: "Return flow",
-    SensorId.BUBBLER_FLOW_GPM: "Bubbler flow",
-    SensorId.BOOSTER_FLOW_GPM: "Booster flow",
-    SensorId.FILTER_RESTRICTION_METRIC: "Filter restriction",
-    SensorId.FILTER_RESTRICTION_PERCENT: "Filter restriction %",
+    SensorId.FILTER_REFERENCE_PSI: "Filter reference pressure",
+    SensorId.FILTER_LOADING_PERCENT: "Filter loading",
     SensorId.CALCIUM_SATURATION_INDEX: "CSI",
     SensorId.CHLORINE_DAILY_DELIVERED_OZ: "Daily chlorine delivered",
     SensorId.CHLORINATION_DUTY_CYCLE_PERCENT: "Dosing duty cycle",
@@ -69,7 +62,6 @@ SENSOR_LABELS = {
     SensorId.ORP_TEMP: "ORP temp",
     SensorId.RAW_PH: "pH",
     SensorId.PH_TEMP: "pH temp",
-    SensorId.RAW_PH_VOLTAGE: "pH Vraw",
     SensorId.TEMP: "Water temp",
     SensorId.CPU_TEMP: "CPU temp",
     SensorId.CPU_LOAD_PERCENT: "CPU load",
@@ -204,9 +196,7 @@ async def build_live_snapshot(app: PoolControllerApp) -> dict[str, Any]:
     return {
         "observed_at": tick.observed_at.isoformat(),
         "runtime": {
-            "stage": app.runtime_config.stage.value,
             "driver_profile": app.runtime_config.driver_profile.value,
-            "enabled_layers": sorted(layer.value for layer in app.runtime_config.enabled_layers),
         },
         "sensors": {
             sensor_id.value: measurement_payload(
@@ -230,7 +220,7 @@ async def build_live_snapshot(app: PoolControllerApp) -> dict[str, Any]:
             else None
         ),
         "chlorine_supply": chlorine_supply_payload(
-            reserve_gal=app.safety_config.chlorine_tank.low_warning_gal,
+            reserve_gal=app.safety_config.chlorine_tank.forecast_reserve_gal,
             safety_status=app.router.safety_gate.chlorine_tank_status(),
             tank_measurement=chlorine_tank_measurement,
             daily_dose_oz=daily_dose_oz,
@@ -256,7 +246,6 @@ async def build_live_snapshot(app: PoolControllerApp) -> dict[str, Any]:
             "logged_chlorine_delivery_count": tick.logged_chlorine_delivery_count,
             "logged_weather_count": tick.weather_result.logged_count,
             "weather_poll_error": tick.weather_result.error,
-            "mqtt_result_count": len(tick.mqtt_results),
             "notification_result_count": len(tick.notification_results),
             "duration_s": tick.duration_s,
             "control_duration_s": tick.control_duration_s,
@@ -318,16 +307,6 @@ async def build_live_snapshot(app: PoolControllerApp) -> dict[str, Any]:
                 }
                 for result in tick.safety_results
             ],
-            "mqtt_results": [
-                {
-                    "command_id": result.command_id,
-                    "accepted": result.accepted,
-                    "applied": result.applied,
-                    "rejection_reason": result.rejection_reason,
-                    "metadata": result.metadata,
-                }
-                for result in tick.mqtt_results
-            ],
             "notification_results": [
                 result.as_payload()
                 for result in tick.notification_results
@@ -340,7 +319,7 @@ def chlorine_supply_payload(
     *,
     tank_measurement: Measurement | None,
     daily_dose_oz: float,
-    reserve_gal: float = CHLORINE_TANK_RESERVE_GAL,
+    reserve_gal: float = DEFAULT_CHLORINE_TANK_FORECAST_RESERVE_GAL,
     safety_status: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     tank_level_gal = None
@@ -782,9 +761,6 @@ def format_measurement(measurement: Measurement) -> str:
 
     if measurement.unit == "gpm":
         return f"{value:.1f} gpm"
-
-    if measurement.unit == "restriction_index":
-        return f"{value:.2f} R"
 
     if measurement.unit == "csi":
         return f"{value:.2f}"

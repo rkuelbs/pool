@@ -1,20 +1,22 @@
 """
 Derived hydraulic calculations.
 
-Pressure sensors are converted into estimated flow, pump dynamic head, and
-filter restriction metrics. These values are displayed and logged like ordinary
-measurements, but they are derived from the latest pressure readings and YAML
-calibration constants.
+Pump flow estimates use the pump-output pressure sensor and configured pump
+curve constants. Filter loading is a standardized pressure proxy: during an
+uninterrupted pump-HIGH, booster-OFF test period, the estimator ignores startup
+samples, averages fresh pump-output pressure, and latches the last completed
+reference pressure until the next valid test.
 """
 
 from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
-from poolctl.domain.models import ActuatorId, ActuatorState, Measurement, SensorId
+from poolctl.domain.models import ActuatorId, ActuatorState, Measurement, Quality, SensorId
 
 
 @dataclass(frozen=True)
@@ -41,20 +43,49 @@ class PumpPressureFlowModelConfig:
 
 
 @dataclass(frozen=True)
-class LinearPressureFlowModelConfig:
-    """
-    Quadratic pressure-to-flow model:
-
-    pressure_psi = a + (b * flow_gpm^2)
-    flow_gpm = sqrt((pressure_psi - a) / b)
-    """
-
-    a: float = 0.0
-    b: float = 1.0
+class FilterLoadingConfig:
+    enabled: bool = True
+    pressure_sensor: SensorId = SensorId.PUMP_OUTPUT_PSI
+    clean_psi: float = 10.0
+    dirty_psi: float = 25.0
+    stabilization_seconds: float = 60.0
+    averaging_seconds: float = 120.0
+    max_pressure_age_seconds: float = 10.0
 
     def __post_init__(self) -> None:
-        if self.b <= 0:
-            raise ValueError("quadratic flow model coefficient b must be greater than zero")
+        if self.dirty_psi <= self.clean_psi:
+            raise ValueError("filter_loading.dirty_psi must be greater than clean_psi")
+        if self.stabilization_seconds < 0:
+            raise ValueError("filter_loading.stabilization_seconds must be >= 0")
+        if self.averaging_seconds <= 0:
+            raise ValueError("filter_loading.averaging_seconds must be > 0")
+        if self.max_pressure_age_seconds < 0:
+            raise ValueError("filter_loading.max_pressure_age_seconds must be >= 0")
+
+    @classmethod
+    def from_mapping(cls, data: Mapping[str, Any]) -> FilterLoadingConfig:
+        section = _mapping_value(data, "filter_loading", default={})
+        return cls(
+            enabled=_bool_value(section, "enabled", cls.enabled),
+            pressure_sensor=_sensor_id_value(section, "pressure_sensor", cls.pressure_sensor),
+            clean_psi=_float_value(section, "clean_psi", cls.clean_psi),
+            dirty_psi=_float_value(section, "dirty_psi", cls.dirty_psi),
+            stabilization_seconds=_float_value(
+                section,
+                "stabilization_seconds",
+                cls.stabilization_seconds,
+            ),
+            averaging_seconds=_float_value(
+                section,
+                "averaging_seconds",
+                cls.averaging_seconds,
+            ),
+            max_pressure_age_seconds=_float_value(
+                section,
+                "max_pressure_age_seconds",
+                cls.max_pressure_age_seconds,
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -64,22 +95,12 @@ class FlowEstimationConfig:
     """
 
     pump_pressure_model: PumpPressureFlowModelConfig = PumpPressureFlowModelConfig()
-    return_flow_model: LinearPressureFlowModelConfig = LinearPressureFlowModelConfig()
-    bubbler_flow_model: LinearPressureFlowModelConfig = LinearPressureFlowModelConfig()
-    booster_flow_model: LinearPressureFlowModelConfig = LinearPressureFlowModelConfig()
-    filter_restriction_clean: float = 1.0
-    filter_restriction_dirty: float = 3.0
-
-    def __post_init__(self) -> None:
-        if self.filter_restriction_dirty <= self.filter_restriction_clean:
-            raise ValueError("filter_restriction_dirty must be greater than filter_restriction_clean")
+    filter_loading: FilterLoadingConfig = FilterLoadingConfig()
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> FlowEstimationConfig:
         section = _mapping_value(data, "flow_estimation", default={})
         pump_section = _mapping_value(section, "pump_pressure", default={})
-        branch_section = _mapping_value(section, "branch_pressure", default={})
-        filter_section = _mapping_value(section, "filter_restriction", default={})
         return cls(
             pump_pressure_model=PumpPressureFlowModelConfig(
                 pressure_scale_psi=_float_value(
@@ -108,56 +129,235 @@ class FlowEstimationConfig:
                     PumpPressureFlowModelConfig.c_no_flow_high,
                 ),
             ),
-            return_flow_model=_linear_model_from_mapping(
-                _mapping_value(branch_section, "return_flow", default={}),
-                default=LinearPressureFlowModelConfig(),
-            ),
-            bubbler_flow_model=_linear_model_from_mapping(
-                _mapping_value(branch_section, "bubbler_flow", default={}),
-                default=LinearPressureFlowModelConfig(),
-            ),
-            booster_flow_model=_linear_model_from_mapping(
-                _mapping_value(branch_section, "booster_flow", default={}),
-                default=LinearPressureFlowModelConfig(),
-            ),
-            filter_restriction_clean=_float_value(filter_section, "clean_value", 1.0),
-            filter_restriction_dirty=_float_value(filter_section, "dirty_value", 3.0),
+            filter_loading=FilterLoadingConfig.from_mapping(data),
         )
 
 
 @dataclass(frozen=True)
+class FilterLoadingResult:
+    reference_psi: float
+    loading_percent: float
+    display_loading_percent: float
+    completed_at: datetime
+    sample_count: int
+    averaging_seconds: float
+
+    def as_payload(self, *, now: datetime | None = None) -> dict[str, Any]:
+        age_seconds = (
+            max(0.0, (now - self.completed_at).total_seconds())
+            if now is not None
+            else None
+        )
+        return {
+            "available": True,
+            "reference_psi": self.reference_psi,
+            "filter_reference_psi": self.reference_psi,
+            "loading_percent": self.loading_percent,
+            "display_loading_percent": self.display_loading_percent,
+            "filter_loading_percent": self.display_loading_percent,
+            "completed_at": self.completed_at.isoformat(),
+            "last_completed_at": self.completed_at.isoformat(),
+            "age_seconds": age_seconds,
+            "sample_count": self.sample_count,
+            "averaging_seconds": self.averaging_seconds,
+            "reference_display": f"{self.reference_psi:.1f} psi",
+            "loading_display": f"{self.display_loading_percent:.0f}%",
+        }
+
+
+@dataclass(frozen=True)
+class FilterLoadingUpdate:
+    result: FilterLoadingResult | None
+    completed_this_tick: bool = False
+    qualifying: bool = False
+    reason: str = "not evaluated"
+    qualifying_started_at: datetime | None = None
+
+    def as_payload(self, *, now: datetime | None = None) -> dict[str, Any]:
+        result_payload = (
+            self.result.as_payload(now=now)
+            if self.result is not None
+            else {
+                "available": False,
+                "reference_psi": None,
+                "filter_reference_psi": None,
+                "loading_percent": None,
+                "display_loading_percent": None,
+                "filter_loading_percent": None,
+                "completed_at": None,
+                "last_completed_at": None,
+                "age_seconds": None,
+                "sample_count": 0,
+                "averaging_seconds": None,
+                "reference_display": "-- psi",
+                "loading_display": "--%",
+            }
+        )
+        return {
+            **result_payload,
+            "qualifying": self.qualifying,
+            "reason": self.reason,
+            "completed_this_tick": self.completed_this_tick,
+            "qualifying_started_at": (
+                self.qualifying_started_at.isoformat()
+                if self.qualifying_started_at is not None
+                else None
+            ),
+        }
+
+
+@dataclass(frozen=True)
 class FlowEstimates:
-    """
-    Placeholder flow estimate variables.
-
-    These fields are intentionally present now so the GUI and downstream
-    interfaces can stabilize before pressure-to-flow equations are added.
-    """
-
     pump_flow_gpm: float | None = None
     pump_dynamic_head_psi: float | None = None
     pump_flow_low_gpm: float | None = None
     pump_flow_high_gpm: float | None = None
-    booster_flow_gpm: float | None = None
-    return_flow_gpm: float | None = None
-    bubbler_flow_gpm: float | None = None
-    cleaner_flow_gpm: float | None = None
-    filter_restriction_metric: float | None = None
-    filter_restriction_percent: float | None = None
+    filter_loading: FilterLoadingUpdate = field(
+        default_factory=lambda: FilterLoadingUpdate(result=None)
+    )
 
-    def as_payload(self) -> dict[str, dict[str, float | str | None]]:
+    def as_payload(self) -> dict[str, dict[str, Any]]:
         return {
             "pump_flow_gpm": _flow_payload(self.pump_flow_gpm),
             "pump_dynamic_head_psi": _pressure_payload(self.pump_dynamic_head_psi),
             "pump_flow_low_gpm": _flow_payload(self.pump_flow_low_gpm),
             "pump_flow_high_gpm": _flow_payload(self.pump_flow_high_gpm),
-            "booster_flow_gpm": _flow_payload(self.booster_flow_gpm),
-            "return_flow_gpm": _flow_payload(self.return_flow_gpm),
-            "bubbler_flow_gpm": _flow_payload(self.bubbler_flow_gpm),
-            "cleaner_flow_gpm": _flow_payload(self.cleaner_flow_gpm),
-            "filter_restriction_metric": _restriction_metric_payload(self.filter_restriction_metric),
-            "filter_restriction_percent": _restriction_percent_payload(self.filter_restriction_percent),
+            "filter_reference_psi": _filter_reference_payload(
+                self.filter_loading.result
+            ),
+            "filter_loading_percent": _filter_loading_percent_payload(
+                self.filter_loading.result
+            ),
+            "filter_loading": self.filter_loading.as_payload(),
         }
+
+
+class FilterLoadingEstimator:
+    def __init__(self, config: FilterLoadingConfig) -> None:
+        self.config = config
+        self._qualifying_started_at: datetime | None = None
+        self._samples: list[tuple[datetime, float]] = []
+        self._completed_for_session = False
+        self._last_result: FilterLoadingResult | None = None
+
+    @property
+    def last_result(self) -> FilterLoadingResult | None:
+        return self._last_result
+
+    def apply_config(self, config: FilterLoadingConfig) -> None:
+        self.config = config
+        self._reset_session()
+        self._last_result = None
+
+    def update(
+        self,
+        *,
+        now: datetime,
+        measurements: Mapping[SensorId, Measurement],
+        actuator_states: Mapping[ActuatorId, ActuatorState],
+    ) -> FilterLoadingUpdate:
+        if not self.config.enabled:
+            self._reset_session()
+            return FilterLoadingUpdate(result=self._last_result, reason="disabled")
+
+        measurement = measurements.get(self.config.pressure_sensor)
+        pressure = _fresh_good_pressure(
+            measurement,
+            now=now,
+            max_age_seconds=self.config.max_pressure_age_seconds,
+        )
+        qualifying = (
+            actuator_states.get(ActuatorId.PUMP_MOTOR) == ActuatorState.ON
+            and actuator_states.get(ActuatorId.PUMP_MOTOR_SPEED) == ActuatorState.HIGH
+            and actuator_states.get(ActuatorId.BOOSTER_PUMP, ActuatorState.OFF)
+            == ActuatorState.OFF
+            and pressure is not None
+        )
+
+        if not qualifying:
+            reason = _filter_loading_nonqualifying_reason(
+                actuator_states=actuator_states,
+                pressure=pressure,
+            )
+            self._reset_session()
+            return FilterLoadingUpdate(
+                result=self._last_result,
+                qualifying=False,
+                reason=reason,
+            )
+
+        if self._qualifying_started_at is None:
+            self._qualifying_started_at = now
+            self._samples = []
+            self._completed_for_session = False
+
+        assert pressure is not None
+        elapsed_s = (now - self._qualifying_started_at).total_seconds()
+        if elapsed_s < self.config.stabilization_seconds:
+            return FilterLoadingUpdate(
+                result=self._last_result,
+                qualifying=True,
+                reason="stabilizing",
+                qualifying_started_at=self._qualifying_started_at,
+            )
+
+        self._samples.append((now, pressure))
+        cutoff = now.timestamp() - self.config.averaging_seconds
+        self._samples = [
+            (sampled_at, value)
+            for sampled_at, value in self._samples
+            if sampled_at.timestamp() >= cutoff
+        ]
+
+        if self._completed_for_session:
+            return FilterLoadingUpdate(
+                result=self._last_result,
+                qualifying=True,
+                reason="completed for current qualifying session",
+                qualifying_started_at=self._qualifying_started_at,
+            )
+
+        if not self._has_sufficient_average(now):
+            return FilterLoadingUpdate(
+                result=self._last_result,
+                qualifying=True,
+                reason="averaging",
+                qualifying_started_at=self._qualifying_started_at,
+            )
+
+        reference_psi = sum(value for _, value in self._samples) / len(self._samples)
+        loading_percent = 100.0 * (
+            (reference_psi - self.config.clean_psi)
+            / (self.config.dirty_psi - self.config.clean_psi)
+        )
+        result = FilterLoadingResult(
+            reference_psi=round(reference_psi, 4),
+            loading_percent=round(loading_percent, 4),
+            display_loading_percent=round(min(max(loading_percent, 0.0), 100.0), 4),
+            completed_at=now,
+            sample_count=len(self._samples),
+            averaging_seconds=self.config.averaging_seconds,
+        )
+        self._last_result = result
+        self._completed_for_session = True
+        return FilterLoadingUpdate(
+            result=result,
+            completed_this_tick=True,
+            qualifying=True,
+            reason="completed",
+            qualifying_started_at=self._qualifying_started_at,
+        )
+
+    def _has_sufficient_average(self, now: datetime) -> bool:
+        if not self._samples:
+            return False
+        first_sampled_at = self._samples[0][0]
+        return (now - first_sampled_at).total_seconds() >= self.config.averaging_seconds
+
+    def _reset_session(self) -> None:
+        self._qualifying_started_at = None
+        self._samples = []
+        self._completed_for_session = False
 
 
 def estimate_flows(
@@ -165,137 +365,53 @@ def estimate_flows(
     measurements: Mapping[SensorId, Measurement],
     actuator_states: Mapping[ActuatorId, ActuatorState],
     config: FlowEstimationConfig = FlowEstimationConfig(),
+    filter_loading: FilterLoadingUpdate | None = None,
 ) -> FlowEstimates:
     pump_flow_gpm: float | None = None
     pump_dynamic_head_psi: float | None = None
-    return_flow_gpm: float | None = None
-    bubbler_flow_gpm: float | None = None
-    booster_flow_gpm: float | None = None
     pump_state = actuator_states.get(ActuatorId.PUMP_MOTOR)
     speed_state = actuator_states.get(ActuatorId.PUMP_MOTOR_SPEED)
-    pump_measurement = measurements.get(SensorId.PUMP_OUTPUT_PSI)
-    pump_pressure = pump_measurement.value if pump_measurement is not None else None
+    pump_pressure = _measurement_value(measurements, SensorId.PUMP_OUTPUT_PSI)
 
     if pump_state != ActuatorState.ON:
-        # With the pump off, all estimated hydraulic flows are defined as zero
-        # even if pressure sensors still report residual static pressure.
         pump_flow_gpm = 0.0
-        return_flow_gpm = 0.0
-        bubbler_flow_gpm = 0.0
-        booster_flow_gpm = 0.0
-    elif isinstance(pump_pressure, int | float):
+    elif pump_pressure is not None:
         model = config.pump_pressure_model
         if speed_state == ActuatorState.LOW:
-            # Pump flow is estimated from pump outlet pressure using the
-            # configured low-speed pump curve constants.
             pump_flow_gpm = _pump_flow_from_pressure(
-                pressure_psi=float(pump_pressure),
+                pressure_psi=pump_pressure,
                 c_no_flow=model.c_no_flow_low,
                 c_dynamic=model.c_dynamic,
                 pressure_scale_psi=model.pressure_scale_psi,
             )
-            # Dynamic head adds a suction-side term to outlet pressure. This is
-            # displayed below pump pressure and logged as a derived signal.
-            pump_dynamic_head_psi = _pump_dynamic_head_from_pressure_and_flow(
-                pump_output_pressure_psi=float(pump_pressure),
-                flow_gpm=pump_flow_gpm,
-                pressure_scale_psi=model.pressure_scale_psi,
-                c_suction=model.c_suction,
-            )
-            return_flow_gpm = _quadratic_flow_from_pressure(
-                pressure_psi=_measurement_value(measurements, SensorId.RETURN_PSI),
-                model=config.return_flow_model,
-            )
-            bubbler_flow_gpm = _quadratic_flow_from_pressure(
-                pressure_psi=_measurement_value(measurements, SensorId.BUBBLER_PSI),
-                model=config.bubbler_flow_model,
-            )
-            booster_flow_gpm = _quadratic_flow_from_pressure(
-                pressure_psi=_measurement_value(measurements, SensorId.BOOSTER_PSI),
-                model=config.booster_flow_model,
-            )
-            return _with_filter_restriction(
-                measurements=measurements,
-                config=config,
-                estimates=FlowEstimates(
-                    pump_flow_gpm=pump_flow_gpm,
-                    pump_dynamic_head_psi=pump_dynamic_head_psi,
-                    pump_flow_low_gpm=pump_flow_gpm,
-                    return_flow_gpm=return_flow_gpm,
-                    bubbler_flow_gpm=bubbler_flow_gpm,
-                    booster_flow_gpm=booster_flow_gpm,
-                ),
-            )
-        if speed_state == ActuatorState.HIGH:
-            # The same equation is used at high speed, but with high-speed
-            # no-flow constants from YAML.
+        elif speed_state == ActuatorState.HIGH:
             pump_flow_gpm = _pump_flow_from_pressure(
-                pressure_psi=float(pump_pressure),
+                pressure_psi=pump_pressure,
                 c_no_flow=model.c_no_flow_high,
                 c_dynamic=model.c_dynamic,
                 pressure_scale_psi=model.pressure_scale_psi,
             )
-            pump_dynamic_head_psi = _pump_dynamic_head_from_pressure_and_flow(
-                pump_output_pressure_psi=float(pump_pressure),
-                flow_gpm=pump_flow_gpm,
-                pressure_scale_psi=model.pressure_scale_psi,
-                c_suction=model.c_suction,
-            )
-            return_flow_gpm = _quadratic_flow_from_pressure(
-                pressure_psi=_measurement_value(measurements, SensorId.RETURN_PSI),
-                model=config.return_flow_model,
-            )
-            bubbler_flow_gpm = _quadratic_flow_from_pressure(
-                pressure_psi=_measurement_value(measurements, SensorId.BUBBLER_PSI),
-                model=config.bubbler_flow_model,
-            )
-            booster_flow_gpm = _quadratic_flow_from_pressure(
-                pressure_psi=_measurement_value(measurements, SensorId.BOOSTER_PSI),
-                model=config.booster_flow_model,
-            )
-            return _with_filter_restriction(
-                measurements=measurements,
-                config=config,
-                estimates=FlowEstimates(
-                    pump_flow_gpm=pump_flow_gpm,
-                    pump_dynamic_head_psi=pump_dynamic_head_psi,
-                    pump_flow_high_gpm=pump_flow_gpm,
-                    return_flow_gpm=return_flow_gpm,
-                    bubbler_flow_gpm=bubbler_flow_gpm,
-                    booster_flow_gpm=booster_flow_gpm,
-                ),
-            )
 
-    if pump_state == ActuatorState.ON:
-        # If pump speed is unknown, branch flows can still be estimated directly
-        # from their own pressure sensors, but pump curve flow is left unknown.
-        return_flow_gpm = _quadratic_flow_from_pressure(
-            pressure_psi=_measurement_value(measurements, SensorId.RETURN_PSI),
-            model=config.return_flow_model,
-        )
-        bubbler_flow_gpm = _quadratic_flow_from_pressure(
-            pressure_psi=_measurement_value(measurements, SensorId.BUBBLER_PSI),
-            model=config.bubbler_flow_model,
-        )
-        booster_flow_gpm = _quadratic_flow_from_pressure(
-            pressure_psi=_measurement_value(measurements, SensorId.BOOSTER_PSI),
-            model=config.booster_flow_model,
-        )
+    pump_dynamic_head_psi = _pump_dynamic_head_from_pressure_and_flow(
+        pump_output_pressure_psi=pump_pressure,
+        flow_gpm=pump_flow_gpm,
+        pressure_scale_psi=config.pump_pressure_model.pressure_scale_psi,
+        c_suction=config.pump_pressure_model.c_suction,
+    )
 
-    return _with_filter_restriction(
-        measurements=measurements,
-        config=config,
-        estimates=FlowEstimates(
-            pump_flow_gpm=pump_flow_gpm,
-            pump_dynamic_head_psi=_pump_dynamic_head_from_pressure_and_flow(
-                pump_output_pressure_psi=pump_pressure,
-                flow_gpm=pump_flow_gpm,
-                pressure_scale_psi=config.pump_pressure_model.pressure_scale_psi,
-                c_suction=config.pump_pressure_model.c_suction,
-            ),
-            return_flow_gpm=return_flow_gpm,
-            bubbler_flow_gpm=bubbler_flow_gpm,
-            booster_flow_gpm=booster_flow_gpm,
+    return FlowEstimates(
+        pump_flow_gpm=pump_flow_gpm,
+        pump_dynamic_head_psi=pump_dynamic_head_psi,
+        pump_flow_low_gpm=(
+            pump_flow_gpm if speed_state == ActuatorState.LOW else None
+        ),
+        pump_flow_high_gpm=(
+            pump_flow_gpm if speed_state == ActuatorState.HIGH else None
+        ),
+        filter_loading=(
+            filter_loading
+            if filter_loading is not None
+            else FilterLoadingUpdate(result=None, reason="not evaluated")
         ),
     )
 
@@ -307,29 +423,10 @@ def _pump_flow_from_pressure(
     c_dynamic: float,
     pressure_scale_psi: float,
 ) -> float:
-    # Rearranged from:
-    #   pressure = pressure_scale_psi * (c_no_flow - c_dynamic * flow^2)
-    # The term becomes negative when measured pressure is above the configured
-    # no-flow pressure, so clamp to zero instead of returning a math error.
     term = c_no_flow - (pressure_psi / pressure_scale_psi)
     if term <= 0:
         return 0.0
     return math.sqrt(term / c_dynamic)
-
-
-def _quadratic_flow_from_pressure(
-    *,
-    pressure_psi: float | None,
-    model: LinearPressureFlowModelConfig,
-) -> float | None:
-    if pressure_psi is None:
-        return None
-    # Branch flows use PRESSURE = A + B * FLOW^2. Values below A imply no
-    # positive flow from this model.
-    term = (pressure_psi - model.a) / model.b
-    if term <= 0:
-        return 0.0
-    return math.sqrt(term)
 
 
 def _pump_dynamic_head_from_pressure_and_flow(
@@ -346,43 +443,25 @@ def _pump_dynamic_head_from_pressure_and_flow(
     return pump_output_pressure_psi + (pressure_scale_psi * c_suction * (flow_gpm ** 2))
 
 
-def _with_filter_restriction(
+def _fresh_good_pressure(
+    measurement: Measurement | None,
     *,
-    measurements: Mapping[SensorId, Measurement],
-    config: FlowEstimationConfig,
-    estimates: FlowEstimates,
-) -> FlowEstimates:
-    flow = estimates.pump_flow_gpm
-    if not isinstance(flow, int | float) or flow <= 0:
-        # Filter restriction is only meaningful with actual flow through the
-        # filter. When flow is zero the GUI should display the filter as inactive.
-        return estimates
-
-    pump_output = _measurement_value(measurements, SensorId.PUMP_OUTPUT_PSI)
-    filter_output = _measurement_value(measurements, SensorId.FILTER_OUTPUT_PSI)
-    if pump_output is None or filter_output is None:
-        return estimates
-
-    # Restriction rises with pressure drop across the filter and is normalized by
-    # flow squared so it can be compared across low/high pump speeds.
-    metric = 10000.0 * (pump_output - filter_output) / (flow ** 2)
-    percent = _restriction_percent(
-        metric=metric,
-        clean_value=config.filter_restriction_clean,
-        dirty_value=config.filter_restriction_dirty,
-    )
-    return FlowEstimates(
-        pump_flow_gpm=estimates.pump_flow_gpm,
-        pump_dynamic_head_psi=estimates.pump_dynamic_head_psi,
-        pump_flow_low_gpm=estimates.pump_flow_low_gpm,
-        pump_flow_high_gpm=estimates.pump_flow_high_gpm,
-        booster_flow_gpm=estimates.booster_flow_gpm,
-        return_flow_gpm=estimates.return_flow_gpm,
-        bubbler_flow_gpm=estimates.bubbler_flow_gpm,
-        cleaner_flow_gpm=estimates.cleaner_flow_gpm,
-        filter_restriction_metric=metric,
-        filter_restriction_percent=percent,
-    )
+    now: datetime,
+    max_age_seconds: float,
+) -> float | None:
+    if measurement is None:
+        return None
+    if measurement.quality != Quality.GOOD:
+        return None
+    age_s = max(0.0, (now - measurement.observed_at).total_seconds())
+    if age_s > max_age_seconds:
+        return None
+    if not isinstance(measurement.value, int | float):
+        return None
+    value = float(measurement.value)
+    if not math.isfinite(value):
+        return None
+    return value
 
 
 def _measurement_value(
@@ -394,21 +473,26 @@ def _measurement_value(
         return None
     if not isinstance(measurement.value, int | float):
         return None
-    return float(measurement.value)
+    value = float(measurement.value)
+    if not math.isfinite(value):
+        return None
+    return value
 
 
-def _restriction_percent(
+def _filter_loading_nonqualifying_reason(
     *,
-    metric: float,
-    clean_value: float,
-    dirty_value: float,
-) -> float:
-    if metric <= clean_value:
-        return 0.0
-    if metric >= dirty_value:
-        return 100.0
-    span = dirty_value - clean_value
-    return 100.0 * ((metric - clean_value) / span)
+    actuator_states: Mapping[ActuatorId, ActuatorState],
+    pressure: float | None,
+) -> str:
+    if actuator_states.get(ActuatorId.PUMP_MOTOR) != ActuatorState.ON:
+        return "pump is off"
+    if actuator_states.get(ActuatorId.PUMP_MOTOR_SPEED) != ActuatorState.HIGH:
+        return "pump is not high speed"
+    if actuator_states.get(ActuatorId.BOOSTER_PUMP, ActuatorState.OFF) != ActuatorState.OFF:
+        return "booster pump is on"
+    if pressure is None:
+        return "fresh pump output pressure unavailable"
+    return "not qualifying"
 
 
 def _flow_payload(value: float | None) -> dict[str, float | str | None]:
@@ -441,31 +525,36 @@ def _pressure_payload(value: float | None) -> dict[str, float | str | None]:
     }
 
 
-def _restriction_metric_payload(value: float | None) -> dict[str, float | str | None]:
-    if value is None:
+def _filter_reference_payload(
+    result: FilterLoadingResult | None,
+) -> dict[str, float | str | None]:
+    if result is None:
         return {
             "value": None,
-            "unit": "restriction_index",
-            "display": "-- R",
+            "unit": "psi",
+            "display": "-- psi",
         }
     return {
-        "value": value,
-        "unit": "restriction_index",
-        "display": f"{value:.2f} R",
+        "value": result.reference_psi,
+        "unit": "psi",
+        "display": f"{result.reference_psi:.1f} psi",
     }
 
 
-def _restriction_percent_payload(value: float | None) -> dict[str, float | str | None]:
-    if value is None:
+def _filter_loading_percent_payload(
+    result: FilterLoadingResult | None,
+) -> dict[str, float | str | None]:
+    if result is None:
         return {
             "value": None,
             "unit": "percent",
             "display": "--%",
         }
     return {
-        "value": value,
+        "value": result.display_loading_percent,
+        "raw_value": result.loading_percent,
         "unit": "percent",
-        "display": f"{value:.0f}%",
+        "display": f"{result.display_loading_percent:.0f}%",
     }
 
 
@@ -488,12 +577,19 @@ def _float_value(data: Mapping[str, Any], key: str, default: float) -> float:
     return float(value)
 
 
-def _linear_model_from_mapping(
+def _bool_value(data: Mapping[str, Any], key: str, default: bool) -> bool:
+    value = data.get(key, default)
+    if not isinstance(value, bool):
+        raise ValueError(f"{key} must be true or false")
+    return value
+
+
+def _sensor_id_value(
     data: Mapping[str, Any],
-    *,
-    default: LinearPressureFlowModelConfig,
-) -> LinearPressureFlowModelConfig:
-    return LinearPressureFlowModelConfig(
-        a=_float_value(data, "a", default.a),
-        b=_float_value(data, "b", default.b),
-    )
+    key: str,
+    default: SensorId,
+) -> SensorId:
+    value = data.get(key, default.value)
+    if not isinstance(value, str):
+        raise ValueError(f"{key} must be a sensor ID string")
+    return SensorId(value)

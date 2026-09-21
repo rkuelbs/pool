@@ -47,9 +47,6 @@ class CommandRouter:
         drivers: Iterable[ActuatorDriver],
         safety_gate: SafetyGate,
         clock: Clock,
-        safety_enabled: bool = True,
-        command_safety_enabled: bool | None = None,
-        chlorine_tank_safety_enabled: bool | None = None,
     ) -> None:
         self._drivers: dict[ActuatorId, ActuatorDriver] = {}
         for driver in drivers:
@@ -60,15 +57,6 @@ class CommandRouter:
 
         self._safety_gate = safety_gate
         self._clock = clock
-        self._safety_enabled = safety_enabled
-        self._command_safety_enabled = (
-            safety_enabled if command_safety_enabled is None else command_safety_enabled
-        )
-        self._chlorine_tank_safety_enabled = (
-            self._command_safety_enabled
-            if chlorine_tank_safety_enabled is None
-            else chlorine_tank_safety_enabled
-        )
         self._state_samples: dict[ActuatorId, ActuatorStateSample] = {}
         self._state_started_at: dict[ActuatorId, datetime] = {}
 
@@ -121,18 +109,11 @@ class CommandRouter:
                 rejection_reason="command is expired",
             )
 
-        if not bypass_safety and (
-            self._command_safety_enabled
-            or self._chlorine_tank_command_check_enabled(command)
-        ):
+        if not bypass_safety:
             # Safety checks use the router's current actuator-state view plus the
             # freshest measurements supplied by the caller.
             snapshot = self._snapshot(measurements, now=now)
-            decision = (
-                self._safety_gate.check_command(command, snapshot)
-                if self._command_safety_enabled
-                else self._safety_gate.check_chlorine_tank_dosing(snapshot)
-            )
+            decision = self._safety_gate.check_command(command, snapshot)
 
             if not decision.accepted:
                 return self._result(
@@ -153,36 +134,12 @@ class CommandRouter:
             metadata=metadata,
         )
 
-    async def enforce_chlorine_tank_safety(
-        self,
-        *,
-        measurements: Iterable[Measurement],
-        suppressed_action_reason_codes: Iterable[str] = (),
-    ) -> list[ActuatorCommandResult]:
-        if not self._chlorine_tank_safety_enabled:
-            return []
-
-        await self._ensure_state_loaded()
-        now = self._clock.now()
-        snapshot = self._snapshot(measurements, now=now)
-        action = self._safety_gate.chlorine_tank_action(snapshot)
-        if action is None:
-            return []
-
-        if action.reason_code in set(suppressed_action_reason_codes):
-            return []
-
-        return [await self._apply_safety_action(action, decided_at=now)]
-
     async def enforce_safety(
         self,
         *,
         measurements: Iterable[Measurement],
         suppressed_action_reason_codes: Iterable[str] = (),
     ) -> list[ActuatorCommandResult]:
-        if not self._safety_enabled:
-            return []
-
         await self._ensure_state_loaded()
         now = self._clock.now()
         snapshot = self._snapshot(measurements, now=now)
@@ -316,13 +273,6 @@ class CommandRouter:
             self._record_state(await driver.read_state())
 
         self._expire_auto_off_states()
-
-    def _chlorine_tank_command_check_enabled(self, command: ActuatorCommand) -> bool:
-        return (
-            self._chlorine_tank_safety_enabled
-            and command.actuator_id == ActuatorId.CHLORINE_DOSING_PUMP
-            and command.state == ActuatorState.ON
-        )
 
     def _snapshot(
         self,

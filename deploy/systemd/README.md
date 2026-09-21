@@ -70,7 +70,7 @@ sudo apt install -y git python3-venv python3-pip sqlite3
 python3 -m venv venv
 source venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install -e ".[raspberrypi,mqtt]"
+python -m pip install -e ".[raspberrypi]"
 
 chmod +x deploy/systemd/install-pi-services.sh
 APP_USER=pool \
@@ -122,7 +122,7 @@ For a code-only update where service templates did not change:
 cd /home/pool/projects/pool
 git pull --ff-only
 source venv/bin/activate
-python -m pip install -e ".[raspberrypi,mqtt]"
+python -m pip install -e ".[raspberrypi]"
 sudo systemctl restart poolctl.service
 ```
 

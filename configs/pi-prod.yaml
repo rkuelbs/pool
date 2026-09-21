@@ -1,11 +1,5 @@
 runtime:
-  stage: open_loop_timer
   driver_profile: raspberry_pi
-  enabled_layers:
-  - pump_timer
-  - logging
-  - acquisition
-  - chlorination
   enabled_actuators:
   - pump_motor
   - pump_motor_speed
@@ -92,34 +86,6 @@ modbus_analog_input:
         value_1: 0
         voltage_2: 4.34
         value_2: 30
-    filter_output_psi:
-      channel: 6
-      calibration:
-        voltage_1: 0.41
-        value_1: 2
-        voltage_2: 4.41
-        value_2: 30
-    return_psi:
-      channel: 7
-      calibration:
-        voltage_1: 0
-        value_1: 0
-        voltage_2: 5
-        value_2: 20
-    bubbler_psi:
-      channel: 8
-      calibration:
-        voltage_1: 0
-        value_1: 0
-        voltage_2: 5
-        value_2: 20
-    booster_psi:
-      channel: 1
-      calibration:
-        voltage_1: 0
-        value_1: 0
-        voltage_2: 5
-        value_2: 80
 flow_estimation:
   pump_pressure:
     pressure_scale_psi: 0.4335
@@ -127,23 +93,19 @@ flow_estimation:
     c_suction: 0.00035
     c_no_flow_low: 23.75
     c_no_flow_high: 95
-  branch_pressure:
-    return_flow:
-      a: 0.0
-      b: 1.0
-    bubbler_flow:
-      a: 0.0
-      b: 1.0
-    booster_flow:
-      a: 0.0
-      b: 1.0
-  filter_restriction:
-    clean_value: 2.0
-    dirty_value: 8.0
+filter_loading:
+  enabled: true
+  pressure_sensor: pump_output_psi
+  clean_psi: 10.0
+  dirty_psi: 25.0
+  stabilization_seconds: 60
+  averaging_seconds: 120
+  max_pressure_age_seconds: 10
 chlorination:
   enabled: true
   daily_dose_oz: 0
   pump_output_oz_per_min: 1.72
+  no_dose_first_minutes: 1.0
   no_dose_last_minutes: 10.0
   max_duty_cycle: 0.5
   cycle_on_seconds: 60.0
@@ -173,8 +135,6 @@ fc_demand:
 safety:
   pressure_sensor_ids:
     pump_output: pump_output_psi
-    return_line: return_psi
-    booster: booster_psi
   freeze_protection:
     enabled: true
     source: temp
@@ -192,39 +152,15 @@ safety:
     inhibit_below_gal: 1.5
     reenable_at_gal: 2.0
   thresholds:
-    chlorine_min_return_psi: 0
     chlorine_min_pump_output_psi: 3
     chlorine_max_pump_output_psi: 3.5
-    chlorine_requires_high_speed: false
-    booster_max_psi: 60
-    booster_min_psi: 30
-    pump_low_prime_min_output_psi: 1
+    pump_prime_min_output_psi: 1
     pump_output_overpressure_psi: 30
-    pump_high_prime_min_output_psi: 5
   timeouts:
-    booster_low_pressure_grace_s: 10
-    pump_low_prime_seconds: 30
-    pump_high_prime_timeout_s: 30
+    pump_prime_timeout_s: 30
 logging:
   database_path: data/pi-prod.sqlite3
   control_measurement_interval_s: 30.0
-mqtt:
-  enabled: false
-  host: 127.0.0.1
-  port: 1883
-  keepalive_s: 30
-  client_id: poolctl-pi
-  topic_prefix: poolctl
-  command_topic: command/set
-  lab_test_topic: lab_test/add
-  publish_live_topic: telemetry/live
-  publish_health_topic: telemetry/health
-  qos: 0
-  retain: false
-  publish_live: true
-  publish_health: true
-  allow_remote_commands: false
-  allow_remote_lab_tests: true
 notifications:
   enabled: false
   provider: pushover
@@ -264,10 +200,6 @@ acquisition:
     pressures:
       sensor_ids:
       - pump_output_psi
-      - filter_output_psi
-      - return_psi
-      - bubbler_psi
-      - booster_psi
       - cpu_temp
       - cpu_load_percent
       - cpu_fan_rpm
@@ -315,26 +247,6 @@ live_view:
       normal_min: 0.0
       normal_max: 25.0
       caution_max: 30.0
-    filter_output_psi:
-      caution_min: 0.0
-      normal_min: 0.0
-      normal_max: 25.0
-      caution_max: 30.0
-    return_psi:
-      caution_min: 0.0
-      normal_min: 0.0
-      normal_max: 18.0
-      caution_max: 25.0
-    bubbler_psi:
-      caution_min: 0.0
-      normal_min: 0.0
-      normal_max: 18.0
-      caution_max: 25.0
-    booster_psi:
-      caution_min: 0.0
-      normal_min: 0.0
-      normal_max: 55.0
-      caution_max: 60.0
     raw_orp:
       caution_min: 400.0
       normal_min: 600.0
@@ -355,11 +267,6 @@ live_view:
       normal_min: 65.0
       normal_max: 90.0
       caution_max: 100.0
-    raw_ph_voltage:
-      caution_min: 0.0
-      normal_min: 0.2
-      normal_max: 4.8
-      caution_max: 5.0
     temp:
       caution_min: 2.0
       normal_min: 18.0
