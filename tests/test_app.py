@@ -305,8 +305,10 @@ async def test_runtime_can_run_pump_timer_without_acquisition() -> None:
     await clock.advance(31.0)
     later_result = await app.tick()
 
-    assert later_result.safety_results == ()
-    assert not app.router.safety_gate.locked_out
+    assert len(later_result.safety_results) == 4
+    assert app.router.safety_gate.active_fault is not None
+    assert app.router.safety_gate.active_fault.code == "loss_of_prime"
+    assert app.router.safety_gate.locked_out
 
     chlorine_result = await app.router.route(
         ActuatorCommand(
@@ -582,10 +584,11 @@ async def test_tick_blocks_open_loop_chlorination_outside_pressure_window_withou
     assert result.chlorination_status is not None
     assert result.chlorination_status.active is False
     assert result.chlorination_status.reason == (
-        "chlorine dosing requires pump output pressure <= 3.5 psi"
+        "chlorine output requires pump output pressure <= 3.5 psi"
     )
     assert app.router.actuator_states[ActuatorId.CHLORINE_DOSING_PUMP] == ActuatorState.OFF
-    assert result.chlorination_results == ()
+    assert len(result.chlorination_results) == 1
+    assert result.chlorination_results[0].accepted is False
     assert app.measurement_logger is not None
     delivery = app.measurement_logger.chlorine_delivery_summary()
     assert delivery.runtime_seconds == 0.0
@@ -634,8 +637,8 @@ async def test_tick_confirms_dosing_flash_off_after_auto_off_expires(
             "cycle_on_seconds": 60.0,
         },
         "safety": {
-            "thresholds": {
-                "chlorine_max_pressure_age_seconds": 2000.0,
+            "timeouts": {
+                "pump_output_max_age_seconds": 2000.0,
             },
         },
     }
@@ -711,8 +714,8 @@ async def test_tick_logs_chlorine_delivery_when_dosing_pulse_finishes(
             "cycle_on_seconds": 60.0,
         },
         "safety": {
-            "thresholds": {
-                "chlorine_max_pressure_age_seconds": 2000.0,
+            "timeouts": {
+                "pump_output_max_age_seconds": 2000.0,
             },
         },
     }
@@ -1075,6 +1078,88 @@ async def test_supplemental_chlorine_dose_blocks_below_tank_reserve(
     assert len(result.chlorination_results) == 1
     assert result.chlorination_results[0].accepted is False
     assert dosing_driver.commands == []
+
+
+@pytest.mark.asyncio
+async def test_supplemental_chlorine_dose_waits_for_pressure_without_consuming_runtime(
+    tmp_path: Path,
+) -> None:
+    clock = make_clock()
+    plant = SimulatedPlant(clock=clock)
+    dosing_driver = PulseAwareDosingActuator(clock)
+    config = {
+        "runtime": {
+            "driver_profile": "simulated",
+            "enabled_actuators": [
+                "pump_motor",
+                "pump_motor_speed",
+                "booster_pump",
+                "chlorine_dosing_pump",
+            ],
+            "enabled_sensor_groups": [],
+        },
+        "logging": {
+            "database_path": str(tmp_path / "supplemental-pressure-recovery.sqlite3"),
+        },
+        "pump_timer": {"timezone": "UTC", "schedules": []},
+        "chlorination": {
+            "enabled": True,
+            "daily_dose_oz": 0.0,
+            "pump_output_oz_per_min": 1.0,
+            "no_dose_first_minutes": 1.0,
+            "no_dose_last_minutes": 10.0,
+            "max_duty_cycle": 0.5,
+            "cycle_on_seconds": 60.0,
+            "min_cycle_on_seconds": 5.0,
+        },
+    }
+    actuator_drivers = [
+        driver
+        for driver in build_default_simulated_actuators(plant)
+        if driver.actuator_id != ActuatorId.CHLORINE_DOSING_PUMP
+    ]
+    actuator_drivers.append(dosing_driver)
+    add_dosing_pressure_acquisition(config)
+    app = build_app_from_mapping(
+        config,
+        clock=clock,
+        actuator_drivers=actuator_drivers,
+        sensor_drivers=[],
+    )
+    seed_chlorine_tank_level(app, clock)
+
+    app.start_supplemental_chlorine_dose(dose_oz=1.0)
+    first = await app.tick()
+    await clock.advance(30.0)
+    second = await app.tick()
+
+    assert first.chlorination_results[0].accepted is False
+    assert second.chlorination_results[0].accepted is False
+    assert dosing_driver.commands == []
+    waiting_status = app.supplemental_chlorine_dose_status()
+    assert waiting_status["phase"] == "preparing"
+    assert waiting_status["delivered_runtime_s"] == 0.0
+    assert waiting_status["remaining_pump_runtime_s"] == 60.0
+    assert app.router.actuator_states[ActuatorId.PUMP_MOTOR] == ActuatorState.ON
+
+    await clock.advance(31.0)
+    seed_dosing_pressure(app, clock)
+    recovered = await app.tick()
+    await clock.advance(60.1)
+    completed = await app.tick()
+
+    assert recovered.chlorination_results[0].applied is True
+    assert dosing_driver.commands[0].state == ActuatorState.ON
+    assert dosing_driver.commands[0].metadata[ACTUATOR_ON_PULSE_SECONDS_METADATA] == 60.0
+    assert completed.logged_chlorine_delivery_count == 1
+    assert app.measurement_logger is not None
+    summary = app.measurement_logger.chlorine_delivery_summary()
+    assert round(summary.runtime_seconds, 3) == 60.0
+    assert round(summary.delivered_oz, 3) == 1.0
+    status = app.supplemental_chlorine_dose_status()
+    assert status["phase"] == "circulating"
+    assert status["delivered_runtime_s"] == 60.0
+    assert status["remaining_pump_runtime_s"] == 0.0
 
 
 @pytest.mark.asyncio

@@ -6,18 +6,24 @@
 pump_timer:
   timezone: America/Chicago
   schedules:
-    - name: morning_filter
+    - name: morning_dosing
       start: "08:00"
       end: "12:00"
       pump_speed: low
       booster: off
       allow_dosing: true
-    - name: afternoon_filter
+    - name: afternoon_circulation
       start: "13:00"
       end: "16:00"
       pump_speed: low
       booster: off
       allow_dosing: true
+    - name: morning_hydraulic_check
+      start: "07:00"
+      end: "07:10"
+      pump_speed: high
+      booster: off
+      allow_dosing: false
     - name: night_cleaning
       start: "22:00"
       end: "23:30"
@@ -64,14 +70,18 @@ fc_demand:
 #   thresholds:
 #     chlorine_min_pump_output_psi: 3.0
 #     chlorine_max_pump_output_psi: 3.5
+#   timeouts:
+#     pump_output_max_age_seconds: 10
 
 # Optional site-specific filter loading calibration. Schedule a normal HIGH-speed,
 # booster-off pump period long enough to cover stabilization plus averaging.
+# After cleaning the filter, use the completed standardized estimated flow as
+# clean_flow_gpm. Leave it null until that calibration is known.
 # filter_loading:
 #   enabled: true
-#   pressure_sensor: pump_output_psi
-#   clean_psi: 10.0
-#   dirty_psi: 25.0
+#   clean_flow_gpm: null
+#   yellow_flow_loss_percent: 10.0
+#   red_flow_loss_percent: 15.0
 #   stabilization_seconds: 60
 #   averaging_seconds: 120
 #   max_pressure_age_seconds: 10

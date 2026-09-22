@@ -445,6 +445,14 @@ h2 {
   min-height: 16px;
 }
 
+.config-note {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  margin: 8px 0 0;
+  max-width: 760px;
+}
+
 .sensor-checklist {
   display: grid;
   gap: 6px;

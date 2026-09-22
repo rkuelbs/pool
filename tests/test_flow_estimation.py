@@ -20,6 +20,8 @@ from poolctl.services.flow_estimation import (
     FilterLoadingConfig,
     FilterLoadingEstimator,
     FlowEstimationConfig,
+    PumpPressureFlowModelConfig,
+    estimate_pump_flow_from_pressure,
     estimate_flows,
 )
 
@@ -57,7 +59,8 @@ def test_flow_estimation_returns_zero_when_pump_is_off() -> None:
     assert payload["pump_flow_gpm"]["value"] == 0.0
     assert payload["pump_dynamic_head_psi"]["value"] == 0.0
     assert payload["filter_reference_psi"]["value"] is None
-    assert payload["filter_loading_percent"]["value"] is None
+    assert payload["filter_reference_flow_gpm"]["value"] is None
+    assert payload["filter_flow_loss_percent"]["value"] is None
 
 
 def test_flow_estimation_uses_high_speed_pressure_model() -> None:
@@ -170,8 +173,7 @@ def test_filter_loading_stabilizes_averages_and_latches_result() -> None:
     start = datetime(2026, 5, 21, 7, 0, tzinfo=timezone.utc)
     estimator = FilterLoadingEstimator(
         FilterLoadingConfig(
-            clean_psi=10.0,
-            dirty_psi=20.0,
+            clean_flow_gpm=100.0,
             stabilization_seconds=60,
             averaging_seconds=120,
         )
@@ -218,18 +220,27 @@ def test_filter_loading_stabilizes_averages_and_latches_result() -> None:
     assert complete.completed_this_tick is True
     assert complete.result is not None
     assert complete.result.reference_psi == 17.0
-    assert complete.result.loading_percent == 70.0
-    assert complete.result.display_loading_percent == 70.0
+    assert complete.result.estimated_flow_gpm == round(
+        estimate_pump_flow_from_pressure(
+            pressure_psi=17.0,
+            speed=ActuatorState.HIGH,
+            model=PumpPressureFlowModelConfig(),
+        ),
+        4,
+    )
+    assert complete.result.raw_flow_loss_percent is not None
+    assert complete.result.flow_loss_percent == max(
+        0.0,
+        round(complete.result.raw_flow_loss_percent, 4),
+    )
     assert latched.result == complete.result
     assert latched.reason == "pump is not high speed"
 
 
-def test_filter_loading_display_percent_clamps_without_losing_reference() -> None:
+def test_filter_loading_uncalibrated_completes_without_flow_loss() -> None:
     now = datetime(2026, 5, 21, 7, 0, tzinfo=timezone.utc)
     estimator = FilterLoadingEstimator(
         FilterLoadingConfig(
-            clean_psi=10.0,
-            dirty_psi=20.0,
             stabilization_seconds=0,
             averaging_seconds=1,
         )
@@ -253,10 +264,102 @@ def test_filter_loading_display_percent_clamps_without_losing_reference() -> Non
 
     assert update.result is not None
     assert update.result.reference_psi == 25.0
-    assert update.result.loading_percent == 150.0
-    assert update.result.display_loading_percent == 100.0
+    assert update.result.estimated_flow_gpm is not None
+    assert update.result.clean_flow_gpm is None
+    assert update.result.raw_flow_loss_percent is None
+    assert update.result.flow_loss_percent is None
+    assert update.result.status == "uncalibrated"
 
 
-def test_filter_loading_config_requires_dirty_greater_than_clean() -> None:
+def test_filter_loading_retains_negative_raw_loss_and_clamps_display() -> None:
+    now = datetime(2026, 5, 21, 7, 0, tzinfo=timezone.utc)
+    estimator = FilterLoadingEstimator(
+        FilterLoadingConfig(
+            clean_flow_gpm=50.0,
+            stabilization_seconds=0,
+            averaging_seconds=1,
+        )
+    )
+
+    estimator.update(
+        now=now,
+        measurements={SensorId.PUMP_OUTPUT_PSI: _pressure(10.0, observed_at=now)},
+        actuator_states=_states(),
+    )
+    update = estimator.update(
+        now=now + timedelta(seconds=1),
+        measurements={
+            SensorId.PUMP_OUTPUT_PSI: _pressure(
+                10.0,
+                observed_at=now + timedelta(seconds=1),
+            )
+        },
+        actuator_states=_states(),
+    )
+
+    assert update.result is not None
+    assert update.result.raw_flow_loss_percent is not None
+    assert update.result.raw_flow_loss_percent < 0.0
+    assert update.result.flow_loss_percent == 0.0
+    assert update.result.status == "green"
+
+
+def test_filter_loading_status_thresholds_and_config_recompute() -> None:
+    now = datetime(2026, 5, 21, 7, 0, tzinfo=timezone.utc)
+    model = PumpPressureFlowModelConfig()
+    reference_flow = estimate_pump_flow_from_pressure(
+        pressure_psi=17.0,
+        speed=ActuatorState.HIGH,
+        model=model,
+    )
+    assert reference_flow is not None
+    estimator = FilterLoadingEstimator(
+        FilterLoadingConfig(
+            clean_flow_gpm=reference_flow / 0.88,
+            yellow_flow_loss_percent=10.0,
+            red_flow_loss_percent=15.0,
+            stabilization_seconds=0,
+            averaging_seconds=1,
+        )
+    )
+
+    estimator.update(
+        now=now,
+        measurements={SensorId.PUMP_OUTPUT_PSI: _pressure(17.0, observed_at=now)},
+        actuator_states=_states(),
+    )
+    update = estimator.update(
+        now=now + timedelta(seconds=1),
+        measurements={
+            SensorId.PUMP_OUTPUT_PSI: _pressure(
+                17.0,
+                observed_at=now + timedelta(seconds=1),
+            )
+        },
+        actuator_states=_states(),
+    )
+
+    assert update.result is not None
+    assert update.result.status == "yellow"
+
+    estimator.apply_config(
+        FilterLoadingConfig(
+            clean_flow_gpm=reference_flow / 0.80,
+            yellow_flow_loss_percent=10.0,
+            red_flow_loss_percent=15.0,
+            stabilization_seconds=30,
+            averaging_seconds=300,
+        )
+    )
+
+    recomputed = estimator.last_result
+    assert recomputed is not None
+    assert recomputed.reference_psi == update.result.reference_psi
+    assert recomputed.status == "red"
+
+
+def test_filter_loading_config_validates_flow_loss_calibration() -> None:
     with pytest.raises(ValueError):
-        FilterLoadingConfig(clean_psi=12.0, dirty_psi=12.0)
+        FilterLoadingConfig(clean_flow_gpm=0.0)
+    with pytest.raises(ValueError):
+        FilterLoadingConfig(yellow_flow_loss_percent=15.0, red_flow_loss_percent=15.0)

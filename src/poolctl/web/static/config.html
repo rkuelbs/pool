@@ -160,6 +160,7 @@
           <label>Tank re-enable gal <input id="safetyChlorineTankReenableGal" type="number" step="0.1" min="0"></label>
           <label>Pump prime min psi <input id="safetyPrimeMin" type="number" step="0.1"></label>
           <label>Pump overpressure psi <input id="safetyOverpressure" type="number" step="0.1"></label>
+          <label>Pump output max age s <input id="safetyPumpOutputMaxAge" type="number" step="0.1" min="0"></label>
           <label>Pump prime timeout s <input id="safetyPrimeTimeout" type="number" step="0.1"></label>
         </div>
         <div class="timer-actions">
@@ -201,15 +202,18 @@
         </div>
         <div class="config-grid">
           <label><span>Enabled</span><input id="filterLoadingEnabled" type="checkbox"></label>
-          <label>Pressure sensor
-            <select id="filterLoadingPressureSensor"></select>
-          </label>
-          <label>Clean psi <input id="filterLoadingCleanPsi" type="number" step="0.1"></label>
-          <label>Dirty psi <input id="filterLoadingDirtyPsi" type="number" step="0.1"></label>
+          <label>Clean standardized flow, GPM <input id="filterLoadingCleanFlowGpm" type="number" step="0.1" min="0.1" placeholder="blank = uncalibrated"></label>
+          <label>Yellow flow-loss threshold, % <input id="filterLoadingYellowFlowLossPercent" type="number" step="0.1" min="0"></label>
+          <label>Red flow-loss threshold, % <input id="filterLoadingRedFlowLossPercent" type="number" step="0.1" min="0"></label>
           <label>Stabilization s <input id="filterLoadingStabilizationSeconds" type="number" step="1" min="0"></label>
           <label>Averaging s <input id="filterLoadingAveragingSeconds" type="number" step="1" min="1"></label>
           <label>Max pressure age s <input id="filterLoadingMaxPressureAgeSeconds" type="number" step="1" min="0"></label>
         </div>
+        <p class="config-note">
+          Run the pump HIGH with booster OFF and normal valve positions. After
+          stabilization, use the standardized estimated flow after cleaning the
+          filter as Qclean. Software does not schedule this test.
+        </p>
         <div class="timer-actions">
           <button id="filterLoadingSave" type="button">Save Filter Loading</button>
         </div>
@@ -384,6 +388,14 @@
           <label>Warning above mV <input id="notifyOrpWarningAbove" type="number" step="1"></label>
           <label>Caution repeat min <input id="notifyOrpCautionRepeat" type="number" step="1" min="1"></label>
           <label>Warning repeat min <input id="notifyOrpWarningRepeat" type="number" step="1" min="1"></label>
+        </div>
+        <div class="history-header">
+          <h2>Filter Alert</h2>
+        </div>
+        <div class="config-grid">
+          <label><span>Enabled</span><input id="notifyFilterAlertEnabled" type="checkbox"></label>
+          <label>Warning above % <input id="notifyFilterWarningAbove" type="number" step="0.1" min="0"></label>
+          <label>Warning repeat min <input id="notifyFilterWarningRepeat" type="number" step="1" min="1"></label>
         </div>
         <div class="timer-actions">
           <button id="notificationsSave" type="button">Save Notifications</button>

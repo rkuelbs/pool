@@ -197,6 +197,12 @@ class NotificationAlertConfig:
             warning_above=900.0,
         )
     )
+    filter_flow_loss: SignalNotificationConfig = field(
+        default_factory=lambda: SignalNotificationConfig(
+            warning_above=15.0,
+            warning_repeat_minutes=1440.0,
+        )
+    )
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> NotificationAlertConfig:
@@ -214,6 +220,10 @@ class NotificationAlertConfig:
                 _mapping_value(data, "orp", default={}),
                 default=defaults.orp,
             ),
+            filter_flow_loss=SignalNotificationConfig.from_mapping(
+                _mapping_value(data, "filter_flow_loss", default={}),
+                default=defaults.filter_flow_loss,
+            ),
         )
 
     def as_payload(self) -> dict[str, Any]:
@@ -221,6 +231,7 @@ class NotificationAlertConfig:
             "chlorine_tank": self.chlorine_tank.as_payload(),
             "ph": self.ph.as_payload(),
             "orp": self.orp.as_payload(),
+            "filter_flow_loss": self.filter_flow_loss.as_payload(),
         }
 
 
@@ -294,6 +305,8 @@ class NotificationAlert:
                 f"{gallons_text} is {relation} the {self.severity.value} "
                 f"threshold ({threshold})"
             )
+        if self.signal_key == "filter_flow_loss":
+            return f"Clean filter soon: estimated standardized flow loss is {value}."
         return (
             f"{self.label} {self.severity.value}: {value} is {relation} "
             f"the {self.severity.value} threshold ({threshold})"
@@ -436,6 +449,12 @@ def evaluate_notification_alerts(
         ),
         ("ph", "pH", SensorId.RAW_PH, config.ph),
         ("orp", "ORP", SensorId.RAW_ORP, config.orp),
+        (
+            "filter_flow_loss",
+            "Filter flow loss",
+            SensorId.FILTER_FLOW_LOSS_PERCENT,
+            config.filter_flow_loss,
+        ),
     )
     for signal_key, label, sensor_id, signal_config in specs:
         measurement = measurements.get(sensor_id)
@@ -549,6 +568,8 @@ def _display_value(value: float, unit: str) -> str:
         return f"{value:.2f} gal"
     if unit == "days":
         return f"{value:.1f} days"
+    if unit == "percent":
+        return f"{value:.1f}%"
     return f"{value:g} {unit}"
 
 

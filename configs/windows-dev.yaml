@@ -86,6 +86,7 @@ safety:
     pump_prime_min_output_psi: 1
     pump_output_overpressure_psi: 30
   timeouts:
+    pump_output_max_age_seconds: 10
     pump_prime_timeout_s: 30
 logging:
   database_path: data\windows-dev.sqlite3
@@ -124,6 +125,10 @@ notifications:
       warning_above: 900.0
       caution_repeat_minutes: 1440.0
       warning_repeat_minutes: 240.0
+    filter_flow_loss:
+      enabled: false
+      warning_above: 15.0
+      warning_repeat_minutes: 1440.0
 acquisition:
   groups:
     pressures:
@@ -256,9 +261,9 @@ flow_estimation:
     c_no_flow_high: 93.5
 filter_loading:
   enabled: true
-  pressure_sensor: pump_output_psi
-  clean_psi: 10.0
-  dirty_psi: 25.0
+  clean_flow_gpm: null
+  yellow_flow_loss_percent: 10.0
+  red_flow_loss_percent: 15.0
   stabilization_seconds: 60
   averaging_seconds: 120
   max_pressure_age_seconds: 10

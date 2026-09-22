@@ -141,8 +141,9 @@ class FcDemandConfig:
                 "minimum_test_interval_hours",
                 cls.minimum_test_interval_hours,
             ),
-            max_observation_interval_days=_legacy_observation_interval_days(
+            max_observation_interval_days=_float_value(
                 config_data,
+                "max_observation_interval_days",
                 cls.max_observation_interval_days,
             ),
             preferred_test_start_hour=_int_value(
@@ -203,12 +204,6 @@ class FcDemandObservationQuality(str, Enum):
     VALID = "valid"
     SUSPECT = "suspect"
     REJECTED = "rejected"
-
-
-@dataclass(frozen=True)
-class FcTestPoint:
-    sampled_at: datetime
-    free_chlorine: float
 
 
 @dataclass(frozen=True)
@@ -539,28 +534,16 @@ def estimate_fc_demand_plan(
     now: datetime,
     pump_timer_config: PumpTimerConfig,
     chlorination_config: ChlorinationConfig,
-    fc_tests: Sequence[FcTestPoint] = (),
-    fc_observations: Sequence[FcObservation] | None = None,
+    fc_observations: Sequence[FcObservation] = (),
     automated_chlorine_deliveries: Sequence[ChlorineDeliveryPoint] = (),
     sodium_hypochlorite_additions: Sequence[ChemicalAddition] = (),
-    automated_chlorine_oz: float | None = None,
 ) -> FcDemandPlan:
     all_fc_observations = tuple(
         observation
-        for observation in _fc_observations_for_plan(
-            config=config,
-            fc_tests=fc_tests,
-            fc_observations=fc_observations,
-            timezone_name=pump_timer_config.timezone,
-        )
+        for observation in _clean_fc_observations(fc_observations)
         if observation.sampled_at <= now
     )
     reference_fc_observations = _reference_fc_observations(all_fc_observations)
-    if automated_chlorine_oz is not None and not automated_chlorine_deliveries:
-        automated_chlorine_deliveries = _legacy_delivery_points(
-            reference_fc_observations,
-            automated_chlorine_oz,
-        )
 
     latest_fc_observation = all_fc_observations[-1] if all_fc_observations else None
     latest_reference_observation = (
@@ -805,18 +788,12 @@ def estimate_fc_demand_plan(
 def fc_demand_observations(
     *,
     config: FcDemandConfig,
-    fc_tests: Sequence[FcTestPoint] = (),
-    fc_observations: Sequence[FcObservation] | None = None,
+    fc_observations: Sequence[FcObservation] = (),
     automated_chlorine_deliveries: Sequence[ChlorineDeliveryPoint] = (),
     sodium_hypochlorite_additions: Sequence[ChemicalAddition] = (),
 ) -> tuple[FcDemandObservation, ...]:
     clean_observations = _reference_fc_observations(
-        _fc_observations_for_plan(
-            config=config,
-            fc_tests=fc_tests,
-            fc_observations=fc_observations,
-            timezone_name="UTC",
-        )
+        _clean_fc_observations(fc_observations)
     )
     observations: list[FcDemandObservation] = []
 
@@ -972,25 +949,6 @@ def fc_observations_from_lab_tests(
     )
 
 
-def manual_dpd_fc_observations(
-    *,
-    config: FcDemandConfig,
-    fc_tests: Sequence[FcTestPoint],
-    timezone_name: str,
-) -> tuple[FcObservation, ...]:
-    return _clean_fc_observations(
-        tuple(
-            _manual_dpd_fc_observation(
-                config=config,
-                sampled_at=test.sampled_at,
-                free_chlorine=test.free_chlorine,
-                timezone_name=timezone_name,
-            )
-            for test in fc_tests
-        )
-    )
-
-
 def _manual_dpd_fc_observation(
     *,
     config: FcDemandConfig,
@@ -1013,22 +971,6 @@ def _manual_dpd_fc_observation(
         ),
         source_id=source_id,
         metadata=dict(metadata or {}),
-    )
-
-
-def _fc_observations_for_plan(
-    *,
-    config: FcDemandConfig,
-    fc_tests: Sequence[FcTestPoint],
-    fc_observations: Sequence[FcObservation] | None,
-    timezone_name: str,
-) -> tuple[FcObservation, ...]:
-    if fc_observations is not None:
-        return _clean_fc_observations(fc_observations)
-    return manual_dpd_fc_observations(
-        config=config,
-        fc_tests=fc_tests,
-        timezone_name=timezone_name,
     )
 
 
@@ -1090,22 +1032,6 @@ def _fc_observation_timing(
         FcObservationTiming.REFERENCE
         if is_reference
         else FcObservationTiming.AD_HOC
-    )
-
-
-def _clean_fc_tests(fc_tests: Sequence[FcTestPoint]) -> tuple[FcTestPoint, ...]:
-    return tuple(
-        sorted(
-            (
-                FcTestPoint(
-                    sampled_at=test.sampled_at,
-                    free_chlorine=float(test.free_chlorine),
-                )
-                for test in fc_tests
-                if test.free_chlorine >= 0
-            ),
-            key=lambda item: item.sampled_at,
-        )
     )
 
 
@@ -1285,20 +1211,6 @@ def _manual_hypo_between(
         for addition in additions
         if addition.chemical == ChemicalType.SODIUM_HYPOCHLORITE
         and start < addition.added_at <= end
-    )
-
-
-def _legacy_delivery_points(
-    clean_tests: Sequence[FcObservation],
-    automated_chlorine_oz: float,
-) -> tuple[ChlorineDeliveryPoint, ...]:
-    if len(clean_tests) < 2 or automated_chlorine_oz <= 0:
-        return ()
-    return (
-        ChlorineDeliveryPoint(
-            observed_at=clean_tests[-1].sampled_at,
-            delivered_oz=automated_chlorine_oz,
-        ),
     )
 
 
@@ -1604,19 +1516,6 @@ def _float_tuple_value(
             raise ValueError(f"{key} entries must be numbers")
         result.append(float(item))
     return tuple(result)
-
-
-def _legacy_observation_interval_days(
-    data: Mapping[str, Any],
-    default: float,
-) -> float:
-    if "max_observation_interval_days" in data:
-        return _float_value(data, "max_observation_interval_days", default)
-    if "demand_window_days" in data:
-        return _float_value(data, "demand_window_days", default)
-    if "max_demand_window_days" in data:
-        return _float_value(data, "max_demand_window_days", default)
-    return default
 
 
 def _control_mode_value(

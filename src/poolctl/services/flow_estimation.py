@@ -2,10 +2,11 @@
 Derived hydraulic calculations.
 
 Pump flow estimates use the pump-output pressure sensor and configured pump
-curve constants. Filter loading is a standardized pressure proxy: during an
+curve constants. Filter loading is a standardized flow-loss proxy: during an
 uninterrupted pump-HIGH, booster-OFF test period, the estimator ignores startup
-samples, averages fresh pump-output pressure, and latches the last completed
-reference pressure until the next valid test.
+samples, averages fresh pump-output pressure, converts that reference pressure
+through the same hydraulic model used for live flow, and latches the completed
+result until the next valid test.
 """
 
 from __future__ import annotations
@@ -45,16 +46,22 @@ class PumpPressureFlowModelConfig:
 @dataclass(frozen=True)
 class FilterLoadingConfig:
     enabled: bool = True
-    pressure_sensor: SensorId = SensorId.PUMP_OUTPUT_PSI
-    clean_psi: float = 10.0
-    dirty_psi: float = 25.0
+    clean_flow_gpm: float | None = None
+    yellow_flow_loss_percent: float = 10.0
+    red_flow_loss_percent: float = 15.0
     stabilization_seconds: float = 60.0
     averaging_seconds: float = 120.0
     max_pressure_age_seconds: float = 10.0
 
     def __post_init__(self) -> None:
-        if self.dirty_psi <= self.clean_psi:
-            raise ValueError("filter_loading.dirty_psi must be greater than clean_psi")
+        if self.clean_flow_gpm is not None and self.clean_flow_gpm <= 0:
+            raise ValueError("filter_loading.clean_flow_gpm must be null or > 0")
+        if self.yellow_flow_loss_percent < 0:
+            raise ValueError("filter_loading.yellow_flow_loss_percent must be >= 0")
+        if self.red_flow_loss_percent <= self.yellow_flow_loss_percent:
+            raise ValueError(
+                "filter_loading.red_flow_loss_percent must be greater than yellow_flow_loss_percent"
+            )
         if self.stabilization_seconds < 0:
             raise ValueError("filter_loading.stabilization_seconds must be >= 0")
         if self.averaging_seconds <= 0:
@@ -67,9 +74,17 @@ class FilterLoadingConfig:
         section = _mapping_value(data, "filter_loading", default={})
         return cls(
             enabled=_bool_value(section, "enabled", cls.enabled),
-            pressure_sensor=_sensor_id_value(section, "pressure_sensor", cls.pressure_sensor),
-            clean_psi=_float_value(section, "clean_psi", cls.clean_psi),
-            dirty_psi=_float_value(section, "dirty_psi", cls.dirty_psi),
+            clean_flow_gpm=_optional_float_value(section, "clean_flow_gpm"),
+            yellow_flow_loss_percent=_float_value(
+                section,
+                "yellow_flow_loss_percent",
+                cls.yellow_flow_loss_percent,
+            ),
+            red_flow_loss_percent=_float_value(
+                section,
+                "red_flow_loss_percent",
+                cls.red_flow_loss_percent,
+            ),
             stabilization_seconds=_float_value(
                 section,
                 "stabilization_seconds",
@@ -136,11 +151,20 @@ class FlowEstimationConfig:
 @dataclass(frozen=True)
 class FilterLoadingResult:
     reference_psi: float
-    loading_percent: float
-    display_loading_percent: float
+    estimated_flow_gpm: float
+    clean_flow_gpm: float | None
+    raw_flow_loss_percent: float | None
+    flow_loss_percent: float | None
+    status: str
     completed_at: datetime
     sample_count: int
     averaging_seconds: float
+    yellow_flow_loss_percent: float
+    red_flow_loss_percent: float
+
+    @property
+    def calibrated(self) -> bool:
+        return self.clean_flow_gpm is not None and self.raw_flow_loss_percent is not None
 
     def as_payload(self, *, now: datetime | None = None) -> dict[str, Any]:
         age_seconds = (
@@ -150,18 +174,35 @@ class FilterLoadingResult:
         )
         return {
             "available": True,
+            "calibrated": self.calibrated,
             "reference_psi": self.reference_psi,
             "filter_reference_psi": self.reference_psi,
-            "loading_percent": self.loading_percent,
-            "display_loading_percent": self.display_loading_percent,
-            "filter_loading_percent": self.display_loading_percent,
+            "estimated_flow_gpm": self.estimated_flow_gpm,
+            "filter_reference_flow_gpm": self.estimated_flow_gpm,
+            "clean_flow_gpm": self.clean_flow_gpm,
+            "raw_flow_loss_percent": self.raw_flow_loss_percent,
+            "flow_loss_percent": self.flow_loss_percent,
+            "filter_flow_loss_percent": self.flow_loss_percent,
+            "status": self.status,
             "completed_at": self.completed_at.isoformat(),
             "last_completed_at": self.completed_at.isoformat(),
             "age_seconds": age_seconds,
             "sample_count": self.sample_count,
             "averaging_seconds": self.averaging_seconds,
+            "yellow_flow_loss_percent": self.yellow_flow_loss_percent,
+            "red_flow_loss_percent": self.red_flow_loss_percent,
             "reference_display": f"{self.reference_psi:.1f} psi",
-            "loading_display": f"{self.display_loading_percent:.0f}%",
+            "estimated_flow_display": f"{self.estimated_flow_gpm:.1f} gpm",
+            "clean_flow_display": (
+                f"{self.clean_flow_gpm:.1f} gpm"
+                if self.clean_flow_gpm is not None
+                else "Not calibrated"
+            ),
+            "flow_loss_display": (
+                f"{self.flow_loss_percent:.1f}%"
+                if self.flow_loss_percent is not None
+                else "--"
+            ),
         }
 
 
@@ -179,18 +220,27 @@ class FilterLoadingUpdate:
             if self.result is not None
             else {
                 "available": False,
+                "calibrated": False,
                 "reference_psi": None,
                 "filter_reference_psi": None,
-                "loading_percent": None,
-                "display_loading_percent": None,
-                "filter_loading_percent": None,
+                "estimated_flow_gpm": None,
+                "filter_reference_flow_gpm": None,
+                "clean_flow_gpm": None,
+                "raw_flow_loss_percent": None,
+                "flow_loss_percent": None,
+                "filter_flow_loss_percent": None,
+                "status": "uncalibrated",
                 "completed_at": None,
                 "last_completed_at": None,
                 "age_seconds": None,
                 "sample_count": 0,
                 "averaging_seconds": None,
+                "yellow_flow_loss_percent": None,
+                "red_flow_loss_percent": None,
                 "reference_display": "-- psi",
-                "loading_display": "--%",
+                "estimated_flow_display": "-- gpm",
+                "clean_flow_display": "Not calibrated",
+                "flow_loss_display": "--",
             }
         )
         return {
@@ -225,7 +275,10 @@ class FlowEstimates:
             "filter_reference_psi": _filter_reference_payload(
                 self.filter_loading.result
             ),
-            "filter_loading_percent": _filter_loading_percent_payload(
+            "filter_reference_flow_gpm": _filter_reference_flow_payload(
+                self.filter_loading.result
+            ),
+            "filter_flow_loss_percent": _filter_flow_loss_percent_payload(
                 self.filter_loading.result
             ),
             "filter_loading": self.filter_loading.as_payload(),
@@ -233,8 +286,14 @@ class FlowEstimates:
 
 
 class FilterLoadingEstimator:
-    def __init__(self, config: FilterLoadingConfig) -> None:
+    def __init__(
+        self,
+        config: FilterLoadingConfig,
+        *,
+        pump_pressure_model: PumpPressureFlowModelConfig = PumpPressureFlowModelConfig(),
+    ) -> None:
         self.config = config
+        self.pump_pressure_model = pump_pressure_model
         self._qualifying_started_at: datetime | None = None
         self._samples: list[tuple[datetime, float]] = []
         self._completed_for_session = False
@@ -244,10 +303,17 @@ class FilterLoadingEstimator:
     def last_result(self) -> FilterLoadingResult | None:
         return self._last_result
 
-    def apply_config(self, config: FilterLoadingConfig) -> None:
+    def apply_config(
+        self,
+        config: FilterLoadingConfig,
+        *,
+        pump_pressure_model: PumpPressureFlowModelConfig | None = None,
+    ) -> None:
         self.config = config
+        if pump_pressure_model is not None:
+            self.pump_pressure_model = pump_pressure_model
         self._reset_session()
-        self._last_result = None
+        self._last_result = self._recompute_result(self._last_result)
 
     def update(
         self,
@@ -260,7 +326,7 @@ class FilterLoadingEstimator:
             self._reset_session()
             return FilterLoadingUpdate(result=self._last_result, reason="disabled")
 
-        measurement = measurements.get(self.config.pressure_sensor)
+        measurement = measurements.get(SensorId.PUMP_OUTPUT_PSI)
         pressure = _fresh_good_pressure(
             measurement,
             now=now,
@@ -326,14 +392,8 @@ class FilterLoadingEstimator:
             )
 
         reference_psi = sum(value for _, value in self._samples) / len(self._samples)
-        loading_percent = 100.0 * (
-            (reference_psi - self.config.clean_psi)
-            / (self.config.dirty_psi - self.config.clean_psi)
-        )
-        result = FilterLoadingResult(
-            reference_psi=round(reference_psi, 4),
-            loading_percent=round(loading_percent, 4),
-            display_loading_percent=round(min(max(loading_percent, 0.0), 100.0), 4),
+        result = self._build_result(
+            reference_psi=reference_psi,
             completed_at=now,
             sample_count=len(self._samples),
             averaging_seconds=self.config.averaging_seconds,
@@ -353,6 +413,74 @@ class FilterLoadingEstimator:
             return False
         first_sampled_at = self._samples[0][0]
         return (now - first_sampled_at).total_seconds() >= self.config.averaging_seconds
+
+    def _build_result(
+        self,
+        *,
+        reference_psi: float,
+        completed_at: datetime,
+        sample_count: int,
+        averaging_seconds: float,
+    ) -> FilterLoadingResult:
+        estimated_flow_gpm = estimate_pump_flow_from_pressure(
+            pressure_psi=reference_psi,
+            speed=ActuatorState.HIGH,
+            model=self.pump_pressure_model,
+        )
+        if estimated_flow_gpm is None:
+            raise ValueError("filter loading requires a high-speed pump flow estimate")
+        raw_flow_loss_percent: float | None = None
+        flow_loss_percent: float | None = None
+        status = "uncalibrated"
+        if self.config.clean_flow_gpm is not None:
+            raw_flow_loss_percent = 100.0 * (
+                1.0 - (estimated_flow_gpm / self.config.clean_flow_gpm)
+            )
+            flow_loss_percent = min(max(raw_flow_loss_percent, 0.0), 100.0)
+            status = filter_flow_loss_status(
+                raw_flow_loss_percent,
+                yellow_flow_loss_percent=self.config.yellow_flow_loss_percent,
+                red_flow_loss_percent=self.config.red_flow_loss_percent,
+            )
+
+        return FilterLoadingResult(
+            reference_psi=round(reference_psi, 4),
+            estimated_flow_gpm=round(estimated_flow_gpm, 4),
+            clean_flow_gpm=(
+                round(self.config.clean_flow_gpm, 4)
+                if self.config.clean_flow_gpm is not None
+                else None
+            ),
+            raw_flow_loss_percent=(
+                round(raw_flow_loss_percent, 4)
+                if raw_flow_loss_percent is not None
+                else None
+            ),
+            flow_loss_percent=(
+                round(flow_loss_percent, 4)
+                if flow_loss_percent is not None
+                else None
+            ),
+            status=status,
+            completed_at=completed_at,
+            sample_count=sample_count,
+            averaging_seconds=averaging_seconds,
+            yellow_flow_loss_percent=self.config.yellow_flow_loss_percent,
+            red_flow_loss_percent=self.config.red_flow_loss_percent,
+        )
+
+    def _recompute_result(
+        self,
+        result: FilterLoadingResult | None,
+    ) -> FilterLoadingResult | None:
+        if result is None:
+            return None
+        return self._build_result(
+            reference_psi=result.reference_psi,
+            completed_at=result.completed_at,
+            sample_count=result.sample_count,
+            averaging_seconds=result.averaging_seconds,
+        )
 
     def _reset_session(self) -> None:
         self._qualifying_started_at = None
@@ -376,21 +504,11 @@ def estimate_flows(
     if pump_state != ActuatorState.ON:
         pump_flow_gpm = 0.0
     elif pump_pressure is not None:
-        model = config.pump_pressure_model
-        if speed_state == ActuatorState.LOW:
-            pump_flow_gpm = _pump_flow_from_pressure(
-                pressure_psi=pump_pressure,
-                c_no_flow=model.c_no_flow_low,
-                c_dynamic=model.c_dynamic,
-                pressure_scale_psi=model.pressure_scale_psi,
-            )
-        elif speed_state == ActuatorState.HIGH:
-            pump_flow_gpm = _pump_flow_from_pressure(
-                pressure_psi=pump_pressure,
-                c_no_flow=model.c_no_flow_high,
-                c_dynamic=model.c_dynamic,
-                pressure_scale_psi=model.pressure_scale_psi,
-            )
+        pump_flow_gpm = estimate_pump_flow_from_pressure(
+            pressure_psi=pump_pressure,
+            speed=speed_state,
+            model=config.pump_pressure_model,
+        )
 
     pump_dynamic_head_psi = _pump_dynamic_head_from_pressure_and_flow(
         pump_output_pressure_psi=pump_pressure,
@@ -414,6 +532,42 @@ def estimate_flows(
             else FilterLoadingUpdate(result=None, reason="not evaluated")
         ),
     )
+
+
+def estimate_pump_flow_from_pressure(
+    *,
+    pressure_psi: float,
+    speed: ActuatorState | None,
+    model: PumpPressureFlowModelConfig,
+) -> float | None:
+    if speed == ActuatorState.LOW:
+        return _pump_flow_from_pressure(
+            pressure_psi=pressure_psi,
+            c_no_flow=model.c_no_flow_low,
+            c_dynamic=model.c_dynamic,
+            pressure_scale_psi=model.pressure_scale_psi,
+        )
+    if speed == ActuatorState.HIGH:
+        return _pump_flow_from_pressure(
+            pressure_psi=pressure_psi,
+            c_no_flow=model.c_no_flow_high,
+            c_dynamic=model.c_dynamic,
+            pressure_scale_psi=model.pressure_scale_psi,
+        )
+    return None
+
+
+def filter_flow_loss_status(
+    raw_flow_loss_percent: float,
+    *,
+    yellow_flow_loss_percent: float,
+    red_flow_loss_percent: float,
+) -> str:
+    if raw_flow_loss_percent >= red_flow_loss_percent:
+        return "red"
+    if raw_flow_loss_percent >= yellow_flow_loss_percent:
+        return "yellow"
+    return "green"
 
 
 def _pump_flow_from_pressure(
@@ -440,7 +594,7 @@ def _pump_dynamic_head_from_pressure_and_flow(
         return None
     if flow_gpm <= 0:
         return 0.0
-    return pump_output_pressure_psi + (pressure_scale_psi * c_suction * (flow_gpm ** 2))
+    return pump_output_pressure_psi + (pressure_scale_psi * c_suction * (flow_gpm**2))
 
 
 def _fresh_good_pressure(
@@ -541,20 +695,37 @@ def _filter_reference_payload(
     }
 
 
-def _filter_loading_percent_payload(
+def _filter_reference_flow_payload(
     result: FilterLoadingResult | None,
 ) -> dict[str, float | str | None]:
     if result is None:
         return {
             "value": None,
-            "unit": "percent",
-            "display": "--%",
+            "unit": "gpm",
+            "display": "-- gpm",
         }
     return {
-        "value": result.display_loading_percent,
-        "raw_value": result.loading_percent,
+        "value": result.estimated_flow_gpm,
+        "unit": "gpm",
+        "display": f"{result.estimated_flow_gpm:.1f} gpm",
+    }
+
+
+def _filter_flow_loss_percent_payload(
+    result: FilterLoadingResult | None,
+) -> dict[str, float | str | None]:
+    if result is None or result.flow_loss_percent is None:
+        return {
+            "value": None,
+            "raw_value": result.raw_flow_loss_percent if result is not None else None,
+            "unit": "percent",
+            "display": "--",
+        }
+    return {
+        "value": result.flow_loss_percent,
+        "raw_value": result.raw_flow_loss_percent,
         "unit": "percent",
-        "display": f"{result.display_loading_percent:.0f}%",
+        "display": f"{result.flow_loss_percent:.1f}%",
     }
 
 
@@ -577,19 +748,17 @@ def _float_value(data: Mapping[str, Any], key: str, default: float) -> float:
     return float(value)
 
 
+def _optional_float_value(data: Mapping[str, Any], key: str) -> float | None:
+    value = data.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, int | float):
+        raise ValueError(f"{key} must be a number or null")
+    return float(value)
+
+
 def _bool_value(data: Mapping[str, Any], key: str, default: bool) -> bool:
     value = data.get(key, default)
     if not isinstance(value, bool):
         raise ValueError(f"{key} must be true or false")
     return value
-
-
-def _sensor_id_value(
-    data: Mapping[str, Any],
-    key: str,
-    default: SensorId,
-) -> SensorId:
-    value = data.get(key, default.value)
-    if not isinstance(value, str):
-        raise ValueError(f"{key} must be a sensor ID string")
-    return SensorId(value)

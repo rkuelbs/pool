@@ -243,9 +243,9 @@ def test_filter_loading_update_applies_live_and_persists(tmp_path: Path) -> None
         config_path=path,
         payload={
             "enabled": True,
-            "pressure_sensor": "pump_output_psi",
-            "clean_psi": 12.0,
-            "dirty_psi": 22.0,
+            "clean_flow_gpm": None,
+            "yellow_flow_loss_percent": 9.0,
+            "red_flow_loss_percent": 14.0,
             "stabilization_seconds": 75.0,
             "averaging_seconds": 180.0,
             "max_pressure_age_seconds": 8.0,
@@ -254,10 +254,12 @@ def test_filter_loading_update_applies_live_and_persists(tmp_path: Path) -> None
 
     assert result["updated"] is True
     assert result["applied_live"] is True
-    assert app.flow_estimation_config.filter_loading.clean_psi == 12.0
-    assert serialize_filter_loading_config(app)["dirty_psi"] == 22.0
+    assert app.flow_estimation_config.filter_loading.clean_flow_gpm is None
+    assert serialize_filter_loading_config(app)["red_flow_loss_percent"] == 14.0
     saved = yaml.safe_load(path.read_text(encoding="utf-8"))
-    assert saved["filter_loading"]["pressure_sensor"] == "pump_output_psi"
+    assert saved["filter_loading"]["clean_flow_gpm"] is None
+    assert saved["filter_loading"]["yellow_flow_loss_percent"] == 9.0
+    assert saved["filter_loading"]["red_flow_loss_percent"] == 14.0
     assert saved["filter_loading"]["averaging_seconds"] == 180.0
 
 
@@ -390,7 +392,8 @@ def test_start_chlorination_supplemental_dose_sets_runtime_plan() -> None:
     status = result["supplemental_chlorine_dose"]
     assert result["started"] is True
     assert status["active"] is True
-    assert status["phase"] == "dosing"
+    assert status["phase"] == "preparing"
+    assert status["delivered_runtime_s"] == 0.0
     assert status["planned_dose_oz"] == 1.0
     assert status["duty_cycle"] == 0.5
     assert status["pulse_seconds"] == 60.0
@@ -522,11 +525,11 @@ def test_safety_update_applies_live_and_persists(tmp_path: Path) -> None:
         "thresholds": {
             "chlorine_min_pump_output_psi": 3.0,
             "chlorine_max_pump_output_psi": 3.5,
-            "chlorine_max_pressure_age_seconds": 12.0,
             "pump_prime_min_output_psi": 1.1,
             "pump_output_overpressure_psi": 31.0,
         },
         "timeouts": {
+            "pump_output_max_age_seconds": 12.0,
             "pump_prime_timeout_s": 31.0,
         },
     }
@@ -537,12 +540,14 @@ def test_safety_update_applies_live_and_persists(tmp_path: Path) -> None:
     assert app.safety_config.freeze_protection.enabled is True
     saved = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert saved["safety"]["thresholds"]["pump_prime_min_output_psi"] == 1.1
-    assert saved["safety"]["thresholds"]["chlorine_max_pressure_age_seconds"] == 12.0
+    assert saved["safety"]["timeouts"]["pump_output_max_age_seconds"] == 12.0
     assert saved["safety"]["freeze_protection"]["source"] == "both"
     assert saved["safety"]["chlorine_tank"]["inhibit_below_gal"] == 1.25
+    assert saved["safety"]["chlorine_tank"]["forecast_reserve_gal"] == 2.0
     serialized = serialize_safety_config(app)
     assert serialized["thresholds"]["chlorine_max_pump_output_psi"] == 3.5
     assert serialized["thresholds"]["pump_prime_min_output_psi"] == 1.1
+    assert serialized["timeouts"]["pump_output_max_age_seconds"] == 12.0
     assert serialized["freeze_protection"]["high_speed_on_below_temp"] == 33.0
     assert serialized["chlorine_tank"]["reenable_at_gal"] == 2.5
 
@@ -644,6 +649,11 @@ def test_notifications_update_applies_live_and_persists(tmp_path: Path) -> None:
                     "caution_repeat_minutes": 1440.0,
                     "warning_repeat_minutes": 240.0,
                 },
+                "filter_flow_loss": {
+                    "enabled": True,
+                    "warning_above": 16.0,
+                    "warning_repeat_minutes": 1440.0,
+                },
             },
         },
     )
@@ -657,6 +667,7 @@ def test_notifications_update_applies_live_and_persists(tmp_path: Path) -> None:
     assert saved["notifications"]["pushover"]["app_token_env"] == "POOL_PUSHOVER_TOKEN"
     assert saved["notifications"]["alerts"]["chlorine_tank"]["warning_below"] == 1.5
     assert saved["notifications"]["alerts"]["ph"]["warning_repeat_minutes"] == 60.0
+    assert saved["notifications"]["alerts"]["filter_flow_loss"]["warning_above"] == 16.0
     assert "app_token" not in saved["notifications"]["pushover"]
     assert "user_key" not in saved["notifications"]["pushover"]
 

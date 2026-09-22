@@ -17,7 +17,9 @@ const SENSOR_LABELS = {
   pump_flow_gpm: "Pump flow",
   pump_dynamic_head_psi: "Pump dynamic head",
   filter_reference_psi: "Filter reference pressure",
-  filter_loading_percent: "Filter loading",
+  filter_reference_flow_gpm: "Filter reference flow",
+  filter_flow_loss_percent: "Filter flow loss",
+  filter_loading_percent: "Filter loading (legacy)",
   calcium_saturation_index: "CSI",
   chlorine_daily_delivered_oz: "Daily chlorine delivered",
   chlorination_duty_cycle_percent: "Dosing duty cycle",
@@ -94,6 +96,8 @@ const HISTORY_SENSOR_ORDER = [
   "pump_flow_gpm",
   "pump_dynamic_head_psi",
   "filter_reference_psi",
+  "filter_reference_flow_gpm",
+  "filter_flow_loss_percent",
   "filter_loading_percent",
   "chlorine_daily_delivered_oz",
   "chlorination_duty_cycle_percent",
@@ -1148,32 +1152,37 @@ function renderLivePumpCard(sensors, actuators, flows) {
 }
 
 function renderLiveFilterCard(sensors, flows) {
-  const pumpFlowPayload = flows ? flows.pump_flow_gpm : null;
-  const pumpFlow = pumpFlowPayload ? Number(pumpFlowPayload.value) : Number.NaN;
-  const loadingPayload = flows ? flows.filter_loading_percent : null;
-  const loadingPercent = loadingPayload ? Number(loadingPayload.value) : Number.NaN;
-
+  const filterLoading = flows && flows.filter_loading ? flows.filter_loading : null;
+  const status = filterLoading && filterLoading.status ? String(filterLoading.status) : "uncalibrated";
   let cardStatus = "status-off";
-  if (Number.isFinite(loadingPercent)) {
-    if (loadingPercent > 80) {
-      cardStatus = "status-alarm";
-    } else if (loadingPercent >= 50) {
-      cardStatus = "status-caution";
-    } else {
-      cardStatus = "status-on";
-    }
+  if (status === "red") {
+    cardStatus = "status-alarm";
+  } else if (status === "yellow") {
+    cardStatus = "status-caution";
+  } else if (status === "green") {
+    cardStatus = "status-on";
   }
   setLiveCardStatus("liveFilterCard", cardStatus);
 
-  const filterLoading = flows && flows.filter_loading ? flows.filter_loading : null;
+  const statusText = status.charAt(0).toUpperCase() + status.slice(1);
+  const completedAt = filterLoading && filterLoading.completed_at ? new Date(filterLoading.completed_at) : null;
   const ageText =
     filterLoading && Number.isFinite(Number(filterLoading.age_seconds))
-      ? `${Math.round(Number(filterLoading.age_seconds) / 60)} min old`
+      ? `${formatDurationShort(Number(filterLoading.age_seconds))} old`
       : "--";
+  const completedText = completedAt && !Number.isNaN(completedAt.getTime())
+    ? `${completedAt.toLocaleString()} / ${ageText}`
+    : "--";
 
-  setNodeText("liveFilterLoadingPct", `Loading: ${flowDisplay(flows, "filter_loading_percent")}`);
-  setNodeText("liveFilterReferencePsi", `Reference: ${flowDisplay(flows, "filter_reference_psi")}`);
-  setNodeText("liveFilterLastTest", `Last test: ${ageText}`);
+  setNodeText("liveFilterStatus", `Status: ${statusText}`);
+  setNodeText("liveFilterFlowLoss", `Flow loss: ${flowDisplay(flows, "filter_flow_loss_percent")}`);
+  setNodeText("liveFilterEstimatedFlow", `Estimated flow: ${flowDisplay(flows, "filter_reference_flow_gpm")}`);
+  setNodeText(
+    "liveFilterCleanFlow",
+    `Clean flow: ${filterLoading ? filterLoading.clean_flow_display || "--" : "--"}`,
+  );
+  setNodeText("liveFilterReferencePsi", `Reference pressure: ${flowDisplay(flows, "filter_reference_psi")}`);
+  setNodeText("liveFilterLastTest", `Last test: ${completedText}`);
 }
 
 function renderLiveChemCard(sensors) {
@@ -2595,6 +2604,7 @@ async function loadSafetyConfig() {
     document.getElementById("safetyChlorineTankReenableGal").value = String(tank.reenable_at_gal ?? 2.0);
     document.getElementById("safetyPrimeMin").value = payload.thresholds.pump_prime_min_output_psi;
     document.getElementById("safetyOverpressure").value = payload.thresholds.pump_output_overpressure_psi;
+    document.getElementById("safetyPumpOutputMaxAge").value = String(payload.timeouts.pump_output_max_age_seconds ?? 10.0);
     document.getElementById("safetyPrimeTimeout").value = payload.timeouts.pump_prime_timeout_s;
     pumpPrimeThresholds = {
       primeMinPsi: Number(payload.thresholds.pump_prime_min_output_psi ?? 1.0),
@@ -2642,6 +2652,7 @@ async function saveSafetyConfig() {
           pump_output_overpressure_psi: Number(document.getElementById("safetyOverpressure").value),
         },
         timeouts: {
+          pump_output_max_age_seconds: Number(document.getElementById("safetyPumpOutputMaxAge").value),
           pump_prime_timeout_s: Number(document.getElementById("safetyPrimeTimeout").value),
         },
       }),
@@ -3064,6 +3075,7 @@ function renderNotificationsConfig(payload) {
   renderSignalAlertConfig("notifyTank", alerts.chlorine_tank || {});
   renderSignalAlertConfig("notifyPh", alerts.ph || {});
   renderSignalAlertConfig("notifyOrp", alerts.orp || {});
+  renderFilterAlertConfig(alerts.filter_flow_loss || {});
 }
 
 function collectNotificationsConfig() {
@@ -3088,7 +3100,26 @@ function collectNotificationsConfig() {
       chlorine_tank: collectSignalAlertConfig("notifyTank", { includeAbove: false }),
       ph: collectSignalAlertConfig("notifyPh", { includeAbove: true }),
       orp: collectSignalAlertConfig("notifyOrp", { includeAbove: true }),
+      filter_flow_loss: collectFilterAlertConfig(),
     },
+  };
+}
+
+function renderFilterAlertConfig(config) {
+  const enabled = document.getElementById("notifyFilterAlertEnabled");
+  if (!enabled) {
+    return;
+  }
+  enabled.checked = config.enabled === true;
+  setOptionalNumberInput("notifyFilterWarningAbove", config.warning_above ?? 15.0);
+  setOptionalNumberInput("notifyFilterWarningRepeat", config.warning_repeat_minutes ?? 1440.0);
+}
+
+function collectFilterAlertConfig() {
+  return {
+    enabled: document.getElementById("notifyFilterAlertEnabled").checked,
+    warning_above: numberOrNull(document.getElementById("notifyFilterWarningAbove").value),
+    warning_repeat_minutes: Number(document.getElementById("notifyFilterWarningRepeat").value),
   };
 }
 
@@ -3285,9 +3316,9 @@ async function saveFilterLoadingConfig() {
 
 function renderFilterLoadingConfig(payload) {
   document.getElementById("filterLoadingEnabled").checked = payload.enabled !== false;
-  document.getElementById("filterLoadingPressureSensor").value = payload.pressure_sensor || "pump_output_psi";
-  document.getElementById("filterLoadingCleanPsi").value = String(payload.clean_psi ?? 10.0);
-  document.getElementById("filterLoadingDirtyPsi").value = String(payload.dirty_psi ?? 25.0);
+  setOptionalNumberInput("filterLoadingCleanFlowGpm", payload.clean_flow_gpm);
+  document.getElementById("filterLoadingYellowFlowLossPercent").value = String(payload.yellow_flow_loss_percent ?? 10.0);
+  document.getElementById("filterLoadingRedFlowLossPercent").value = String(payload.red_flow_loss_percent ?? 15.0);
   document.getElementById("filterLoadingStabilizationSeconds").value = String(payload.stabilization_seconds ?? 60.0);
   document.getElementById("filterLoadingAveragingSeconds").value = String(payload.averaging_seconds ?? 120.0);
   document.getElementById("filterLoadingMaxPressureAgeSeconds").value = String(payload.max_pressure_age_seconds ?? 10.0);
@@ -3296,9 +3327,9 @@ function renderFilterLoadingConfig(payload) {
 function collectFilterLoadingConfig() {
   return {
     enabled: document.getElementById("filterLoadingEnabled").checked,
-    pressure_sensor: document.getElementById("filterLoadingPressureSensor").value,
-    clean_psi: Number(document.getElementById("filterLoadingCleanPsi").value),
-    dirty_psi: Number(document.getElementById("filterLoadingDirtyPsi").value),
+    clean_flow_gpm: numberOrNull(document.getElementById("filterLoadingCleanFlowGpm").value),
+    yellow_flow_loss_percent: Number(document.getElementById("filterLoadingYellowFlowLossPercent").value),
+    red_flow_loss_percent: Number(document.getElementById("filterLoadingRedFlowLossPercent").value),
     stabilization_seconds: Number(document.getElementById("filterLoadingStabilizationSeconds").value),
     averaging_seconds: Number(document.getElementById("filterLoadingAveragingSeconds").value),
     max_pressure_age_seconds: Number(document.getElementById("filterLoadingMaxPressureAgeSeconds").value),
@@ -3313,18 +3344,13 @@ function setFilterLoadingConfigStatus(message) {
 }
 
 function initializeFilterLoadingControls() {
-  const pressureSelect = document.getElementById("filterLoadingPressureSensor");
-  if (!pressureSelect) {
+  const reload = document.getElementById("filterLoadingReload");
+  const save = document.getElementById("filterLoadingSave");
+  if (!reload || !save) {
     return;
   }
-  ["pump_output_psi"].forEach((sensorId) => {
-    const option = document.createElement("option");
-    option.value = sensorId;
-    option.textContent = sensorId;
-    pressureSelect.appendChild(option);
-  });
-  document.getElementById("filterLoadingReload").addEventListener("click", loadFilterLoadingConfig);
-  document.getElementById("filterLoadingSave").addEventListener("click", saveFilterLoadingConfig);
+  reload.addEventListener("click", loadFilterLoadingConfig);
+  save.addEventListener("click", saveFilterLoadingConfig);
   loadFilterLoadingConfig();
 }
 

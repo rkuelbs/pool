@@ -146,10 +146,10 @@ class SafetyConfig:
 
     chlorine_min_pump_output_psi: float = 3.0
     chlorine_max_pump_output_psi: float = 3.5
-    chlorine_max_pressure_age_seconds: float = 10.0
 
     pump_prime_min_output_psi: float = 1.0
     pump_prime_timeout_s: float = 30.0
+    pump_output_max_age_seconds: float = 10.0
     pump_output_overpressure_psi: float = 30.0
 
     def __post_init__(self) -> None:
@@ -159,12 +159,12 @@ class SafetyConfig:
             raise ValueError(
                 "chlorine_max_pump_output_psi must be greater than chlorine_min_pump_output_psi"
             )
-        if self.chlorine_max_pressure_age_seconds < 0:
-            raise ValueError("chlorine_max_pressure_age_seconds must be >= 0")
         if self.pump_prime_min_output_psi < 0:
             raise ValueError("pump_prime_min_output_psi must be >= 0")
         if self.pump_prime_timeout_s < 0:
             raise ValueError("pump_prime_timeout_s must be >= 0")
+        if self.pump_output_max_age_seconds < 0:
+            raise ValueError("pump_output_max_age_seconds must be >= 0")
         if self.pump_output_overpressure_psi <= 0:
             raise ValueError("pump_output_overpressure_psi must be > 0")
 
@@ -278,11 +278,6 @@ class SafetyConfig:
                 "chlorine_max_pump_output_psi",
                 cls.chlorine_max_pump_output_psi,
             ),
-            chlorine_max_pressure_age_seconds=_float_value(
-                threshold_data,
-                "chlorine_max_pressure_age_seconds",
-                cls.chlorine_max_pressure_age_seconds,
-            ),
             pump_prime_min_output_psi=_float_value(
                 threshold_data,
                 "pump_prime_min_output_psi",
@@ -292,6 +287,11 @@ class SafetyConfig:
                 timeout_data,
                 "pump_prime_timeout_s",
                 cls.pump_prime_timeout_s,
+            ),
+            pump_output_max_age_seconds=_float_value(
+                timeout_data,
+                "pump_output_max_age_seconds",
+                cls.pump_output_max_age_seconds,
             ),
             pump_output_overpressure_psi=_float_value(
                 threshold_data,
@@ -438,16 +438,9 @@ class SafetyGate:
 
     def apply_config(self, config: SafetyConfig) -> None:
         """
-        Replace safety settings and clear state that depends on threshold values.
+        Replace safety settings while preserving active safety latches.
         """
         self.config = config
-        self._chlorine_tank_hysteresis_inhibited = False
-        self._chlorine_tank_status = self._chlorine_tank_status_payload(
-            tank_level_gal=None,
-            low_warning_active=False,
-            dosing_inhibited=True,
-            inhibit_reason="chlorine tank level unavailable",
-        )
 
     def set_chlorine_pump_stabilization_seconds(self, value: float) -> None:
         if value < 0:
@@ -476,37 +469,9 @@ class SafetyGate:
     def chlorine_tank_status(self) -> dict[str, Any]:
         return dict(self._chlorine_tank_status)
 
-    def check_chlorine_tank_dosing(self, snapshot: SafetySnapshot) -> SafetyDecision:
-        """
-        Check only the chlorine-tank dosing interlock.
-
-        This is used by chlorination deployments that have not enabled the full
-        continuous safety layer yet. Pressure and pump-flow checks remain in the
-        normal command path for those deployments, while tank hysteresis stays
-        centralized in SafetyGate.
-        """
-        return self._chlorine_tank_conditions_met(snapshot)
-
-    def chlorine_tank_action(self, snapshot: SafetySnapshot) -> SafetyAction | None:
-        decision = self.check_chlorine_tank_dosing(snapshot)
-        if snapshot.actuator_state(ActuatorId.CHLORINE_DOSING_PUMP) != ActuatorState.ON:
-            return None
-
-        if decision.accepted:
-            return None
-
-        return self._action(
-            snapshot.now,
-            ActuatorId.CHLORINE_DOSING_PUMP,
-            ActuatorState.OFF,
-            reason_code="chlorine_interlock_lost",
-            reason=(
-                decision.rejection_reason
-                if decision.rejection_reason is not None
-                else "chlorine tank dosing inhibited"
-            ),
-            metadata=decision.metadata,
-        )
+    def check_chlorine_dosing(self, snapshot: SafetySnapshot) -> SafetyDecision:
+        """Evaluate the same normal chlorine eligibility policy used by commands."""
+        return self._chlorine_conditions_met(snapshot)
 
     def check_command(
         self,
@@ -530,7 +495,7 @@ class SafetyGate:
             command.actuator_id == ActuatorId.CHLORINE_DOSING_PUMP
             and command.state == ActuatorState.ON
         ):
-            decision = self._chlorine_conditions_met(snapshot)
+            decision = self.check_chlorine_dosing(snapshot)
             if not decision.accepted:
                 return decision
 
@@ -549,7 +514,10 @@ class SafetyGate:
 
         actions: list[SafetyAction] = []
         self._update_chlorine_tank_status(snapshot)
-        pump_output_psi = snapshot.pressure_psi(self.config.pressure_sensors.pump_output)
+        pump_output_psi = snapshot.fresh_pressure_psi(
+            self.config.pressure_sensors.pump_output,
+            max_age_seconds=self.config.pump_output_max_age_seconds,
+        )
         freeze_required_speed, freeze_observation = self._freeze_required_speed(snapshot)
 
         # Update timers/latches before checking lockouts so the current pressure
@@ -632,7 +600,7 @@ class SafetyGate:
 
         pump_output_psi = snapshot.fresh_pressure_psi(
             self.config.pressure_sensors.pump_output,
-            max_age_seconds=self.config.chlorine_max_pressure_age_seconds,
+            max_age_seconds=self.config.pump_output_max_age_seconds,
         )
         if pump_output_psi is None:
             return SafetyDecision(
@@ -966,7 +934,7 @@ class SafetyGate:
                 )
             return actions
 
-        if pump_speed == ActuatorState.HIGH and not self._prime_high_hold_active(snapshot.now):
+        if pump_speed == ActuatorState.HIGH:
             actions.append(
                 self._action(
                     snapshot.now,
@@ -990,9 +958,6 @@ class SafetyGate:
             )
 
         return actions
-
-    def _prime_high_hold_active(self, now: datetime) -> bool:
-        return False
 
     def _freeze_min_run_elapsed(self, *, now: datetime) -> bool:
         if self._freeze_latched_speed is None or self._freeze_started_at is None:
@@ -1028,6 +993,8 @@ class SafetyGate:
             return
 
         if pump_output_psi is None:
+            if self._pump_prime_below_started_at is None:
+                self._pump_prime_below_started_at = snapshot.now
             return
 
         if pump_output_psi >= self.config.pump_prime_min_output_psi:

@@ -2163,13 +2163,11 @@ def serialize_safety_config(app: PoolControllerApp) -> dict[str, Any]:
         "thresholds": {
             "chlorine_min_pump_output_psi": config.chlorine_min_pump_output_psi,
             "chlorine_max_pump_output_psi": config.chlorine_max_pump_output_psi,
-            "chlorine_max_pressure_age_seconds": (
-                config.chlorine_max_pressure_age_seconds
-            ),
             "pump_prime_min_output_psi": config.pump_prime_min_output_psi,
             "pump_output_overpressure_psi": config.pump_output_overpressure_psi,
         },
         "timeouts": {
+            "pump_output_max_age_seconds": config.pump_output_max_age_seconds,
             "pump_prime_timeout_s": config.pump_prime_timeout_s,
         },
     }
@@ -2183,17 +2181,26 @@ def apply_safety_config_update(
     payload: dict[str, Any],
 ) -> dict[str, Any]:
     current = serialize_safety_config(app)
-    pressure_sensor_ids = payload.get(
-        "pressure_sensor_ids",
-        current["pressure_sensor_ids"],
-    )
-    freeze_protection = payload.get(
-        "freeze_protection",
-        current["freeze_protection"],
-    )
-    chlorine_tank = payload.get("chlorine_tank", current["chlorine_tank"])
-    thresholds = payload.get("thresholds", current["thresholds"])
-    timeouts = payload.get("timeouts", current["timeouts"])
+    pressure_sensor_ids = {
+        **current["pressure_sensor_ids"],
+        **payload.get("pressure_sensor_ids", {}),
+    }
+    freeze_protection = {
+        **current["freeze_protection"],
+        **payload.get("freeze_protection", {}),
+    }
+    chlorine_tank = {
+        **current["chlorine_tank"],
+        **payload.get("chlorine_tank", {}),
+    }
+    thresholds = {
+        **current["thresholds"],
+        **payload.get("thresholds", {}),
+    }
+    timeouts = {
+        **current["timeouts"],
+        **payload.get("timeouts", {}),
+    }
     safety_data = {
         "safety": {
             "pressure_sensor_ids": pressure_sensor_ids,
@@ -2274,9 +2281,9 @@ def serialize_filter_loading_config(app: PoolControllerApp) -> dict[str, Any]:
     config = app.flow_estimation_config.filter_loading
     return {
         "enabled": config.enabled,
-        "pressure_sensor": config.pressure_sensor.value,
-        "clean_psi": config.clean_psi,
-        "dirty_psi": config.dirty_psi,
+        "clean_flow_gpm": config.clean_flow_gpm,
+        "yellow_flow_loss_percent": config.yellow_flow_loss_percent,
+        "red_flow_loss_percent": config.red_flow_loss_percent,
         "stabilization_seconds": config.stabilization_seconds,
         "averaging_seconds": config.averaging_seconds,
         "max_pressure_age_seconds": config.max_pressure_age_seconds,
@@ -2296,9 +2303,9 @@ def apply_filter_loading_config_update(
     config_data = _load_config_write_mapping(config_path, local_config_path=local_config_path)
     config_data["filter_loading"] = {
         "enabled": proposed.enabled,
-        "pressure_sensor": proposed.pressure_sensor.value,
-        "clean_psi": proposed.clean_psi,
-        "dirty_psi": proposed.dirty_psi,
+        "clean_flow_gpm": proposed.clean_flow_gpm,
+        "yellow_flow_loss_percent": proposed.yellow_flow_loss_percent,
+        "red_flow_loss_percent": proposed.red_flow_loss_percent,
         "stabilization_seconds": proposed.stabilization_seconds,
         "averaging_seconds": proposed.averaging_seconds,
         "max_pressure_age_seconds": proposed.max_pressure_age_seconds,

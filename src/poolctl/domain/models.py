@@ -47,6 +47,10 @@ class SensorId(str, Enum):
     PUMP_FLOW_GPM = "pump_flow_gpm"
     PUMP_DYNAMIC_HEAD_PSI = "pump_dynamic_head_psi"
     FILTER_REFERENCE_PSI = "filter_reference_psi"
+    FILTER_REFERENCE_FLOW_GPM = "filter_reference_flow_gpm"
+    FILTER_FLOW_LOSS_PERCENT = "filter_flow_loss_percent"
+    # Legacy history only. Old SQLite rows may contain this pressure-ratio
+    # filter loading signal, but the active estimator now emits flow loss.
     FILTER_LOADING_PERCENT = "filter_loading_percent"
     CALCIUM_SATURATION_INDEX = "calcium_saturation_index"
     CHLORINE_DAILY_DELIVERED_OZ = "chlorine_daily_delivered_oz"
@@ -135,11 +139,11 @@ class MeasurementKind(str, Enum):
 
     CALIBRATED:
         Sensor value converted using a calibration model.
-        Example: analog pH units derived from a voltage calibration.
+        Example: pump-output pressure derived from analog voltage calibration.
 
     ESTIMATED:
         Value inferred from multiple inputs.
-        Example: estimated free chlorine from ORP, pH, temperature, and tests.
+        Example: pump flow from the hydraulic model, filter flow loss, or CSI.
 
     MANUAL:
         Value entered by the user.
@@ -220,7 +224,7 @@ class Measurement(BaseModel):
     # Examples:
     #   {"driver": "simulated_raw_ph"}
     #   {"adc_channel": 0, "voltage": 1.842}
-    #   {"i2c_address": "0x63"}
+    #   {"modbus_slave_id": 4}
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

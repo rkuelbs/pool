@@ -23,7 +23,7 @@ pump_timer:
     pump_speed: low
     booster: 'off'
     allow_dosing: true
-  - name: afternoon_filter
+  - name: afternoon_circulation
     start: '15:30'
     end: '17:00'
     pump_speed: low
@@ -60,7 +60,7 @@ modbus_orp_sensor:
     enabled: true
     failure_threshold: 2
     cooldown_s: 60
-enable_modbus_ph_sensor: false
+enable_modbus_ph_sensor: true
 modbus_ph_sensor:
   port: /dev/ttyUSB0
   slave_id: 4
@@ -95,9 +95,9 @@ flow_estimation:
     c_no_flow_high: 95
 filter_loading:
   enabled: true
-  pressure_sensor: pump_output_psi
-  clean_psi: 10.0
-  dirty_psi: 25.0
+  clean_flow_gpm: null
+  yellow_flow_loss_percent: 10.0
+  red_flow_loss_percent: 15.0
   stabilization_seconds: 60
   averaging_seconds: 120
   max_pressure_age_seconds: 10
@@ -151,12 +151,14 @@ safety:
     low_warning_gal: 2.0
     inhibit_below_gal: 1.5
     reenable_at_gal: 2.0
+    forecast_reserve_gal: 2.0
   thresholds:
     chlorine_min_pump_output_psi: 3
     chlorine_max_pump_output_psi: 3.5
     pump_prime_min_output_psi: 1
     pump_output_overpressure_psi: 30
   timeouts:
+    pump_output_max_age_seconds: 10
     pump_prime_timeout_s: 30
 logging:
   database_path: data/pi-prod.sqlite3
@@ -195,6 +197,10 @@ notifications:
       warning_above: 900.0
       caution_repeat_minutes: 1440.0
       warning_repeat_minutes: 240.0
+    filter_flow_loss:
+      enabled: false
+      warning_above: 15.0
+      warning_repeat_minutes: 1440.0
 acquisition:
   groups:
     pressures:
@@ -221,6 +227,8 @@ acquisition:
       sensor_ids:
       - raw_orp
       - orp_temp
+      - raw_ph
+      - ph_temp
       read_interval_s: 10
       log_interval_s: 60
       requires_pump_flow: true
@@ -267,11 +275,6 @@ live_view:
       normal_min: 65.0
       normal_max: 90.0
       caution_max: 100.0
-    temp:
-      caution_min: 2.0
-      normal_min: 18.0
-      normal_max: 32.0
-      caution_max: 40.0
     cpu_temp:
       caution_min: 0.0
       normal_min: 0.0
@@ -282,11 +285,6 @@ live_view:
       normal_min: 0.0
       normal_max: 75.0
       caution_max: 90.0
-    tank_level:
-      caution_min: 5.0
-      normal_min: 20.0
-      normal_max: 100.0
-      caution_max: 100.0
     calcium_saturation_index:
       caution_min: -0.6
       normal_min: -0.3

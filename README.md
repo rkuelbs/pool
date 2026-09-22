@@ -203,8 +203,9 @@ Important sections:
 - `live_view`: dashboard display limits.
 - `weather`: Open-Meteo location, units, and polling settings.
 - `notifications`: push notification provider settings and optional alert rules
-  for usable chlorine tank days remaining, pH, and ORP. Pushover keys can be
-  entered on the Config page or supplied through environment variables.
+  for usable chlorine tank days remaining, pH, ORP, and filter flow loss.
+  Pushover keys can be entered on the Config page or supplied through
+  environment variables.
 
 Schedule `start` and `end` values should be quoted strings:
 
@@ -212,7 +213,7 @@ Schedule `start` and `end` values should be quoted strings:
 pump_timer:
   timezone: America/Chicago
   schedules:
-  - name: morning_filter
+  - name: morning_circulation
     start: '08:00'
     end: '12:00'
     pump_speed: low
@@ -587,35 +588,69 @@ safety:
   thresholds:
     chlorine_min_pump_output_psi: 3.0
     chlorine_max_pump_output_psi: 3.5
-    chlorine_max_pressure_age_seconds: 10.0
     pump_prime_min_output_psi: 1.0
     pump_output_overpressure_psi: 30.0
   timeouts:
+    pump_output_max_age_seconds: 10.0
     pump_prime_timeout_s: 30.0
 ```
 
 ## Filter Loading
 
-Filter loading is a standardized estimate based only on `pump_output_psi`.
-It assumes valve positions are repeatable, the main pump HIGH state is
-repeatable, and the booster is OFF. It is a trend/proxy, not a true differential
-pressure measurement.
+Filter loading is a standardized hydraulic proxy based only on
+`pump_output_psi`. It assumes the valve positions are repeatable, the main pump
+HIGH state is repeatable, and the booster is OFF. It is not a direct filter
+differential-pressure measurement.
 
-Software does not create a special morning test schedule. Add a normal
-5-10 minute pump HIGH schedule window. When the system enters main pump ON,
-speed HIGH, booster OFF, with a fresh pump-output pressure measurement, the
-estimator starts a qualifying session. It ignores the first
-`filter_loading.stabilization_seconds` (default 60 s), averages valid
-`pump_output_psi` samples for `averaging_seconds` (default 120 s), then publishes
-and logs:
+Software does not schedule a special test. Create a normal 5-10 minute pump
+HIGH, booster-OFF schedule window, or run the same condition manually. When the
+system enters main pump ON, speed HIGH, booster OFF, with a fresh GOOD
+`pump_output_psi` measurement, the estimator starts a qualifying session. It
+ignores the first `filter_loading.stabilization_seconds` (default 60 s), then
+collects valid pressure samples until `averaging_seconds` (default 120 s) of
+qualifying data is available. If the pump stops, leaves HIGH, the booster turns
+ON, or pressure becomes stale/bad/unavailable, the in-progress session resets
+and samples are not mixed across sessions.
 
-- `filter_reference_psi`: the standardized pump discharge pressure.
-- `filter_loading_percent`: `100 * (reference - clean) / (dirty - clean)`,
-  clamped to 0-100 for display.
+On completion, the averaged standardized PSI is converted to HIGH-speed flow
+using the same shared pressure-to-flow hydraulic model used for live flow
+estimation. The result remains latched until the next valid standardized test,
+even when the pump later drops to LOW/OFF.
 
-The last completed result stays latched when the pump drops to LOW/OFF or the
-booster turns ON. The dashboard shows its timestamp/age so a retained result is
-not mistaken for a live reading.
+The only clean-filter calibration is:
+
+```yaml
+filter_loading:
+  clean_flow_gpm: null
+```
+
+After cleaning the filter, run the standardized HIGH/booster-OFF period and use
+the completed estimated flow as `clean_flow_gpm` (`Qclean`). Until this value is
+entered, tests still complete and show reference PSI, estimated current flow,
+timestamp, age, and sample count, but flow loss is unavailable and status is
+`uncalibrated`.
+
+When calibrated:
+
+```text
+raw flow loss % = 100 * (1 - Qcurrent / Qclean)
+```
+
+The raw value is preserved, including small negative values from normal
+variation. Dashboard display clamps flow loss to 0-100%. Status is computed in
+the backend from configured thresholds:
+
+- `green`: flow loss is below `yellow_flow_loss_percent`.
+- `yellow`: flow loss is at or above yellow and below `red_flow_loss_percent`.
+- `red`: flow loss is at or above red.
+
+Completed tests log:
+
+- `filter_reference_psi`: standardized pump discharge pressure.
+- `filter_reference_flow_gpm`: standardized estimated HIGH-speed flow.
+- `filter_flow_loss_percent`: raw flow loss when `clean_flow_gpm` is calibrated.
+
+There is no dirty-PSI calibration.
 
 On Raspberry Pi profiles, `startup_safe_off` defaults to `true` and
 `reconciliation_interval_s` defaults to `30.0`. Startup safe-off uses safe
@@ -812,6 +847,10 @@ notifications:
       warning_above: 900.0
       caution_repeat_minutes: 1440.0
       warning_repeat_minutes: 240.0
+    filter_flow_loss:
+      enabled: false
+      warning_above: 15.0
+      warning_repeat_minutes: 1440.0
 ```
 
 Alert rules are disabled by default even when the provider block exists in the
@@ -819,7 +858,10 @@ tracked configs. `chlorine_tank` thresholds are usable days remaining, computed
 from the estimated true tank gallons minus the 2 gallon reserve and the
 maintenance chlorine daily estimate when available; tank notifications include
 both usable days and usable gallons in the message. `ph` thresholds are pH
-units, and `orp` thresholds are mV.
+units, `orp` thresholds are mV, and `filter_flow_loss` thresholds are raw
+standardized flow-loss percent. The filter alert is disabled by default; when
+enabled, a warning says, for example, `Clean filter soon: estimated standardized
+flow loss is 15.8%.`
 Warning thresholds are evaluated before caution thresholds. Each signal has a
 separate caution and warning repeat interval; the throttle key is signal plus
 severity, so pH or ORP values that bounce above and below threshold do not keep
@@ -968,9 +1010,9 @@ want to keep.
 - `poolctl-backup.service`: one-shot SQLite backup job.
 - `poolctl-backup.timer`: hourly backup schedule.
 
-The older `poolctl-ticker.service` template is kept only for history and is
-disabled by the installer. The current web server has its own dedicated runtime
-loop, so no external ticker is required.
+The installer disables any previously installed obsolete `poolctl-ticker.service`
+because the web server owns the dedicated runtime loop. The old ticker template
+is no longer part of the source tree.
 
 Useful commands:
 
@@ -1080,10 +1122,11 @@ modbus_orp_sensor:
     cooldown_s: 60
 ```
 
-`pi-prod.yaml` keeps the pH sensor disabled until the probe is installed:
+`pi-prod.yaml` enables the RS485 pH sensor and includes `raw_ph` and `ph_temp`
+in the chemistry acquisition group:
 
 ```yaml
-enable_modbus_ph_sensor: false
+enable_modbus_ph_sensor: true
 modbus_ph_sensor:
   port: /dev/ttyUSB0
   slave_id: 4
@@ -1093,6 +1136,14 @@ modbus_ph_sensor:
     enabled: true
     failure_threshold: 2
     cooldown_s: 60
+acquisition:
+  groups:
+    chemistry_loop:
+      sensor_ids:
+      - raw_orp
+      - orp_temp
+      - raw_ph
+      - ph_temp
 ```
 
 The Config page has a `pH Sensor Config` section. Turning the sensor on or off

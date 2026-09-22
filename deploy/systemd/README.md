@@ -30,8 +30,9 @@ external ticker service if it exists.
   - Runs the backup service hourly.
   - Uses `Persistent=true`, so a missed backup runs after boot.
 
-`poolctl-ticker.service.tmpl` is kept only as a historical fallback. The web
-server now has a built-in runtime loop, so the installer disables the ticker.
+The web server has a built-in runtime loop. The installer disables any old
+`poolctl-ticker.service` unit left on a Pi from a previous deployment, but no
+ticker service template is retained in source.
 
 ## Expected Pi Layout
 

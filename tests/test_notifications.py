@@ -30,6 +30,9 @@ def test_notifications_config_defaults_to_disabled_pushover() -> None:
     assert config.alerts.chlorine_tank.warning_below == 3.0
     assert config.alerts.ph.warning_above == 8.2
     assert config.alerts.orp.caution_below == 600.0
+    assert config.alerts.filter_flow_loss.enabled is False
+    assert config.alerts.filter_flow_loss.warning_above == 15.0
+    assert config.alerts.filter_flow_loss.warning_repeat_minutes == 1440.0
 
 
 def test_pushover_config_normalizes_credentials_entered_as_env_names() -> None:
@@ -285,6 +288,53 @@ def test_notification_alert_evaluator_uses_tank_days_remaining() -> None:
         "Chlorine tank supply warning: 2.5 days remaining (1.25 gal) "
         "is below the warning threshold (3.0 days)"
     )
+
+
+def test_notification_alert_evaluator_uses_filter_flow_loss_threshold() -> None:
+    config = NotificationsConfig.from_mapping(
+        {
+            "notifications": {
+                "alerts": {
+                    "filter_flow_loss": {
+                        "enabled": True,
+                        "warning_above": 15.0,
+                        "warning_repeat_minutes": 1440.0,
+                    }
+                }
+            }
+        }
+    )
+    now = datetime(2026, 5, 21, 12, tzinfo=timezone.utc)
+    measurements = {
+        SensorId.FILTER_FLOW_LOSS_PERCENT: Measurement(
+            sensor_id=SensorId.FILTER_FLOW_LOSS_PERCENT,
+            observed_at=now,
+            value=15.8,
+            unit="percent",
+            quality=Quality.GOOD,
+        )
+    }
+
+    first = evaluate_notification_alerts(
+        config=config.alerts,
+        measurements=measurements,
+        now=now,
+        last_sent_at={},
+    )
+    throttled = evaluate_notification_alerts(
+        config=config.alerts,
+        measurements=measurements,
+        now=now + timedelta(minutes=60),
+        last_sent_at={"filter_flow_loss:warning": now},
+    )
+
+    assert len(first) == 1
+    assert first[0].sensor_id == SensorId.FILTER_FLOW_LOSS_PERCENT
+    assert first[0].throttle_key == "filter_flow_loss:warning"
+    assert first[0].message() == (
+        "Clean filter soon: estimated standardized flow loss is 15.8%."
+    )
+    assert throttled == ()
 
 
 def test_notification_alert_evaluator_throttles_ph_caution_across_directions() -> None:

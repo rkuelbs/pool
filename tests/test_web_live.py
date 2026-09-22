@@ -158,7 +158,8 @@ async def test_build_live_snapshot_includes_runtime_sensors_and_actuators() -> N
     assert snapshot["flows"]["pump_flow_low_gpm"]["display"] == "0.0 gpm"
     assert snapshot["flows"]["pump_flow_high_gpm"]["display"] == "-- gpm"
     assert snapshot["flows"]["filter_reference_psi"]["display"] == "-- psi"
-    assert snapshot["flows"]["filter_loading_percent"]["display"] == "--%"
+    assert snapshot["flows"]["filter_reference_flow_gpm"]["display"] == "-- gpm"
+    assert snapshot["flows"]["filter_flow_loss_percent"]["display"] == "--"
     assert snapshot["tick"]["duration_s"] >= 0.0
     assert snapshot["tick"]["control_duration_s"] >= 0.0
 

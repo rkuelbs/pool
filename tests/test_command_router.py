@@ -324,6 +324,49 @@ async def test_pump_output_overpressure_shuts_down_and_locks_out_until_clear() -
 
 
 @pytest.mark.asyncio
+async def test_chlorine_tank_hysteresis_survives_live_config_update() -> None:
+    clock, _, router = make_router()
+    await start_pump_high(clock, router)
+
+    inhibited = await router.route(
+        command(clock, ActuatorId.CHLORINE_DOSING_PUMP, ActuatorState.ON),
+        measurements=[
+            pressure(clock, SensorId.PUMP_OUTPUT_PSI, 3.2),
+            chlorine_tank_level(clock, 1.4),
+        ],
+    )
+    assert not inhibited.accepted
+    assert "dosing inhibit threshold" in str(inhibited.rejection_reason)
+
+    still_inhibited = await router.route(
+        command(clock, ActuatorId.CHLORINE_DOSING_PUMP, ActuatorState.ON),
+        measurements=[
+            pressure(clock, SensorId.PUMP_OUTPUT_PSI, 3.2),
+            chlorine_tank_level(clock, 1.7),
+        ],
+    )
+    assert not still_inhibited.accepted
+    assert "refill required" in str(still_inhibited.rejection_reason)
+
+    router.safety_gate.apply_config(
+        SafetyConfig(
+            chlorine_min_pump_output_psi=3.0,
+            chlorine_max_pump_output_psi=4.0,
+        )
+    )
+    after_config_edit = await router.route(
+        command(clock, ActuatorId.CHLORINE_DOSING_PUMP, ActuatorState.ON),
+        measurements=[
+            pressure(clock, SensorId.PUMP_OUTPUT_PSI, 3.2),
+            chlorine_tank_level(clock, 1.7),
+        ],
+    )
+
+    assert not after_config_edit.accepted
+    assert "refill required" in str(after_config_edit.rejection_reason)
+
+
+@pytest.mark.asyncio
 async def test_pump_high_without_prime_pressure_locks_out_as_warning() -> None:
     clock, _, router = make_router()
 
@@ -344,6 +387,34 @@ async def test_pump_high_without_prime_pressure_locks_out_as_warning() -> None:
     assert router.safety_gate.active_fault.severity == SafetySeverity.WARNING
     assert router.actuator_states[ActuatorId.PUMP_MOTOR] == ActuatorState.OFF
     assert router.actuator_states[ActuatorId.PUMP_MOTOR_SPEED] == ActuatorState.LOW
+
+
+@pytest.mark.asyncio
+async def test_pump_prime_timeout_treats_stale_pressure_as_unavailable() -> None:
+    safety_gate = SafetyGate(
+        SafetyConfig(
+            pump_output_max_age_seconds=10.0,
+            pump_prime_timeout_s=30.0,
+        ),
+        chlorine_pump_stabilization_seconds=0.0,
+    )
+    clock, _, router = make_router(safety_gate)
+    await start_pump_high(clock, router)
+    fresh_pressure = pressure(clock, SensorId.PUMP_OUTPUT_PSI, 5.0)
+
+    assert await router.enforce_safety(measurements=[fresh_pressure]) == []
+
+    await clock.advance(11.0)
+    first_stale = await router.enforce_safety(measurements=[fresh_pressure])
+    assert first_stale == []
+    assert not router.safety_gate.locked_out
+
+    await clock.advance(31.0)
+    stale_timeout = await router.enforce_safety(measurements=[fresh_pressure])
+
+    assert len(stale_timeout) == 4
+    assert router.safety_gate.active_fault is not None
+    assert router.safety_gate.active_fault.code == "loss_of_prime"
 
 
 @pytest.mark.asyncio
@@ -439,12 +510,22 @@ async def test_freeze_hysteresis_and_minimum_runtime_latch() -> None:
     assert router.actuator_states[ActuatorId.PUMP_MOTOR_SPEED] == ActuatorState.HIGH
 
     await clock.advance(30.0)
-    held = await router.enforce_safety(measurements=[temperature(clock, 38.0)])
+    held = await router.enforce_safety(
+        measurements=[
+            temperature(clock, 38.0),
+            pressure(clock, SensorId.PUMP_OUTPUT_PSI, 5.0),
+        ]
+    )
     assert held == []
     assert router.actuator_states[ActuatorId.PUMP_MOTOR_SPEED] == ActuatorState.HIGH
 
     await clock.advance(31.0)
-    step_down = await router.enforce_safety(measurements=[temperature(clock, 34.5)])
+    step_down = await router.enforce_safety(
+        measurements=[
+            temperature(clock, 34.5),
+            pressure(clock, SensorId.PUMP_OUTPUT_PSI, 5.0),
+        ]
+    )
     assert len(step_down) == 1
     assert step_down[0].metadata["safety_action"] == "freeze_protection_low"
     assert router.actuator_states[ActuatorId.PUMP_MOTOR_SPEED] == ActuatorState.LOW

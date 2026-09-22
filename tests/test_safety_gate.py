@@ -39,10 +39,10 @@ safety:
   thresholds:
     chlorine_min_pump_output_psi: 7.5
     chlorine_max_pump_output_psi: 8.5
-    chlorine_max_pressure_age_seconds: 9
     pump_prime_min_output_psi: 0.8
     pump_output_overpressure_psi: 32
   timeouts:
+    pump_output_max_age_seconds: 9
     pump_prime_timeout_s: 25
 """,
         encoding="utf-8",
@@ -67,7 +67,7 @@ safety:
     assert config.chlorine_tank.reenable_at_gal == 2.5
     assert config.chlorine_min_pump_output_psi == 7.5
     assert config.chlorine_max_pump_output_psi == 8.5
-    assert config.chlorine_max_pressure_age_seconds == 9.0
+    assert config.pump_output_max_age_seconds == 9.0
     assert config.pump_prime_min_output_psi == 0.8
     assert config.pump_prime_timeout_s == 25.0
     assert config.pump_output_overpressure_psi == 32.0
