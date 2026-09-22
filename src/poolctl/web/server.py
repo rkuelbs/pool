@@ -18,7 +18,7 @@ import os
 import threading
 from collections.abc import Coroutine
 from copy import deepcopy
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from enum import Enum
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -61,7 +61,12 @@ from poolctl.services.fc_demand import FcDemandConfig
 from poolctl.services.flow_estimation import FilterLoadingConfig
 from poolctl.services.measurement_logging import MeasurementLoggingConfig
 from poolctl.services.notifications import NotificationsConfig
-from poolctl.services.pump_timer import PumpTimerConfig, PumpTimerOverride
+from poolctl.services.pump_timer import (
+    PumpTimerConfig,
+    PumpTimerOverride,
+    PumpTimerSchedule,
+    schedule_timing_payload,
+)
 from poolctl.services.safety import SafetyConfig
 from poolctl.services.weather import WeatherPollResult
 from poolctl.web.live import (
@@ -399,6 +404,18 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             self._serve_pump_timer_config()
             return
 
+        if path == "/api/schedule/active_profile":
+            self._serve_schedule_active_profile()
+            return
+
+        if path == "/api/schedule/preview":
+            self._serve_schedule_preview()
+            return
+
+        if path == "/api/schedule/history":
+            self._serve_schedule_history()
+            return
+
         if path == "/api/config/safety":
             self._serve_safety_config()
             return
@@ -450,6 +467,10 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
 
         if path == "/api/config/pump_timer":
             self._serve_update_pump_timer_config()
+            return
+
+        if path == "/api/schedule/active_profile":
+            self._serve_update_schedule_active_profile()
             return
 
         if path == "/api/config/safety":
@@ -758,17 +779,84 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
     def _serve_update_pump_timer_config(self) -> None:
         try:
             payload = self._read_json_body()
-            result = apply_pump_timer_config_update(
-                app=self.app,
-                config_path=self.config_path,
-                local_config_path=self.local_config_path,
-                payload=payload,
+            result = self.async_runtime.run_serial(
+                apply_pump_timer_config_update_serial(
+                    app=self.app,
+                    config_path=self.config_path,
+                    local_config_path=self.local_config_path,
+                    payload=payload,
+                )
             )
         except ValueError as error:
             self._serve_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
             return
 
         self._serve_json(result)
+
+    def _serve_schedule_active_profile(self) -> None:
+        self._serve_json(
+            {
+                "active_profile": self.app.pump_timer_config.active_profile,
+                "profiles": [
+                    profile.name for profile in self.app.pump_timer_config.profiles
+                ],
+            }
+        )
+
+    def _serve_update_schedule_active_profile(self) -> None:
+        try:
+            payload = self._read_json_body()
+            result = self.async_runtime.run_serial(
+                apply_active_schedule_profile_update_serial(
+                    app=self.app,
+                    config_path=self.config_path,
+                    local_config_path=self.local_config_path,
+                    payload=payload,
+                )
+            )
+        except ValueError as error:
+            self._serve_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        self._serve_json(result)
+
+    def _serve_schedule_preview(self) -> None:
+        try:
+            query = parse_qs(urlparse(self.path).query)
+            days = _int_query_value(query, "days", 3)
+            raw_start = query.get("start", [None])[0]
+            start_day = (
+                date.fromisoformat(raw_start)
+                if raw_start
+                else self.app.clock.now()
+                .astimezone(ZoneInfo(self.app.pump_timer_config.timezone))
+                .date()
+            )
+            if self.app.pump_timer is None:
+                raise ValueError("pump timer is unavailable")
+            preview = self.app.pump_timer.service.preview(start_day, days=days)
+        except ValueError as error:
+            self._serve_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        self._serve_json(
+            {
+                "active_profile": self.app.pump_timer_config.active_profile,
+                "days": [item.as_payload() for item in preview],
+            }
+        )
+
+    def _serve_schedule_history(self) -> None:
+        try:
+            query = parse_qs(urlparse(self.path).query)
+            limit = _int_query_value(query, "limit", 100)
+            history = (
+                self.app.measurement_logger.schedule_resolution_history(limit=limit)
+                if self.app.measurement_logger is not None
+                else ()
+            )
+        except ValueError as error:
+            self._serve_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        self._serve_json({"resolutions": [item.as_payload() for item in history]})
 
     def _serve_safety_config(self) -> None:
         self._serve_json(serialize_safety_config(self.app))
@@ -2084,18 +2172,32 @@ def apply_runtime_config_update(
 
 
 def serialize_pump_timer_config(app: PoolControllerApp) -> dict[str, Any]:
+    config = app.pump_timer_config
+    assert config.site is not None
     return {
-        "timezone": app.pump_timer_config.timezone,
-        "schedules": [
+        "site": {
+            "timezone": config.site.timezone,
+            "latitude": config.site.latitude,
+            "longitude": config.site.longitude,
+            "location_source": config.site.location_source,
+        },
+        "active_profile": config.active_profile,
+        "profiles": [
             {
-                "name": schedule.name,
-                "start": _format_time(schedule.window.start.hour, schedule.window.start.minute),
-                "end": _format_time(schedule.window.end.hour, schedule.window.end.minute),
-                "pump_speed": schedule.pump_speed.value,
-                "booster": schedule.booster_state.value,
-                "allow_dosing": schedule.allow_dosing,
+                "name": profile.name,
+                "schedules": [
+                    _serialize_pump_timer_schedule(schedule)
+                    for schedule in profile.schedules
+                ],
             }
-            for schedule in app.pump_timer_config.schedules
+            for profile in config.profiles
+        ],
+        # Compatibility fields keep older dashboard clients functional while
+        # configs are migrated to profiles and typed timing.
+        "timezone": config.timezone,
+        "schedules": [
+            _serialize_legacy_pump_timer_schedule(schedule)
+            for schedule in config.schedules
         ],
     }
 
@@ -2107,32 +2209,175 @@ def apply_pump_timer_config_update(
     local_config_path: Path | None = None,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
-    schedules_data = payload.get("schedules")
-    if not isinstance(schedules_data, list):
-        raise ValueError("schedules must be a list")
-    timezone_name = payload.get("timezone", app.pump_timer_config.timezone)
-    if not isinstance(timezone_name, str):
-        raise ValueError("timezone must be a string")
-
-    proposed_config = PumpTimerConfig.from_mapping(
-        {
+    profiles_data = payload.get("profiles")
+    if profiles_data is not None:
+        if not isinstance(profiles_data, list):
+            raise ValueError("profiles must be a list")
+        site_data = payload.get("site")
+        if not isinstance(site_data, dict):
+            raise ValueError("site must be a mapping")
+        active_profile = payload.get("active_profile", app.pump_timer_config.active_profile)
+        if not isinstance(active_profile, str):
+            raise ValueError("active_profile must be a string")
+        current_site = app.pump_timer_config.site
+        assert current_site is not None
+        proposed_mapping = {
+            "site": {
+                "timezone": site_data.get("timezone", current_site.timezone),
+                "latitude": site_data.get("latitude", current_site.latitude),
+                "longitude": site_data.get("longitude", current_site.longitude),
+            },
             "pump_timer": {
-                "timezone": timezone_name,
-                "schedules": schedules_data,
-            }
+                "active_profile": active_profile,
+                "profiles": profiles_data,
+            },
         }
-    )
-    config_data = _load_config_write_mapping(config_path, local_config_path=local_config_path)
-    pump_timer_data = config_data.setdefault("pump_timer", {})
-    if not isinstance(pump_timer_data, dict):
-        raise ValueError("pump_timer must be a mapping in config")
+    else:
+        schedules_data = payload.get("schedules")
+        if not isinstance(schedules_data, list):
+            raise ValueError("schedules must be a list")
+        timezone_name = payload.get("timezone", app.pump_timer_config.timezone)
+        if not isinstance(timezone_name, str):
+            raise ValueError("timezone must be a string")
+        current_site = app.pump_timer_config.site
+        assert current_site is not None
+        proposed_mapping = {
+            "site": {
+                "timezone": timezone_name,
+                "latitude": current_site.latitude,
+                "longitude": current_site.longitude,
+            },
+            "pump_timer": {"schedules": schedules_data},
+        }
 
-    pump_timer_data["timezone"] = timezone_name
-    pump_timer_data["schedules"] = schedules_data
+    proposed_config = PumpTimerConfig.from_mapping(proposed_mapping)
+    config_data = _load_config_write_mapping(config_path, local_config_path=local_config_path)
+    assert proposed_config.site is not None
+    config_data["site"] = {
+        "timezone": proposed_config.site.timezone,
+        "latitude": proposed_config.site.latitude,
+        "longitude": proposed_config.site.longitude,
+    }
+    weather_data = config_data.get("weather")
+    if isinstance(weather_data, dict):
+        weather_data.pop("latitude", None)
+        weather_data.pop("longitude", None)
+    if (
+        local_config_path is not None
+        and proposed_config.site.latitude is None
+        and proposed_config.site.longitude is None
+    ):
+        # Explicit nulls prevent coordinates inherited from an older base
+        # config's weather block from reviving after a canonical site clear.
+        weather_data = config_data.setdefault("weather", {})
+        if not isinstance(weather_data, dict):
+            raise ValueError("weather must be a mapping in config")
+        weather_data["latitude"] = None
+        weather_data["longitude"] = None
+    config_data["pump_timer"] = {
+        "active_profile": proposed_config.active_profile,
+        "profiles": [
+            {
+                "name": profile.name,
+                "schedules": [
+                    _serialize_pump_timer_schedule(schedule)
+                    for schedule in profile.schedules
+                ],
+            }
+            for profile in proposed_config.profiles
+        ],
+    }
     _save_config_write_mapping(config_path, local_config_path=local_config_path, data=config_data)
 
     app.apply_pump_timer_config(proposed_config)
     return serialize_pump_timer_config(app)
+
+
+async def apply_pump_timer_config_update_serial(
+    *,
+    app: PoolControllerApp,
+    config_path: Path,
+    local_config_path: Path | None,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    return apply_pump_timer_config_update(
+        app=app,
+        config_path=config_path,
+        local_config_path=local_config_path,
+        payload=payload,
+    )
+
+
+def apply_active_schedule_profile_update(
+    *,
+    app: PoolControllerApp,
+    config_path: Path,
+    local_config_path: Path | None,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    profile_name = payload.get("active_profile", payload.get("name"))
+    if not isinstance(profile_name, str):
+        raise ValueError("active_profile must be a string")
+    proposed_config = app.pump_timer_config.with_active_profile(profile_name)
+    config_data = _load_config_write_mapping(config_path, local_config_path=local_config_path)
+    pump_timer_data = config_data.setdefault("pump_timer", {})
+    if not isinstance(pump_timer_data, dict):
+        raise ValueError("pump_timer must be a mapping in config")
+    pump_timer_data["active_profile"] = profile_name
+    _save_config_write_mapping(
+        config_path,
+        local_config_path=local_config_path,
+        data=config_data,
+    )
+    app.apply_pump_timer_config(proposed_config, trigger="profile_change")
+    return {
+        "updated": True,
+        "active_profile": profile_name,
+        "config": serialize_pump_timer_config(app),
+    }
+
+
+async def apply_active_schedule_profile_update_serial(
+    *,
+    app: PoolControllerApp,
+    config_path: Path,
+    local_config_path: Path | None,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    return apply_active_schedule_profile_update(
+        app=app,
+        config_path=config_path,
+        local_config_path=local_config_path,
+        payload=payload,
+    )
+
+
+def _serialize_pump_timer_schedule(schedule: PumpTimerSchedule) -> dict[str, Any]:
+    assert schedule.timing is not None
+    payload = {
+        "name": schedule.name,
+        "enabled": schedule.enabled,
+        "timing": schedule_timing_payload(schedule.timing),
+        "pump_speed": schedule.pump_speed.value,
+        "booster": schedule.booster_state.value,
+        "allow_dosing": schedule.allow_dosing,
+    }
+    return payload
+
+
+def _serialize_legacy_pump_timer_schedule(schedule: PumpTimerSchedule) -> dict[str, Any]:
+    payload = _serialize_pump_timer_schedule(schedule)
+    timing = payload["timing"]
+    if timing["type"] != "fixed" or "end" not in timing:
+        return payload
+    return {
+        "name": payload["name"],
+        "start": timing["start"],
+        "end": timing["end"],
+        "pump_speed": payload["pump_speed"],
+        "booster": payload["booster"],
+        "allow_dosing": payload["allow_dosing"],
+    }
 
 
 def serialize_safety_config(app: PoolControllerApp) -> dict[str, Any]:

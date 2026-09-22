@@ -215,6 +215,8 @@ let lastHistoryKey = "";
 let historyUntilMs = null;
 let timerConfigLoading = false;
 let timerConfigSaving = false;
+let timerConfigDraft = null;
+let timerEditProfileName = null;
 let faultLoading = false;
 let lastFaultLoadedAt = 0;
 let runtimeConfigLoading = false;
@@ -603,6 +605,21 @@ function timerOverrideMessage(override) {
   return "Override active until resumed";
 }
 
+function renderScheduleStatus(schedule) {
+  const target = document.getElementById("liveScheduleStatus");
+  if (!target) return;
+  if (!schedule) {
+    target.textContent = "Schedule: unavailable";
+    return;
+  }
+  const active = (schedule.active_windows || []).map((window) => window.name);
+  const activeText = active.length ? active.join(", ") : "idle";
+  const nextText = schedule.next_transition
+    ? new Date(schedule.next_transition).toLocaleString()
+    : "none";
+  target.textContent = `Schedule: ${schedule.active_profile} · ${activeText} · next ${nextText}`;
+}
+
 function setControlsDisabled(disabled) {
   document.querySelectorAll("[data-command]").forEach((button) => {
     button.disabled = disabled;
@@ -618,6 +635,7 @@ function render(payload) {
   renderChlorinationStatus(payload.chlorination, payload.supplemental_chlorine_dose);
   renderFcDemandStatus(payload.fc_demand, payload.dosing_prime);
   renderTimerOverride(payload.timer_override);
+  renderScheduleStatus(payload.schedule);
   if (PAGE_MODE !== "live") {
     return;
   }
@@ -663,6 +681,7 @@ async function refreshTopStatus(force) {
     renderChlorinationStatus(payload.chlorination, payload.supplemental_chlorine_dose);
     renderFcDemandStatus(payload.fc_demand, payload.dosing_prime);
     renderTimerOverride(payload.timer_override);
+    renderScheduleStatus(payload.schedule);
     lastTopStatusLoadedAt = now;
   } catch (error) {
     const badge = document.getElementById("safetyBadge");
@@ -2222,22 +2241,32 @@ async function loadPumpTimerConfig() {
 function renderPumpTimerConfig(payload) {
   const layer = document.getElementById("timerLayerStatus");
   layer.classList.remove("timer-layer-disabled");
-  layer.textContent = "Pump timer is enabled";
+  layer.textContent = "Pump timer profiles and solar timing are enabled";
 
-  const rows = document.getElementById("timerRows");
-  rows.replaceChildren();
-  const timezoneInput = document.getElementById("timerTimezone");
-  if (timezoneInput) {
-    timezoneInput.value = payload.timezone || "UTC";
+  const fallbackProfile = {
+    name: payload.active_profile || "normal",
+    schedules: Array.isArray(payload.schedules) ? payload.schedules : [],
+  };
+  timerConfigDraft = {
+    site: {
+      timezone: payload.site?.timezone || payload.timezone || "UTC",
+      latitude: payload.site?.latitude ?? null,
+      longitude: payload.site?.longitude ?? null,
+    },
+    active_profile: payload.active_profile || fallbackProfile.name,
+    profiles: Array.isArray(payload.profiles) && payload.profiles.length
+      ? JSON.parse(JSON.stringify(payload.profiles))
+      : [fallbackProfile],
+  };
+  if (!timerConfigDraft.profiles.some((profile) => profile.name === timerEditProfileName)) {
+    timerEditProfileName = timerConfigDraft.active_profile;
   }
-
-  const schedules = Array.isArray(payload.schedules) ? payload.schedules : [];
-  if (!schedules.length) {
-    rows.appendChild(timerRowElement());
-    return;
-  }
-
-  schedules.forEach((schedule) => rows.appendChild(timerRowElement(schedule)));
+  document.getElementById("timerTimezone").value = timerConfigDraft.site.timezone;
+  document.getElementById("timerLatitude").value = timerConfigDraft.site.latitude ?? "";
+  document.getElementById("timerLongitude").value = timerConfigDraft.site.longitude ?? "";
+  renderTimerProfileSelectors();
+  renderTimerProfileRows();
+  loadSchedulePreview();
 }
 
 function timerRowElement(schedule = {}) {
@@ -2245,8 +2274,12 @@ function timerRowElement(schedule = {}) {
   row.className = "timer-row";
 
   row.appendChild(timerInput("name", schedule.name || "", "text"));
-  row.appendChild(timerInput("start", schedule.start || "08:00", "time"));
-  row.appendChild(timerInput("end", schedule.end || "12:00", "time"));
+  row.appendChild(timerCheckbox("enabled", schedule.enabled !== false));
+  row.appendChild(timerTimingEditor(schedule.timing || {
+    type: "fixed",
+    start: schedule.start || "08:00",
+    end: schedule.end || "12:00",
+  }));
   row.appendChild(timerSelect("pump_speed", ["low", "high"], schedule.pump_speed || "low"));
   row.appendChild(timerSelect("booster", ["off", "on"], schedule.booster || "off"));
   row.appendChild(timerCheckbox("allow_dosing", schedule.allow_dosing !== false));
@@ -2265,11 +2298,73 @@ function timerRowElement(schedule = {}) {
   return row;
 }
 
+function timerTimingEditor(timing) {
+  const editor = document.createElement("div");
+  editor.className = "timer-timing";
+  editor.dataset.field = "timing";
+  const type = timerSelect(
+    "timing_type",
+    ["fixed", "solar_anchor", "daylight_fraction"],
+    timing.type || "fixed",
+  );
+  editor.appendChild(type);
+  const fields = document.createElement("div");
+  fields.className = "timer-timing-fields";
+  editor.appendChild(fields);
+
+  const renderFields = (value, source = {}) => {
+    fields.replaceChildren();
+    if (value === "fixed") {
+      fields.appendChild(timerInput("timing_start", source.start || "08:00", "time"));
+      const mode = timerSelect(
+        "timing_fixed_mode",
+        ["end", "duration"],
+        source.duration_minutes == null ? "end" : "duration",
+      );
+      fields.appendChild(mode);
+      const renderFixedValue = () => {
+        while (fields.children.length > 2) fields.lastChild.remove();
+        fields.appendChild(
+          mode.value === "end"
+            ? timerInput("timing_end", source.end || "12:00", "time")
+            : timerInput("timing_duration_minutes", source.duration_minutes ?? 60, "number"),
+        );
+      };
+      mode.addEventListener("change", renderFixedValue);
+      renderFixedValue();
+    } else if (value === "solar_anchor") {
+      fields.appendChild(timerSelect(
+        "timing_anchor",
+        ["sunrise", "sunset", "daylight_midpoint"],
+        source.anchor || "sunrise",
+      ));
+      fields.appendChild(timerInput("timing_offset_minutes", source.offset_minutes ?? 0, "number"));
+      fields.appendChild(timerInput("timing_duration_minutes", source.duration_minutes ?? 60, "number"));
+    } else {
+      fields.appendChild(timerInput("timing_start_fraction", source.start_fraction ?? 0, "number"));
+      fields.appendChild(timerInput("timing_end_fraction", source.end_fraction ?? 1, "number"));
+    }
+  };
+  type.addEventListener("change", () => renderFields(type.value));
+  renderFields(type.value, timing);
+  return editor;
+}
+
 function timerInput(field, value, type) {
   const input = document.createElement("input");
   input.type = type;
   input.value = value;
   input.dataset.field = field;
+  const placeholders = {
+    timing_duration_minutes: "duration min",
+    timing_offset_minutes: "offset min",
+    timing_start_fraction: "start fraction",
+    timing_end_fraction: "end fraction",
+  };
+  if (placeholders[field]) input.placeholder = placeholders[field];
+  if (type === "number") {
+    input.step = field.includes("fraction") ? "0.01" : "1";
+  }
   if (field === "name") {
     input.placeholder = "morning_filter";
   }
@@ -2313,23 +2408,88 @@ function collectTimerSchedules() {
   const rows = [...document.querySelectorAll(".timer-row")];
   const schedules = rows.map((row, index) => {
     const name = row.querySelector('[data-field="name"]').value.trim();
-    const start = row.querySelector('[data-field="start"]').value;
-    const end = row.querySelector('[data-field="end"]').value;
+    const enabled = row.querySelector('[data-field="enabled"]').checked;
     const pumpSpeed = row.querySelector('[data-field="pump_speed"]').value;
     const booster = row.querySelector('[data-field="booster"]').value;
     const allowDosing = row.querySelector('[data-field="allow_dosing"]').checked;
+    const timingType = row.querySelector('[data-field="timing_type"]').value;
+    let timing;
+    if (timingType === "fixed") {
+      timing = {
+        type: "fixed",
+        start: row.querySelector('[data-field="timing_start"]').value,
+      };
+      const fixedMode = row.querySelector('[data-field="timing_fixed_mode"]').value;
+      if (fixedMode === "duration") {
+        timing.duration_minutes = Number(
+          row.querySelector('[data-field="timing_duration_minutes"]').value,
+        );
+      } else {
+        timing.end = row.querySelector('[data-field="timing_end"]').value;
+      }
+    } else if (timingType === "solar_anchor") {
+      timing = {
+        type: "solar_anchor",
+        anchor: row.querySelector('[data-field="timing_anchor"]').value,
+        offset_minutes: Number(row.querySelector('[data-field="timing_offset_minutes"]').value),
+        duration_minutes: Number(row.querySelector('[data-field="timing_duration_minutes"]').value),
+      };
+    } else {
+      timing = {
+        type: "daylight_fraction",
+        start_fraction: Number(row.querySelector('[data-field="timing_start_fraction"]').value),
+        end_fraction: Number(row.querySelector('[data-field="timing_end_fraction"]').value),
+      };
+    }
 
     return {
       name: name || `schedule_${index + 1}`,
-      start,
-      end,
+      enabled,
+      timing,
       pump_speed: pumpSpeed,
       booster,
       allow_dosing: allowDosing,
     };
   });
 
-  return schedules.filter((schedule) => schedule.start && schedule.end);
+  return schedules;
+}
+
+function storeEditedTimerProfile() {
+  if (!timerConfigDraft || !timerEditProfileName) return;
+  const profile = timerConfigDraft.profiles.find((item) => item.name === timerEditProfileName);
+  if (profile) profile.schedules = collectTimerSchedules();
+}
+
+function renderTimerProfileSelectors() {
+  const active = document.getElementById("timerActiveProfile");
+  const edit = document.getElementById("timerEditProfile");
+  active.replaceChildren();
+  edit.replaceChildren();
+  timerConfigDraft.profiles.forEach((profile) => {
+    [active, edit].forEach((select) => {
+      const option = document.createElement("option");
+      option.value = profile.name;
+      option.textContent = profile.name;
+      select.appendChild(option);
+    });
+  });
+  active.value = timerConfigDraft.active_profile;
+  edit.value = timerEditProfileName;
+}
+
+function renderTimerProfileRows() {
+  const rows = document.getElementById("timerRows");
+  rows.replaceChildren();
+  const profile = timerConfigDraft.profiles.find((item) => item.name === timerEditProfileName);
+  const schedules = profile?.schedules || [];
+  if (!schedules.length) rows.appendChild(timerRowElement());
+  else schedules.forEach((schedule) => rows.appendChild(timerRowElement(schedule)));
+}
+
+function optionalNumberValue(id) {
+  const value = document.getElementById(id).value.trim();
+  return value === "" ? null : Number(value);
 }
 
 async function savePumpTimerConfig() {
@@ -2342,12 +2502,18 @@ async function savePumpTimerConfig() {
   setTimerButtonsDisabled(true);
 
   try {
+    storeEditedTimerProfile();
     const response = await fetch("/api/config/pump_timer", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        timezone: document.getElementById("timerTimezone").value.trim() || "UTC",
-        schedules: collectTimerSchedules(),
+        site: {
+          timezone: document.getElementById("timerTimezone").value.trim() || "UTC",
+          latitude: optionalNumberValue("timerLatitude"),
+          longitude: optionalNumberValue("timerLongitude"),
+        },
+        active_profile: document.getElementById("timerActiveProfile").value,
+        profiles: timerConfigDraft.profiles,
       }),
     });
     const payload = await parseApiResponse(response, "pump timer config save failed");
@@ -2367,8 +2533,38 @@ function setTimerStatus(message) {
 
 function setTimerButtonsDisabled(disabled) {
   document.getElementById("timerAddRow").disabled = disabled;
+  document.getElementById("timerAddProfile").disabled = disabled;
+  document.getElementById("timerRemoveProfile").disabled = disabled;
   document.getElementById("timerSave").disabled = disabled;
   document.getElementById("timerReload").disabled = disabled;
+  document.getElementById("timerActiveProfile").disabled = disabled;
+  document.getElementById("timerEditProfile").disabled = disabled;
+}
+
+async function loadSchedulePreview() {
+  const target = document.getElementById("timerPreview");
+  if (!target) return;
+  target.textContent = "Loading resolved schedule...";
+  try {
+    const response = await fetch("/api/schedule/preview?days=3", { cache: "no-store" });
+    const payload = await parseApiResponse(response, "schedule preview failed");
+    const entries = [];
+    (payload.days || []).forEach((day) => {
+      entries.push(`${day.local_date} · sunrise ${formatScheduleInstant(day.sunrise)} · sunset ${formatScheduleInstant(day.sunset)}`);
+      (day.windows || []).forEach((window) => {
+        entries.push(`  ${window.name}: ${formatScheduleInstant(window.start)}–${formatScheduleInstant(window.end)} · ${window.pump_speed.toUpperCase()} · booster ${window.booster.toUpperCase()} · dosing ${window.allow_dosing ? "yes" : "no"}`);
+      });
+      (day.warnings || []).forEach((warning) => entries.push(`  Warning: ${warning}`));
+    });
+    target.textContent = entries.length ? entries.join("\n") : "No enabled windows.";
+  } catch (error) {
+    target.textContent = error.message;
+  }
+}
+
+function formatScheduleInstant(value) {
+  if (!value) return "--";
+  return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
 function initializeTimerControls() {
@@ -2377,6 +2573,45 @@ function initializeTimerControls() {
   });
   document.getElementById("timerSave").addEventListener("click", savePumpTimerConfig);
   document.getElementById("timerReload").addEventListener("click", loadPumpTimerConfig);
+  document.getElementById("timerPreviewReload").addEventListener("click", loadSchedulePreview);
+  document.getElementById("timerEditProfile").addEventListener("change", (event) => {
+    storeEditedTimerProfile();
+    timerEditProfileName = event.target.value;
+    renderTimerProfileRows();
+  });
+  document.getElementById("timerActiveProfile").addEventListener("change", (event) => {
+    if (timerConfigDraft) timerConfigDraft.active_profile = event.target.value;
+  });
+  document.getElementById("timerAddProfile").addEventListener("click", () => {
+    storeEditedTimerProfile();
+    const name = window.prompt("New profile name")?.trim();
+    if (!name) return;
+    if (timerConfigDraft.profiles.some((profile) => profile.name === name)) {
+      setTimerStatus(`Profile ${name} already exists`);
+      return;
+    }
+    timerConfigDraft.profiles.push({ name, schedules: [] });
+    timerEditProfileName = name;
+    renderTimerProfileSelectors();
+    renderTimerProfileRows();
+  });
+  document.getElementById("timerRemoveProfile").addEventListener("click", () => {
+    if (!timerConfigDraft || timerConfigDraft.profiles.length <= 1) {
+      setTimerStatus("At least one profile is required");
+      return;
+    }
+    timerConfigDraft.profiles = timerConfigDraft.profiles.filter(
+      (profile) => profile.name !== timerEditProfileName,
+    );
+    if (!timerConfigDraft.profiles.some(
+      (profile) => profile.name === timerConfigDraft.active_profile,
+    )) {
+      timerConfigDraft.active_profile = timerConfigDraft.profiles[0].name;
+    }
+    timerEditProfileName = timerConfigDraft.profiles[0].name;
+    renderTimerProfileSelectors();
+    renderTimerProfileRows();
+  });
   loadPumpTimerConfig();
 }
 

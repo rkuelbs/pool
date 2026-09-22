@@ -21,6 +21,7 @@ from poolctl.web.server import (
     add_lab_test,
     apply_analog_input_config_update,
     apply_acquisition_config_update,
+    apply_active_schedule_profile_update,
     apply_chlorination_config_update,
     apply_filter_loading_config_update,
     apply_fc_demand_config_update,
@@ -138,9 +139,16 @@ def test_apply_pump_timer_update_updates_running_app_and_yaml(tmp_path: Path) ->
     assert app.pump_timer_config.timezone == "UTC"
 
     saved = yaml.safe_load(path.read_text(encoding="utf-8"))
-    assert saved["pump_timer"]["schedules"][0]["name"] == "evening_filter"
-    assert saved["pump_timer"]["schedules"][0]["allow_dosing"] is False
-    assert saved["pump_timer"]["timezone"] == "UTC"
+    assert saved["site"]["timezone"] == "UTC"
+    assert saved["pump_timer"]["active_profile"] == "normal"
+    saved_schedule = saved["pump_timer"]["profiles"][0]["schedules"][0]
+    assert saved_schedule["name"] == "evening_filter"
+    assert saved_schedule["allow_dosing"] is False
+    assert saved_schedule["timing"] == {
+        "type": "fixed",
+        "start": "18:00",
+        "end": "21:00",
+    }
 
 
 def test_gui_config_update_can_write_local_override_without_touching_base(tmp_path: Path) -> None:
@@ -173,24 +181,49 @@ def test_gui_config_update_can_write_local_override_without_touching_base(tmp_pa
     assert result["timezone"] == "UTC"
     assert base_path.read_text(encoding="utf-8") == base_before
     local_data = yaml.safe_load(local_path.read_text(encoding="utf-8"))
-    assert local_data == {
-        "pump_timer": {
-            "timezone": "UTC",
-            "schedules": [
-                {
-                    "name": "local_evening",
-                    "start": "18:00",
-                    "end": "21:00",
-                    "pump_speed": "low",
-                    "booster": "off",
-                    "allow_dosing": True,
-                }
-            ],
-        }
+    assert local_data["site"] == {
+        "timezone": "UTC",
+        "latitude": None,
+        "longitude": None,
     }
+    assert local_data["pump_timer"]["active_profile"] == "normal"
+    local_schedule = local_data["pump_timer"]["profiles"][0]["schedules"][0]
+    assert local_schedule["name"] == "local_evening"
+    assert local_schedule["allow_dosing"] is True
     effective = load_config_with_overrides(base_path, local_path=local_path)
     assert effective["runtime"] == base_data["runtime"]
-    assert effective["pump_timer"]["schedules"][0]["name"] == "local_evening"
+    assert effective["pump_timer"]["profiles"][0]["schedules"][0]["name"] == (
+        "local_evening"
+    )
+
+
+def test_active_profile_update_applies_live_and_persists(tmp_path: Path) -> None:
+    config = {
+        **config_mapping(),
+        "site": {"timezone": "UTC"},
+        "pump_timer": {
+            "active_profile": "normal",
+            "profiles": [
+                {"name": "normal", "schedules": []},
+                {"name": "away", "schedules": []},
+            ],
+        },
+    }
+    path = tmp_path / "pool.yaml"
+    path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    app = build_app_from_mapping(config, clock=make_clock())
+
+    result = apply_active_schedule_profile_update(
+        app=app,
+        config_path=path,
+        local_config_path=None,
+        payload={"active_profile": "away"},
+    )
+
+    assert result["active_profile"] == "away"
+    assert app.pump_timer_config.active_profile == "away"
+    saved = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert saved["pump_timer"]["active_profile"] == "away"
 
 
 def test_chlorination_update_applies_live_and_persists(tmp_path: Path) -> None:

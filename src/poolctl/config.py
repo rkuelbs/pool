@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any, TypeVar
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml  # type: ignore[import-untyped]
 
@@ -29,6 +30,72 @@ class DriverProfile(str, Enum):
 
     SIMULATED = "simulated"
     RASPBERRY_PI = "raspberry_pi"
+
+
+@dataclass(frozen=True)
+class SiteConfig:
+    """Canonical site timezone and optional geographic coordinates."""
+
+    timezone: str = "UTC"
+    latitude: float | None = None
+    longitude: float | None = None
+    location_source: str = "site"
+
+    def __post_init__(self) -> None:
+        try:
+            ZoneInfo(self.timezone)
+        except ZoneInfoNotFoundError as error:
+            raise ValueError(f"invalid timezone: {self.timezone}") from error
+        if self.latitude is not None and not -90.0 <= self.latitude <= 90.0:
+            raise ValueError("site.latitude must be between -90 and 90")
+        if self.longitude is not None and not -180.0 <= self.longitude <= 180.0:
+            raise ValueError("site.longitude must be between -180 and 180")
+        if (self.latitude is None) != (self.longitude is None):
+            raise ValueError("site.latitude and site.longitude must be configured together")
+
+    @property
+    def has_location(self) -> bool:
+        return self.latitude is not None and self.longitude is not None
+
+    @classmethod
+    def from_mapping(cls, data: Mapping[str, Any]) -> SiteConfig:
+        raw_site = data.get("site", {})
+        if not isinstance(raw_site, Mapping):
+            raise ValueError("site must be a mapping")
+        raw_timer = data.get("pump_timer", {})
+        if not isinstance(raw_timer, Mapping):
+            raise ValueError("pump_timer must be a mapping")
+        raw_weather = data.get("weather", {})
+        if not isinstance(raw_weather, Mapping):
+            raise ValueError("weather must be a mapping")
+
+        timezone_name = raw_site.get(
+            "timezone",
+            raw_timer.get("timezone", "UTC"),
+        )
+        if not isinstance(timezone_name, str):
+            raise ValueError("site.timezone must be a string")
+
+        latitude = _optional_number(raw_site.get("latitude"), "site.latitude")
+        longitude = _optional_number(raw_site.get("longitude"), "site.longitude")
+        source = "site"
+        if latitude is None and longitude is None:
+            latitude = _optional_number(
+                raw_weather.get("latitude"),
+                "weather.latitude",
+            )
+            longitude = _optional_number(
+                raw_weather.get("longitude"),
+                "weather.longitude",
+            )
+            source = "weather_legacy" if latitude is not None or longitude is not None else "site"
+
+        return cls(
+            timezone=timezone_name,
+            latitude=latitude,
+            longitude=longitude,
+            location_source=source,
+        )
 
 
 DEFAULT_SENSOR_GROUPS = frozenset(
@@ -237,4 +304,12 @@ def _required_float_value(data: Mapping[str, Any], key: str) -> float:
     if not isinstance(value, int | float):
         raise ValueError(f"{key} must be a number")
 
+    return float(value)
+
+
+def _optional_number(value: object, key: str) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise ValueError(f"{key} must be a number or null")
     return float(value)

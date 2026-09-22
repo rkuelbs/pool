@@ -62,29 +62,51 @@
       <section class="history-panel" aria-label="Pump timer schedules" data-view-section="schedule">
         <div class="history-header">
           <h2>Pump Timer Config</h2>
-          <button id="timerAddRow" type="button">Add Schedule</button>
+          <div class="history-controls">
+            <button id="timerAddProfile" type="button">Add Profile</button>
+            <button id="timerRemoveProfile" type="button">Remove Profile</button>
+            <button id="timerAddRow" type="button">Add Schedule</button>
+          </div>
         </div>
         <div id="timerLayerStatus" class="history-status">--</div>
         <div class="config-grid">
           <label>Timezone
             <input id="timerTimezone" type="text" placeholder="America/Chicago">
           </label>
+          <label>Latitude
+            <input id="timerLatitude" type="number" min="-90" max="90" step="0.000001" placeholder="required for solar timing">
+          </label>
+          <label>Longitude
+            <input id="timerLongitude" type="number" min="-180" max="180" step="0.000001" placeholder="required for solar timing">
+          </label>
+          <label>Active Profile
+            <select id="timerActiveProfile"></select>
+          </label>
+          <label>Edit Profile
+            <select id="timerEditProfile"></select>
+          </label>
         </div>
         <div class="timer-grid-head">
           <span>Name</span>
-          <span>Start</span>
-          <span>End</span>
+          <span>Enabled</span>
+          <span>Timing</span>
           <span>Pump Speed</span>
           <span>Booster</span>
           <span>Dosing</span>
           <span>Action</span>
         </div>
         <div id="timerRows" class="timer-rows"></div>
+        <p class="history-status">Daylight fractions are decimals: 0 = sunrise, 0.5 = daylight midpoint, and 1 = sunset. Negative values run before sunrise; values above 1 run after sunset.</p>
         <div class="timer-actions">
           <button id="timerReload" type="button">Reload</button>
           <button id="timerSave" type="button">Save Schedules</button>
         </div>
         <div id="timerSaveStatus" class="history-status">--</div>
+        <div class="history-header">
+          <h2>Resolved Preview</h2>
+          <button id="timerPreviewReload" type="button">Refresh Preview</button>
+        </div>
+        <div id="timerPreview" class="timeline-list">--</div>
       </section>
 
       <section class="history-panel" aria-label="Runtime config" data-view-section="config">

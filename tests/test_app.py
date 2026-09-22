@@ -39,6 +39,7 @@ from poolctl.drivers.simulated.actuators import build_default_simulated_actuator
 from poolctl.drivers.simulated.plant import SimulatedPlant
 from poolctl.services.clock import SimulatedClock
 from poolctl.services.notifications import NotificationProvider, NotificationResult
+from poolctl.services.pump_timer import PumpTimerConfig
 import poolctl.services.weather as weather_service_module
 
 
@@ -324,6 +325,58 @@ async def test_runtime_can_run_pump_timer_without_acquisition() -> None:
     assert chlorine_result.rejection_reason == (
         "no driver registered for chlorine_dosing_pump"
     )
+
+
+@pytest.mark.asyncio
+async def test_timer_turns_chlorine_off_before_stopping_circulation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = make_clock()
+    config = {
+        "runtime": {
+            "driver_profile": "simulated",
+            "enabled_actuators": [
+                "pump_motor",
+                "pump_motor_speed",
+                "booster_pump",
+                "chlorine_dosing_pump",
+            ],
+            "enabled_sensor_groups": [],
+        },
+        **active_pump_timer_config(),
+        "logging": {"database_path": str(tmp_path / "schedule_transition.sqlite3")},
+    }
+    app = build_app_from_mapping(config, clock=clock)
+    await app.tick()
+    await app.router.route(
+        ActuatorCommand(
+            actuator_id=ActuatorId.CHLORINE_DOSING_PUMP,
+            created_at=clock.now(),
+            state=ActuatorState.ON,
+            requested_by=CommandSource.SYSTEM,
+            reason="test active dose",
+        ),
+        bypass_safety=True,
+    )
+
+    routed_commands: list[ActuatorCommand] = []
+    original_route = app.router.route
+
+    async def record_route(command: ActuatorCommand, **kwargs: object):
+        routed_commands.append(command)
+        return await original_route(command, **kwargs)
+
+    monkeypatch.setattr(app.router, "route", record_route)
+    app.apply_pump_timer_config(PumpTimerConfig(timezone="UTC", schedules=()))
+
+    await app._run_pump_timer()
+
+    assert [command.actuator_id for command in routed_commands[:2]] == [
+        ActuatorId.CHLORINE_DOSING_PUMP,
+        ActuatorId.PUMP_MOTOR,
+    ]
+    assert all(command.state == ActuatorState.OFF for command in routed_commands[:2])
 
 
 @pytest.mark.asyncio

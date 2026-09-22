@@ -481,6 +481,8 @@ class PoolControllerApp:
     chlorination_control_last_signature: tuple[Any, ...] | None = None
     daily_environment_last_checked_at: datetime | None = None
     fc_demand_last_logged_measurement_id: str | None = None
+    schedule_resolution_last_signature: tuple[str, str, str] | None = None
+    schedule_resolution_pending_trigger: str = "startup"
 
     async def tick(self, *, force_acquisition: bool = False) -> AppTickResult:
         # Measure the tick with a monotonic clock. This is used for loop timing
@@ -671,6 +673,11 @@ class PoolControllerApp:
             ),
             freeze_status=self.router.safety_gate.freeze_status(self.clock.now()),
         )
+        if self.pump_timer is not None:
+            # Astronomy resolution is intentionally refreshed after control and
+            # safety work so it cannot stretch a dosing pulse boundary.
+            self.pump_timer.refresh_horizon(self.clock.now())
+            self._persist_current_schedule_resolution(self.clock.now())
 
         return AppTickResult(
             observed_at=self.clock.now(),
@@ -695,12 +702,45 @@ class PoolControllerApp:
             control_duration_s=control_duration_s,
         )
 
-    def apply_pump_timer_config(self, config: PumpTimerConfig) -> None:
+    def apply_pump_timer_config(
+        self,
+        config: PumpTimerConfig,
+        *,
+        trigger: str = "config_change",
+    ) -> None:
         """
         Apply updated pump timer schedules to the running app.
         """
+        timer = PumpTimer(config)
+        timer.prime(self.clock.now())
         object.__setattr__(self, "pump_timer_config", config)
-        object.__setattr__(self, "pump_timer", PumpTimer(config))
+        object.__setattr__(self, "pump_timer", timer)
+        object.__setattr__(self, "schedule_resolution_last_signature", None)
+        object.__setattr__(self, "schedule_resolution_pending_trigger", trigger)
+
+    def _persist_current_schedule_resolution(self, now: datetime) -> None:
+        if self.pump_timer is None or self.measurement_logger is None:
+            return
+        local_day = now.astimezone(ZoneInfo(self.pump_timer_config.timezone)).date()
+        resolution = self.pump_timer.service.day(local_day)
+        signature = (
+            local_day.isoformat(),
+            resolution.profile_name,
+            self.pump_timer.service.config_digest,
+        )
+        if signature == self.schedule_resolution_last_signature:
+            return
+        trigger = self.schedule_resolution_pending_trigger
+        if self.schedule_resolution_last_signature is not None and trigger == "startup":
+            trigger = "day_rollover"
+        self.measurement_logger.log_schedule_resolution(
+            resolution,
+            resolved_at=now,
+            trigger=trigger,
+            config_digest=self.pump_timer.service.config_digest,
+        )
+        object.__setattr__(self, "schedule_resolution_last_signature", signature)
+        object.__setattr__(self, "schedule_resolution_pending_trigger", "day_rollover")
 
     def apply_chlorination_config(self, config: ChlorinationConfig) -> None:
         """
@@ -1387,8 +1427,28 @@ class PoolControllerApp:
         )
         manual_override = self.active_timer_override()
         sampling_override = self.active_sample_timer_override()
+        freeze_status = self.router.safety_gate.freeze_status(now)
+        freeze_override = None
+        if freeze_status["active"]:
+            latched_speed = freeze_status.get("latched_speed")
+            freeze_override = TimerOverrideState(
+                override=PumpTimerOverride(
+                    pump_motor=ActuatorState.ON,
+                    pump_speed=(
+                        ActuatorState(str(latched_speed))
+                        if latched_speed in {ActuatorState.LOW.value, ActuatorState.HIGH.value}
+                        else ActuatorState.HIGH
+                    ),
+                    booster_state=ActuatorState.OFF,
+                    reason="freeze protection circulation",
+                ),
+                set_at=now,
+                source="freeze_protection",
+            )
         selected_override = (
-            TimerOverrideState(
+            freeze_override
+            if freeze_override is not None
+            else TimerOverrideState(
                 override=supplemental_override,
                 set_at=supplemental_dose.requested_at,
                 until=supplemental_dose.circulate_until,
@@ -1406,6 +1466,38 @@ class PoolControllerApp:
         )
 
         results: list[ActuatorCommandResult] = []
+        chlorine_is_on = self.router.actuator_states.get(
+            ActuatorId.CHLORINE_DOSING_PUMP,
+            ActuatorState.OFF,
+        ) == ActuatorState.ON
+        unsafe_timer_transition = any(
+            (
+                command.actuator_id == ActuatorId.PUMP_MOTOR
+                and command.state == ActuatorState.OFF
+            )
+            or (
+                command.actuator_id == ActuatorId.BOOSTER_PUMP
+                and command.state == ActuatorState.ON
+            )
+            for command in evaluation.commands
+        )
+        if chlorine_is_on and unsafe_timer_transition:
+            # Account for the preceding ON interval, then force chlorine OFF
+            # before a profile or window transition can remove circulation or
+            # energize the booster.
+            self._log_chlorine_delivery_since_last_tick(now)
+            results.append(
+                await self.router.route(
+                    ActuatorCommand(
+                        actuator_id=ActuatorId.CHLORINE_DOSING_PUMP,
+                        created_at=now,
+                        state=ActuatorState.OFF,
+                        requested_by=CommandSource.SYSTEM,
+                        reason="pump schedule transition requires dosing off",
+                        metadata={"controller": "pump_timer_interlock"},
+                    )
+                )
+            )
         for command in evaluation.commands:
             results.append(await self.router.route(command))
 
@@ -1439,6 +1531,9 @@ class PoolControllerApp:
             pump_timer_config=self.pump_timer_config,
             actuator_states=self.router.actuator_states,
             plan_adjustment=plan_adjustment,
+            schedule_service=(
+                self.pump_timer.service if self.pump_timer is not None else None
+            ),
         )
 
         results: list[ActuatorCommandResult] = []
@@ -1937,6 +2032,9 @@ class PoolControllerApp:
                 fc_observations=(),
                 automated_chlorine_deliveries=(),
                 sodium_hypochlorite_additions=(),
+                schedule_service=(
+                    self.pump_timer.service if self.pump_timer is not None else None
+                ),
             )
         if self.measurement_logger is None:
             return FcDemandPlan(
@@ -2007,6 +2105,9 @@ class PoolControllerApp:
                 for record in delivery_records
             ),
             sodium_hypochlorite_additions=sodium_hypochlorite_additions,
+            schedule_service=(
+                self.pump_timer.service if self.pump_timer is not None else None
+            ),
         )
 
     def chlorine_tank_estimate(
@@ -3251,6 +3352,7 @@ def build_app_from_mapping(
         multi_sensor_drivers=built_multi_sensor_drivers,
     )
     pump_timer = PumpTimer(pump_timer_config)
+    pump_timer.prime(built_clock.now())
     chlorination_controller = ChlorinationController(chlorination_config)
     measurement_logger = MeasurementLogger(measurement_logging_config)
     filter_loading_estimator = FilterLoadingEstimator(

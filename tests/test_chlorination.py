@@ -36,6 +36,7 @@ def schedule(
     start: str = "08:00",
     end: str = "10:00",
     pump_speed: ActuatorState = ActuatorState.LOW,
+    booster_state: ActuatorState = ActuatorState.OFF,
     allow_dosing: bool = True,
 ) -> PumpTimerSchedule:
     return PumpTimerSchedule(
@@ -46,6 +47,7 @@ def schedule(
             end=TimeOfDay.parse(end),
         ),
         pump_speed=pump_speed,
+        booster_state=booster_state,
         allow_dosing=allow_dosing,
     )
 
@@ -86,6 +88,47 @@ def test_valid_dosing_windows_trim_last_minutes_of_merged_run() -> None:
     assert windows[0].start == at(8)
     assert windows[0].end == at(11, 50)
     assert windows[0].duration_seconds == 230.0 * 60.0
+
+
+def test_allow_dosing_true_grants_dosing_during_false_overlap() -> None:
+    config = timer_config(
+        schedule(name="circulation", start="08:00", end="12:00", allow_dosing=False),
+        schedule(name="dose", start="09:00", end="11:00", allow_dosing=True),
+    )
+
+    windows = valid_dosing_windows_for_day(
+        config,
+        at(0).date(),
+        no_dose_first_minutes=0.0,
+        no_dose_last_minutes=0.0,
+    )
+
+    assert [(window.start, window.end) for window in windows] == [(at(9), at(11))]
+
+
+def test_booster_overlap_splits_valid_dosing_window() -> None:
+    config = timer_config(
+        schedule(name="dose", start="09:00", end="11:00", allow_dosing=True),
+        schedule(
+            name="booster",
+            start="09:30",
+            end="10:00",
+            booster_state=ActuatorState.ON,
+            allow_dosing=False,
+        ),
+    )
+
+    windows = valid_dosing_windows_for_day(
+        config,
+        at(0).date(),
+        no_dose_first_minutes=0.0,
+        no_dose_last_minutes=0.0,
+    )
+
+    assert [(window.start, window.end) for window in windows] == [
+        (at(9), at(9, 30)),
+        (at(10), at(11)),
+    ]
 
 
 def test_valid_dosing_windows_ignore_schedules_that_disallow_dosing() -> None:

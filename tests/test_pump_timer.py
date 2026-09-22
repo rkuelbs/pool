@@ -7,14 +7,21 @@ next-scheduled-event behavior used by the live controls.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
+from poolctl.config import SiteConfig
 from poolctl.domain.models import ActuatorId, ActuatorState, CommandSource
 from poolctl.services.pump_timer import (
     PumpTimer,
     PumpTimerConfig,
     PumpTimerSchedule,
+    DaylightFractionTiming,
+    FixedTiming,
+    ScheduleProfile,
+    ScheduleResolver,
+    SolarAnchorTiming,
     load_pump_timer_config,
 )
 from poolctl.services.schedule import DailyTimeWindow, TimeOfDay
@@ -257,6 +264,8 @@ def test_pump_timer_schedule_defaults_to_allowing_dosing() -> None:
     )
 
     assert config.schedules[0].allow_dosing is True
+    assert config.active_profile == "normal"
+    assert config.profiles[0].name == "normal"
 
 
 def test_pump_timer_rejects_non_boolean_allow_dosing() -> None:
@@ -293,3 +302,163 @@ def test_timer_uses_configured_timezone() -> None:
     # 14:00 UTC on 2026-05-21 is 09:00 America/Chicago (CDT).
     evaluation = timer.evaluate(now=at(14), actuator_states={})
     assert evaluation.active_schedule_names == ("filter",)
+
+
+class FixedAstronomy:
+    def sunrise_sunset(
+        self,
+        *,
+        day: date,
+        site: SiteConfig,
+    ) -> tuple[datetime, datetime]:
+        zone = ZoneInfo(site.timezone)
+        return (
+            datetime(day.year, day.month, day.day, 6, 0, tzinfo=zone),
+            datetime(day.year, day.month, day.day, 18, 0, tzinfo=zone),
+        )
+
+
+def solar_config(*schedules: PumpTimerSchedule) -> PumpTimerConfig:
+    return PumpTimerConfig(
+        site=SiteConfig(
+            timezone="America/Chicago",
+            latitude=41.88,
+            longitude=-87.63,
+        ),
+        profiles=(ScheduleProfile(name="normal", schedules=tuple(schedules)),),
+    )
+
+
+def test_solar_anchor_resolves_offset_and_duration() -> None:
+    config = solar_config(
+        PumpTimerSchedule(
+            name="after_sunrise",
+            timing=SolarAnchorTiming(
+                anchor="sunrise",
+                offset_minutes=30,
+                duration_minutes=90,
+            ),
+        )
+    )
+
+    resolved = ScheduleResolver(FixedAstronomy()).resolve_day(config, date(2026, 6, 1))
+
+    assert resolved.sunrise is not None
+    assert resolved.windows[0].start.strftime("%H:%M") == "06:30"
+    assert resolved.windows[0].end.strftime("%H:%M") == "08:00"
+
+
+def test_astral_provider_resolves_real_site_without_network() -> None:
+    config = solar_config(
+        PumpTimerSchedule(
+            name="sunrise_run",
+            timing=SolarAnchorTiming(anchor="sunrise", duration_minutes=60),
+        )
+    )
+
+    resolved = ScheduleResolver().resolve_day(config, date(2026, 6, 1))
+
+    assert resolved.warnings == ()
+    assert resolved.sunrise is not None
+    assert resolved.sunset is not None
+    assert resolved.sunrise < resolved.sunset
+    assert resolved.windows[0].start == resolved.sunrise
+
+
+def test_daylight_fraction_uses_elapsed_daylight() -> None:
+    config = solar_config(
+        PumpTimerSchedule(
+            name="middle_half",
+            timing=DaylightFractionTiming(start_fraction=0.25, end_fraction=0.75),
+        )
+    )
+
+    resolved = ScheduleResolver(FixedAstronomy()).resolve_day(config, date(2026, 6, 1))
+
+    assert resolved.windows[0].start.strftime("%H:%M") == "09:00"
+    assert resolved.windows[0].end.strftime("%H:%M") == "15:00"
+
+
+def test_daylight_fraction_supports_before_sunrise_and_after_sunset() -> None:
+    config = solar_config(
+        PumpTimerSchedule(
+            name="extended_daylight",
+            timing=DaylightFractionTiming(start_fraction=-0.1, end_fraction=1.1),
+        )
+    )
+
+    resolved = ScheduleResolver(FixedAstronomy()).resolve_day(config, date(2026, 6, 1))
+
+    assert resolved.windows[0].start.strftime("%H:%M") == "04:48"
+    assert resolved.windows[0].end.strftime("%H:%M") == "19:12"
+
+
+def test_solar_schedule_requires_site_coordinates() -> None:
+    try:
+        PumpTimerConfig(
+            site=SiteConfig(timezone="America/Chicago"),
+            schedules=(
+                PumpTimerSchedule(
+                    name="sunrise",
+                    timing=SolarAnchorTiming(anchor="sunrise", duration_minutes=60),
+                ),
+            ),
+        )
+    except ValueError as error:
+        assert "site.latitude and site.longitude" in str(error)
+    else:
+        raise AssertionError("solar schedules without coordinates should be rejected")
+
+
+def test_fixed_time_in_dst_gap_moves_to_first_valid_instant() -> None:
+    config = PumpTimerConfig(
+        timezone="America/Chicago",
+        schedules=(
+            PumpTimerSchedule(
+                name="gap",
+                timing=FixedTiming(
+                    start=TimeOfDay.parse("02:30"),
+                    duration_minutes=30,
+                ),
+            ),
+        ),
+    )
+
+    resolved = ScheduleResolver().resolve_day(config, date(2026, 3, 8))
+
+    assert resolved.windows[0].start.strftime("%H:%M %z") == "03:00 -0500"
+
+
+def test_ambiguous_fixed_time_uses_first_occurrence() -> None:
+    config = PumpTimerConfig(
+        timezone="America/Chicago",
+        schedules=(
+            PumpTimerSchedule(
+                name="fold",
+                timing=FixedTiming(
+                    start=TimeOfDay.parse("01:30"),
+                    duration_minutes=30,
+                ),
+            ),
+        ),
+    )
+
+    resolved = ScheduleResolver().resolve_day(config, date(2026, 11, 1))
+
+    assert resolved.windows[0].start.strftime("%H:%M %z") == "01:30 -0500"
+
+
+def test_active_profile_selects_only_that_profiles_events() -> None:
+    normal = ScheduleProfile(name="normal", schedules=(schedule(name="normal_run"),))
+    away = ScheduleProfile(
+        name="away",
+        schedules=(schedule(name="away_run", start="10:00", end="11:00"),),
+    )
+    timer = PumpTimer(
+        PumpTimerConfig(profiles=(normal, away), active_profile="away")
+    )
+
+    assert timer.evaluate(now=at(9), actuator_states={}).active_schedule_names == ()
+    assert timer.evaluate(now=at(10, 30), actuator_states={}).active_schedule_names == (
+        "away_run",
+    )

@@ -63,6 +63,11 @@ Python support is `>=3.13,<3.14`. Current deployments target Raspberry Pi OS
 - Actuators accept only simple states: `ON/OFF` or `LOW/HIGH`. Duration and duty
   decisions belong in scheduler/controller services, not drivers.
 - Configurable thresholds belong in YAML and GUI config where appropriate.
+- `site` is the canonical source of timezone, latitude, and longitude for both
+  solar schedule resolution and weather. Keep real coordinates in
+  `configs/pi-local.yaml`, not tracked production config.
+- Pump/chlorination services consume concrete timezone-aware windows from the
+  daily schedule resolver. Do not duplicate astronomy calculations downstream.
 - Do not mix hardware behavior into dashboard code. The GUI should call app/API
   functions; drivers should stay behind service boundaries.
 
@@ -81,6 +86,8 @@ Timing-sensitive principles:
   independent hardware OFF timing, followed by redundant software OFF.
 - Avoid blocking the main tick with slow operations.
 - Keep weather/network work outside the control-critical path.
+- Resolve astronomy at startup, local-day rollover, or config/profile changes
+  and cache the result. Do not calculate sunrise/sunset every tick.
 - Keep Modbus traffic efficient. Prefer one bulk read per hardware device when
   registers are contiguous.
 - Pressure/analog reads should not be delayed by optional chemistry probes.
@@ -179,6 +186,7 @@ Useful focused areas:
 - Pi sensors/Modbus: `tests/test_raspberrypi_sensors.py`,
   `tests/test_modbus_*.py`
 - Web/API/config: `tests/test_web_live.py`, `tests/test_web_server_config.py`
+- Scheduling/resolution/DST: `tests/test_pump_timer.py`
 
 Add tests for bug fixes. Prefer deterministic tests with `SimulatedClock`.
 

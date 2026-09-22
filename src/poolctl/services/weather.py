@@ -16,6 +16,8 @@ from typing import Any
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
+from poolctl.config import SiteConfig
+
 
 WEATHER_FIELDS: tuple[str, ...] = (
     "temperature_2m",
@@ -79,9 +81,11 @@ class WeatherConfig:
         if not isinstance(raw, Mapping):
             raise ValueError("weather must be a mapping")
 
+        site = SiteConfig.from_mapping(data)
+
         enabled = _bool(raw, "enabled", cls.enabled)
-        latitude = _optional_float(raw, "latitude")
-        longitude = _optional_float(raw, "longitude")
+        latitude = site.latitude
+        longitude = site.longitude
         poll_interval_s = _float(raw, "poll_interval_s", cls.poll_interval_s)
         past_hours = _int(raw, "past_hours", cls.past_hours)
         forecast_hours = _int(raw, "forecast_hours", cls.forecast_hours)

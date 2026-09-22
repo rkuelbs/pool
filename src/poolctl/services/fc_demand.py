@@ -22,7 +22,7 @@ from poolctl.services.chlorination import (
     ChlorinationPlanAdjustment,
     valid_dosing_windows_for_day,
 )
-from poolctl.services.pump_timer import PumpTimerConfig
+from poolctl.services.pump_timer import PumpTimerConfig, ScheduleService
 
 
 DEFAULT_MAX_OBSERVATION_INTERVAL_DAYS = 7.0
@@ -537,6 +537,7 @@ def estimate_fc_demand_plan(
     fc_observations: Sequence[FcObservation] = (),
     automated_chlorine_deliveries: Sequence[ChlorineDeliveryPoint] = (),
     sodium_hypochlorite_additions: Sequence[ChemicalAddition] = (),
+    schedule_service: ScheduleService | None = None,
 ) -> FcDemandPlan:
     all_fc_observations = tuple(
         observation
@@ -553,6 +554,7 @@ def estimate_fc_demand_plan(
         pump_timer_config,
         now.astimezone(ZoneInfo(pump_timer_config.timezone)).date(),
         chlorination_config=chlorination_config,
+        schedule_service=schedule_service,
     )
 
     if not config.enabled:
@@ -1429,6 +1431,7 @@ def _available_minutes_for_day(
     day: date,
     *,
     chlorination_config: ChlorinationConfig,
+    schedule_service: ScheduleService | None = None,
 ) -> float:
     return sum(
         window.duration_seconds
@@ -1437,6 +1440,7 @@ def _available_minutes_for_day(
             day,
             no_dose_first_minutes=chlorination_config.no_dose_first_minutes,
             no_dose_last_minutes=chlorination_config.no_dose_last_minutes,
+            schedule_service=schedule_service,
         )
     ) / 60.0
 

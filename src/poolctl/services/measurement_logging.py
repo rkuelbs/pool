@@ -27,13 +27,14 @@ from poolctl.domain.models import (
     Quality,
     SensorId,
 )
+from poolctl.services.pump_timer import ResolvedScheduleDay
 from poolctl.services.weather import WEATHER_FIELDS, WeatherObservation
 
 # Precomputed history buckets used by the GUI for long time ranges: 1 minute,
 # 1 hour, and 1 day. Raw measurement rows are still stored separately.
 ROLLUP_BUCKET_SECONDS = (60, 3600, 86400)
 DEFAULT_CONTROL_MEASUREMENT_INTERVAL_S = 30.0
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -161,6 +162,22 @@ class ValueSummary:
     unit: str | None = None
 
 
+@dataclass(frozen=True)
+class ScheduleResolutionRecord:
+    resolved_at: datetime
+    trigger: str
+    config_digest: str
+    resolution: dict[str, Any]
+
+    def as_payload(self) -> dict[str, Any]:
+        return {
+            "resolved_at": self.resolved_at.isoformat(),
+            "trigger": self.trigger,
+            "config_digest": self.config_digest,
+            **self.resolution,
+        }
+
+
 class MeasurementLogger:
     """
     SQLite-backed store for loggable measurement history.
@@ -226,6 +243,66 @@ class MeasurementLogger:
                     # This keeps minute/hour/day aggregates consistent.
                     self._upsert_rollups(connection, measurement)
         return inserted_count
+
+    def log_schedule_resolution(
+        self,
+        resolution: ResolvedScheduleDay,
+        *,
+        resolved_at: datetime,
+        trigger: str,
+        config_digest: str,
+    ) -> int:
+        payload = resolution.as_payload()
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO schedule_resolutions (
+                    resolved_at,
+                    local_date,
+                    profile,
+                    config_digest,
+                    trigger,
+                    resolution_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    resolved_at.isoformat(),
+                    resolution.local_date.isoformat(),
+                    resolution.profile_name,
+                    config_digest,
+                    trigger,
+                    json.dumps(payload, sort_keys=True),
+                ),
+            )
+        return 1 if int(cursor.rowcount) > 0 else 0
+
+    def schedule_resolution_history(
+        self,
+        *,
+        limit: int = 100,
+    ) -> tuple[ScheduleResolutionRecord, ...]:
+        if limit < 1:
+            raise ValueError("limit must be at least 1")
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT resolved_at, trigger, config_digest, resolution_json
+                FROM schedule_resolutions
+                ORDER BY resolved_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return tuple(
+            ScheduleResolutionRecord(
+                resolved_at=_parse_datetime(str(row["resolved_at"])),
+                trigger=str(row["trigger"]),
+                config_digest=str(row["config_digest"]),
+                resolution=_metadata_from_json(str(row["resolution_json"])),
+            )
+            for row in rows
+        )
 
     def history(
         self,
@@ -1306,6 +1383,26 @@ class MeasurementLogger:
                 """
                 CREATE INDEX IF NOT EXISTS idx_rollups_sensor_bucket_time
                 ON measurement_rollups (sensor_id, bucket_seconds, bucket_start)
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS schedule_resolutions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    resolved_at TEXT NOT NULL,
+                    local_date TEXT NOT NULL,
+                    profile TEXT NOT NULL,
+                    config_digest TEXT NOT NULL,
+                    trigger TEXT NOT NULL,
+                    resolution_json TEXT NOT NULL,
+                    UNIQUE (resolved_at, local_date, profile, config_digest)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_schedule_resolutions_time
+                ON schedule_resolutions (resolved_at)
                 """
             )
 

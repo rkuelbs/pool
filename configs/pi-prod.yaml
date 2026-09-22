@@ -8,33 +8,51 @@ runtime:
   enabled_sensor_groups:
   - pressures
   - chemistry_loop
-pump_timer:
+site:
   timezone: America/Chicago
-  schedules:
-  - name: morning_dosing
-    start: '07:00'
-    end: '09:00'
-    pump_speed: low
-    booster: 'off'
-    allow_dosing: true
-  - name: midday_dosing
-    start: '10:30'
-    end: '14:00'
-    pump_speed: low
-    booster: 'off'
-    allow_dosing: true
-  - name: afternoon_circulation
-    start: '15:30'
-    end: '17:00'
-    pump_speed: low
-    booster: 'off'
-    allow_dosing: false
-  - name: evening_vacuum
-    start: '21:00'
-    end: '22:00'
-    pump_speed: low
-    booster: 'on'
-    allow_dosing: false
+  latitude: null
+  longitude: null
+pump_timer:
+  active_profile: normal
+  profiles:
+  - name: normal
+    schedules:
+    - name: morning_dosing
+      enabled: true
+      timing:
+        type: fixed
+        start: '07:00'
+        end: '09:00'
+      pump_speed: low
+      booster: 'off'
+      allow_dosing: true
+    - name: midday_dosing
+      enabled: true
+      timing:
+        type: fixed
+        start: '10:30'
+        end: '14:00'
+      pump_speed: low
+      booster: 'off'
+      allow_dosing: true
+    - name: afternoon_circulation
+      enabled: true
+      timing:
+        type: fixed
+        start: '15:30'
+        end: '17:00'
+      pump_speed: low
+      booster: 'off'
+      allow_dosing: false
+    - name: evening_vacuum
+      enabled: true
+      timing:
+        type: fixed
+        start: '21:00'
+        end: '22:00'
+      pump_speed: low
+      booster: 'on'
+      allow_dosing: false
 modbus_relay:
   port: /dev/ttyUSB0
   slave_id: 3
@@ -299,8 +317,6 @@ calcium_saturation_index:
   ph_sensor_id: raw_ph
 weather:
   enabled: false
-  latitude: null
-  longitude: null
   poll_interval_s: 3600
   past_hours: 2
   forecast_hours: 48

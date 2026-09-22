@@ -19,7 +19,8 @@ The project is intentionally layered:
 - Raspberry Pi Modbus relay control through a Waveshare 8-channel RTU relay.
 - Raspberry Pi Modbus analog input support for pressure channels.
 - DFRobot Modbus ORP and pH sensor support, including probe temperatures.
-- Pump timer scheduling with manual dashboard overrides.
+- Named pump schedule profiles with fixed-clock, sunrise/sunset anchor, and
+  daylight-fraction timing plus manual dashboard overrides.
 - Open-loop chlorine dosing on relay 7. On Raspberry Pi hardware, dosing ON
   pulses use the Waveshare relay module's timed flash command by default so the
   module turns the relay off even if the Pi process dies mid-pulse.
@@ -156,16 +157,16 @@ The Raspberry Pi service can also load an ignored local override file:
 
 At runtime, `pi-local.yaml` is merged on top of `pi-prod.yaml`. Nested mappings
 merge recursively, while lists replace the base list. That means a local
-`pump_timer.schedules` list replaces the tracked schedule list as a whole.
+`pump_timer.profiles` list replaces the tracked profile list as a whole.
 
 Use this local file for values that change on the actual pool:
 
-- pump timer schedules
+- shared site timezone/coordinates and pump timer profiles
 - `allow_dosing` choices per schedule window
 - daily chlorine dose
 - dosing pump calibration rate
 - FC-demand target, pool volume, and operating mode
-- site weather latitude/longitude (tracked configs leave weather disabled)
+- site latitude/longitude (tracked configs leave them null and weather disabled)
 - measured clean-filter `clean_flow_gpm` (`Qclean`)
 - site-specific paths or hardware settings if they differ from the tracked base
 
@@ -177,12 +178,12 @@ overrides:
 cp configs/pi-local.example.yaml configs/pi-local.yaml
 ```
 
-Tracked production and development configs intentionally keep weather disabled
-with null coordinates so the public repository contains no site location. To
-collect weather, set `weather.enabled: true` plus the real `latitude` and
-`longitude` in `pi-local.yaml`. Enabling weather without both coordinates is a
-configuration error; leaving it disabled skips weather cleanly without creating
-misleading observations for a fake location.
+Tracked production and development configs intentionally keep `site.latitude`
+and `site.longitude` null and weather disabled so the public repository contains
+no site location. Solar schedules and enabled weather both use this shared site
+block. Enabling either feature without both coordinates is a configuration
+error; leaving weather disabled skips it cleanly without creating observations
+for a fake location.
 
 The dashboard Config and Schedule forms save to the local override when the
 server is started with `--local-config`. This lets `git pull` update
@@ -193,8 +194,9 @@ Important sections:
 
 - `runtime`: driver profile, installed actuators, and enabled acquisition
   sensor groups.
-- `pump_timer`: local timezone, daily pump/booster schedule windows, and whether
-  each window is eligible for chlorine dosing.
+- `site`: canonical local timezone and coordinates shared by schedules and weather.
+- `pump_timer`: named profiles, active profile, typed schedule timing,
+  pump/booster state, and chlorine-dosing eligibility.
 - `chlorination`: open-loop liquid chlorine dose settings.
 - `fc_demand`: optional free-chlorine demand estimator settings.
 - `safety`: pump-output pressure interlocks, tank hysteresis, lockout
@@ -216,30 +218,74 @@ Important sections:
 - `filter_loading`: standardized high-speed pump-output pressure test
   calibration and timing.
 - `live_view`: dashboard display limits.
-- `weather`: Open-Meteo location, units, and polling settings.
+- `weather`: Open-Meteo enablement, units, and polling settings; location comes
+  from `site`.
 - `notifications`: push notification provider settings and optional alert rules
   for usable chlorine tank days remaining, pH, ORP, filter flow loss, and total
   freeze-temperature loss.
   Pushover keys can be entered on the Config page or supplied through
   environment variables.
 
-Schedule `start` and `end` values should be quoted strings:
+The canonical schedule schema uses one active profile and typed timing. Fixed
+clock values should be quoted strings:
 
 ```yaml
-pump_timer:
+site:
   timezone: America/Chicago
-  schedules:
-  - name: morning_circulation
-    start: '08:00'
-    end: '12:00'
-    pump_speed: low
-    booster: 'off'
-    allow_dosing: true
+  latitude: 41.88
+  longitude: -87.63
+pump_timer:
+  active_profile: normal
+  profiles:
+  - name: normal
+    schedules:
+    - name: morning_circulation
+      enabled: true
+      timing:
+        type: fixed
+        start: '08:00'
+        end: '12:00'
+      pump_speed: low
+      booster: 'off'
+      allow_dosing: true
+    - name: daylight_filter
+      enabled: true
+      timing:
+        type: daylight_fraction
+        start_fraction: 0.25
+        end_fraction: 0.75
+      pump_speed: low
+      booster: 'off'
+      allow_dosing: true
+    - name: sunset_cleanup
+      enabled: true
+      timing:
+        type: solar_anchor
+        anchor: sunset
+        offset_minutes: -30
+        duration_minutes: 60
+      pump_speed: high
+      booster: 'off'
+      allow_dosing: false
 ```
 
-`allow_dosing` defaults to `true` for older config files. Set it to `false` on
-night, vacuum, or skimming-only windows where the pump should run but chlorine
-should not be injected.
+`fixed` accepts either `end` or `duration_minutes`. `solar_anchor` accepts
+`sunrise`, `sunset`, or `daylight_midpoint`, an offset, and a duration.
+`daylight_fraction` places both boundaries along the sunrise-to-sunset interval;
+fractions may be outside `0..1` when a run intentionally begins before sunrise
+or ends after sunset. Solar calculations are local and offline through Astral.
+
+Legacy `pump_timer.timezone` plus `pump_timer.schedules` remains readable as an
+implicit `normal` profile, but dashboard saves write the canonical schema.
+During a daylight-saving spring gap, a nonexistent fixed time moves to the first
+valid local instant; an ambiguous fall-back time uses the first occurrence.
+Resolved comparisons and durations use UTC instants.
+
+`allow_dosing` defaults to `true` for older config files. A true window grants
+dosing while active; an overlapping false window does not veto that grant.
+Any active booster window still excludes dosing for the overlapping segment.
+Set `allow_dosing: false` on night, vacuum, or skimming-only windows where the
+pump should run but chlorine should not be injected.
 
 ## Runtime Architecture
 
@@ -337,7 +383,8 @@ notification service can repeat a throttled Pushover warning for this condition.
 
 ## Dashboard Pages
 
-- Live: responsive card view with current sensor/actuator state, quick pump
+- Live: responsive card view with current sensor/actuator state, active profile,
+  resolved schedule/next transition, quick pump
   controls, pump-output pressure, filter loading, chlorination dose target,
   supplemental chlorine dose action, FC-demand status, safety status, estimated
   true chlorine tank level plus usable chlorine gallons/days remaining, CPU
@@ -347,8 +394,8 @@ notification service can repeat a throttled Pushover warning for this condition.
   navigation, calendar/time jump, CSV export, water-test and chemical-addition
   entry with local date/time pickers, and single-axis or multi-axis scaling
   depending on selected signal ranges.
-- Schedule: pump timer schedule editor, including a per-window dosing checkbox
-  for excluding cleaning/night runs from liquid chlorine dosing.
+- Schedule: site coordinates, named profiles, fixed/solar/daylight timing,
+  per-window dosing eligibility, and a three-day resolved preview.
 - Config: forms for runtime hardware profile, safety, chlorination, filter
   loading, FC demand, acquisition, logging, pressure analog input calibration,
   pH sensor enable/calibration, notifications, and diagnostic dosing-pump
@@ -398,8 +445,15 @@ uses the same selected window shown on the chart.
 
 SQLite databases include an explicit schema version marker in both
 `PRAGMA user_version` and a `schema_metadata` row. Current schema version is
-`1`; existing additive column checks are still retained for compatibility with
+`2`; existing additive column checks are still retained for compatibility with
 older local databases.
+
+The database also stores one resolved schedule snapshot per local date, profile,
+and config digest. Snapshots include the site inputs, sunrise/sunset, resolved
+windows, warnings, and whether resolution followed startup, a config/profile
+change, or a day rollover. `GET /api/schedule/history` exposes this audit trail;
+`GET /api/schedule/preview?days=3` returns current/future resolution without
+changing outputs, and `POST /api/schedule/active_profile` switches profiles.
 
 Water-test and chemical-addition entry times use local date/time pickers. Leaving
 the time blank records the event at the controller's current time. A selected
@@ -436,8 +490,17 @@ enable relay because relay contacts or firmware can still fail.
 
 The controller:
 
-1. Uses only pump timer schedules with `allow_dosing: true`.
-2. Merges overlapping or adjacent dosing-allowed pump timer windows.
+1. Uses the same persisted/cached resolved windows as pump control.
+2. Treats `allow_dosing: true` as a grant and excludes any segment where the
+   effective overlapping schedule energizes the booster.
+3. Merges overlapping or adjacent eligible windows while applying first/last
+   no-dose buffers relative to continuous pump circulation.
+
+Hard safety lockout remains the highest output authority. Freeze circulation
+then takes priority over supplemental-dose, manual, sampling, and profile
+outputs. When a schedule/profile transition would turn circulation off or turn
+the booster on while chlorine is running, poolctl accounts for the elapsed dose
+and commands chlorine OFF before issuing the timer transition.
 3. Removes the first `no_dose_first_minutes` from each continuous pump run so
    pump output pressure and flow can stabilize.
 4. Removes the final `no_dose_last_minutes` before the end of the full

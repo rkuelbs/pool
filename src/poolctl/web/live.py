@@ -11,6 +11,7 @@ from __future__ import annotations
 import math
 from datetime import datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from poolctl.app import (
     DEFAULT_CHLORINE_TANK_FORECAST_RESERVE_GAL,
@@ -198,6 +199,25 @@ async def build_live_snapshot(app: PoolControllerApp) -> dict[str, Any]:
         fc_demand_status=tick.fc_demand_status,
         fallback_daily_dose_oz=app.chlorination_config.daily_dose_oz,
     )
+    schedule_payload = None
+    if app.pump_timer is not None:
+        local_now = tick.observed_at.astimezone(
+            ZoneInfo(app.pump_timer_config.timezone)
+        )
+        resolution = app.pump_timer.service.day(local_now.date())
+        schedule_payload = {
+            "active_profile": app.pump_timer_config.active_profile,
+            "active_windows": [
+                window.as_payload()
+                for window in app.pump_timer.service.active_windows(tick.observed_at)
+            ],
+            "next_transition": (
+                transition.isoformat()
+                if (transition := app.next_pump_timer_transition()) is not None
+                else None
+            ),
+            "today": resolution.as_payload(),
+        }
     return {
         "observed_at": tick.observed_at.isoformat(),
         "runtime": {
@@ -242,6 +262,7 @@ async def build_live_snapshot(app: PoolControllerApp) -> dict[str, Any]:
             app.active_timer_override() or app.active_sample_timer_override()
         ),
         "timer_override_audit": list(app.override_audit),
+        "schedule": schedule_payload,
         "tick": {
             "acquired_groups": list(tick.acquisition.group_names),
             "measurement_count": len(tick.measurements),

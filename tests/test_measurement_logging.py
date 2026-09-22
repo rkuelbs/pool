@@ -24,6 +24,7 @@ from poolctl.services.measurement_logging import (
     MeasurementLogger,
     MeasurementLoggingConfig,
 )
+from poolctl.services.pump_timer import PumpTimerConfig, ScheduleService
 from poolctl.services.weather import WeatherObservation
 
 
@@ -81,15 +82,56 @@ def test_measurement_logger_records_schema_version(tmp_path: Path) -> None:
     database_path = tmp_path / "measurements.sqlite3"
     logger = MeasurementLogger(MeasurementLoggingConfig(database_path=database_path))
 
-    assert logger.schema_version() == 1
+    assert logger.schema_version() == 2
     with sqlite3.connect(database_path) as connection:
         user_version = connection.execute("PRAGMA user_version").fetchone()[0]
         metadata_version = connection.execute(
             "SELECT value FROM schema_metadata WHERE key = 'schema_version'"
         ).fetchone()[0]
 
-    assert user_version == 1
-    assert metadata_version == "1"
+    assert user_version == 2
+    assert metadata_version == "2"
+
+
+def test_measurement_logger_persists_resolved_schedule_snapshot(tmp_path: Path) -> None:
+    logger = MeasurementLogger(
+        MeasurementLoggingConfig(database_path=tmp_path / "measurements.sqlite3")
+    )
+    config = PumpTimerConfig.from_mapping(
+        {
+            "site": {"timezone": "UTC"},
+            "pump_timer": {
+                "schedules": [
+                    {
+                        "name": "filter",
+                        "start": "08:00",
+                        "end": "12:00",
+                    }
+                ]
+            },
+        }
+    )
+    service = ScheduleService(config)
+    resolved_at = datetime(2026, 5, 21, 0, 0, tzinfo=timezone.utc)
+    resolution = service.day(resolved_at.date())
+
+    assert logger.log_schedule_resolution(
+        resolution,
+        resolved_at=resolved_at,
+        trigger="startup",
+        config_digest=service.config_digest,
+    ) == 1
+    assert logger.log_schedule_resolution(
+        resolution,
+        resolved_at=resolved_at,
+        trigger="startup",
+        config_digest=service.config_digest,
+    ) == 0
+
+    history = logger.schedule_resolution_history()
+    assert len(history) == 1
+    assert history[0].trigger == "startup"
+    assert history[0].resolution["windows"][0]["name"] == "filter"
 
 
 def test_measurement_logger_ignores_duplicate_measurement_ids(tmp_path: Path) -> None:

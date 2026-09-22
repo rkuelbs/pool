@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -22,9 +22,12 @@ from poolctl.domain.models import (
     ActuatorState,
     CommandSource,
 )
-from poolctl.services.pump_timer import PumpTimerConfig
+from poolctl.services.pump_timer import (
+    PumpTimerConfig,
+    ResolvedScheduleWindow,
+    ScheduleService,
+)
 from poolctl.services.pulse_timing import quantize_relay_flash_seconds
-from poolctl.services.schedule import TimeOfDay
 
 
 @dataclass(frozen=True)
@@ -127,15 +130,16 @@ class DosingWindow:
     end: datetime
 
     def __post_init__(self) -> None:
-        if self.end <= self.start:
+        if _as_utc(self.end) <= _as_utc(self.start):
             raise ValueError("dosing window end must be after start")
 
     @property
     def duration_seconds(self) -> float:
-        return (self.end - self.start).total_seconds()
+        return (_as_utc(self.end) - _as_utc(self.start)).total_seconds()
 
     def contains(self, when: datetime) -> bool:
-        return self.start <= when < self.end
+        instant = _as_utc(when)
+        return _as_utc(self.start) <= instant < _as_utc(self.end)
 
 
 @dataclass(frozen=True)
@@ -274,6 +278,7 @@ class ChlorinationController:
         pump_timer_config: PumpTimerConfig,
         actuator_states: Mapping[ActuatorId, ActuatorState],
         plan_adjustment: ChlorinationPlanAdjustment | None = None,
+        schedule_service: ScheduleService | None = None,
     ) -> ChlorinationEvaluation:
         timezone = ZoneInfo(pump_timer_config.timezone)
         local_now = now.astimezone(timezone)
@@ -285,6 +290,7 @@ class ChlorinationController:
             local_now.date(),
             no_dose_first_minutes=self.config.no_dose_first_minutes,
             no_dose_last_minutes=self.config.no_dose_last_minutes,
+            schedule_service=schedule_service,
         )
         available_runtime_min = sum(window.duration_seconds for window in windows) / 60.0
 
@@ -332,6 +338,7 @@ class ChlorinationController:
             local_now,
             no_dose_first_minutes=self.config.no_dose_first_minutes,
             no_dose_last_minutes=self.config.no_dose_last_minutes,
+            schedule_service=schedule_service,
         )
         desired_state = ActuatorState.OFF
         reason = "dosing idle"
@@ -547,6 +554,7 @@ def valid_dosing_windows_for_day(
     *,
     no_dose_first_minutes: float,
     no_dose_last_minutes: float,
+    schedule_service: ScheduleService | None = None,
 ) -> tuple[DosingWindow, ...]:
     """
     Return local-time valid dosing windows that overlap one calendar day.
@@ -558,11 +566,14 @@ def valid_dosing_windows_for_day(
         day.day,
         tzinfo=timezone,
     )
-    day_end = day_start + timedelta(days=1)
-    raw_allowed_intervals = _raw_schedule_intervals(config, day, allow_dosing_only=True)
+    next_day = day + timedelta(days=1)
+    day_end = datetime(next_day.year, next_day.month, next_day.day, tzinfo=timezone)
+    service = schedule_service or ScheduleService(config)
+    resolved_windows = service.day(day).windows
+    raw_allowed_intervals = _effective_dosing_intervals(resolved_windows)
     merged_allowed_intervals = _merge_intervals(raw_allowed_intervals)
     pump_run_intervals = _merge_intervals(
-        _raw_schedule_intervals(config, day, allow_dosing_only=False)
+        tuple((window.start, window.end) for window in resolved_windows)
     )
     start_trim = timedelta(minutes=no_dose_first_minutes)
     end_trim = timedelta(minutes=no_dose_last_minutes)
@@ -576,50 +587,46 @@ def valid_dosing_windows_for_day(
         # Remove the first part of the continuous pump run so pump output
         # pressure and flow can stabilize. This is based on actual scheduled
         # pump continuity, not on each allow-dosing sub-window.
-        valid_start = max(raw_start, pump_start + start_trim)
+        valid_start = _instant_max(raw_start, _add_elapsed(pump_start, start_trim))
         # The final exclusion is relative to the actual continuous circulation
         # run. A following allow_dosing=false window already provides post-dose
         # circulation and must not cause an extra early cutoff.
-        valid_end = min(raw_end, pump_end - end_trim)
-        if valid_end <= valid_start:
+        valid_end = _instant_min(raw_end, _add_elapsed(pump_end, -end_trim))
+        if _as_utc(valid_end) <= _as_utc(valid_start):
             continue
-        clipped_start = max(valid_start, day_start)
-        clipped_end = min(valid_end, day_end)
-        if clipped_end > clipped_start:
+        clipped_start = _instant_max(valid_start, day_start)
+        clipped_end = _instant_min(valid_end, day_end)
+        if _as_utc(clipped_end) > _as_utc(clipped_start):
             windows.append(DosingWindow(start=clipped_start, end=clipped_end))
 
     return tuple(windows)
 
 
-def _raw_schedule_intervals(
-    config: PumpTimerConfig,
-    day: date,
-    *,
-    allow_dosing_only: bool,
+def _effective_dosing_intervals(
+    windows: tuple[ResolvedScheduleWindow, ...],
 ) -> tuple[tuple[datetime, datetime], ...]:
-    timezone = ZoneInfo(config.timezone)
+    """Resolve overlap semantics for dosing without changing pump continuity.
+
+    An allow_dosing=true event grants dosing while it is active; an overlapping
+    false event does not veto that grant. Booster operation always excludes the
+    overlapping segment because the effective timer output would energize it.
+    """
+    if not windows:
+        return ()
+    boundaries = sorted(
+        {instant for window in windows for instant in (_as_utc(window.start), _as_utc(window.end))}
+    )
     intervals: list[tuple[datetime, datetime]] = []
-
-    # Look at yesterday, today, and tomorrow because a pump window may cross
-    # midnight. A window that starts yesterday evening can still overlap today's
-    # dosing window after midnight.
-    for day_offset in (-1, 0, 1):
-        schedule_day = day + timedelta(days=day_offset)
-        for schedule in config.schedules:
-            # Some pump runs are for skimming, vacuuming, freeze protection, or
-            # post-test circulation only. Those still run the pump timer, but
-            # they are intentionally excluded from liquid chlorine dosing.
-            if allow_dosing_only and not schedule.allow_dosing:
-                continue
-            start = _datetime_for_time_of_day(schedule_day, schedule.window.start, timezone)
-            if schedule.window.start == schedule.window.end:
-                end = start + timedelta(days=1)
-            else:
-                end = _datetime_for_time_of_day(schedule_day, schedule.window.end, timezone)
-                if end <= start:
-                    end += timedelta(days=1)
-            intervals.append((start, end))
-
+    zone = windows[0].start.tzinfo
+    for start_utc, end_utc in zip(boundaries, boundaries[1:], strict=False):
+        active = tuple(window for window in windows if window.contains(start_utc))
+        if not active:
+            continue
+        if not any(window.allow_dosing for window in active):
+            continue
+        if any(window.booster_state == ActuatorState.ON for window in active):
+            continue
+        intervals.append((start_utc.astimezone(zone), end_utc.astimezone(zone)))
     return tuple(intervals)
 
 
@@ -630,18 +637,18 @@ def _merge_intervals(
         return ()
 
     merged: list[tuple[datetime, datetime]] = []
-    for start, end in sorted(intervals, key=lambda item: item[0]):
-        if end <= start:
+    for start, end in sorted(intervals, key=lambda item: _as_utc(item[0])):
+        if _as_utc(end) <= _as_utc(start):
             continue
         if not merged:
             merged.append((start, end))
             continue
         previous_start, previous_end = merged[-1]
-        if start <= previous_end:
+        if _as_utc(start) <= _as_utc(previous_end):
             # Overlapping or touching pump windows should produce one continuous
             # dosing window; otherwise the duty cycle could reset in the middle
             # of what is physically one pump run.
-            merged[-1] = (previous_start, max(previous_end, end))
+            merged[-1] = (previous_start, _instant_max(previous_end, end))
             continue
         merged.append((start, end))
 
@@ -654,25 +661,11 @@ def _containing_interval(
     end: datetime,
 ) -> tuple[datetime, datetime] | None:
     for interval_start, interval_end in intervals:
-        if interval_start <= start and end <= interval_end:
+        if _as_utc(interval_start) <= _as_utc(start) and _as_utc(end) <= _as_utc(
+            interval_end
+        ):
             return interval_start, interval_end
     return None
-
-
-def _datetime_for_time_of_day(
-    day: date,
-    value: TimeOfDay,
-    timezone: ZoneInfo,
-) -> datetime:
-    return datetime(
-        day.year,
-        day.month,
-        day.day,
-        value.hour,
-        value.minute,
-        value.second,
-        tzinfo=timezone,
-    )
 
 
 def _current_window(
@@ -691,6 +684,7 @@ def _next_eligible_start(
     *,
     no_dose_first_minutes: float,
     no_dose_last_minutes: float,
+    schedule_service: ScheduleService | None = None,
 ) -> datetime | None:
     for day_offset in range(3):
         day = local_now.date() + timedelta(days=day_offset)
@@ -699,8 +693,9 @@ def _next_eligible_start(
             day,
             no_dose_first_minutes=no_dose_first_minutes,
             no_dose_last_minutes=no_dose_last_minutes,
+            schedule_service=schedule_service,
         ):
-            if local_now < window.start:
+            if _as_utc(local_now) < _as_utc(window.start):
                 return window.start
             if window.contains(local_now):
                 return local_now
@@ -716,13 +711,31 @@ def _elapsed_eligible_seconds(
     # one. The result is the dosing controller's local "clock" for the day.
     elapsed = 0.0
     for window in windows:
-        if local_now >= window.end:
+        if _as_utc(local_now) >= _as_utc(window.end):
             elapsed += window.duration_seconds
             continue
         if window.contains(local_now):
-            elapsed += (local_now - window.start).total_seconds()
+            elapsed += (_as_utc(local_now) - _as_utc(window.start)).total_seconds()
         break
     return max(0.0, elapsed)
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        raise ValueError("schedule datetimes must be timezone-aware")
+    return value.astimezone(timezone.utc)
+
+
+def _instant_max(first: datetime, second: datetime) -> datetime:
+    return first if _as_utc(first) >= _as_utc(second) else second
+
+
+def _instant_min(first: datetime, second: datetime) -> datetime:
+    return first if _as_utc(first) <= _as_utc(second) else second
+
+
+def _add_elapsed(value: datetime, delta: timedelta) -> datetime:
+    return (_as_utc(value) + delta).astimezone(value.tzinfo)
 
 
 def _mapping_value(

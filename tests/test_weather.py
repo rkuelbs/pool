@@ -42,6 +42,22 @@ def test_weather_config_requires_lat_lon_when_enabled() -> None:
         WeatherConfig.from_mapping({"weather": {"enabled": True}})
 
 
+def test_weather_config_uses_canonical_site_coordinates() -> None:
+    config = WeatherConfig.from_mapping(
+        {
+            "site": {
+                "timezone": "America/Chicago",
+                "latitude": 29.75,
+                "longitude": -95.35,
+            },
+            "weather": {"enabled": True},
+        }
+    )
+
+    assert config.latitude == 29.75
+    assert config.longitude == -95.35
+
+
 def test_weather_service_polls_and_updates_forecast_and_observation() -> None:
     config = WeatherConfig.from_mapping(
         {

@@ -493,7 +493,21 @@ h2 {
   align-items: center;
   column-gap: 8px;
   display: grid;
-  grid-template-columns: 2fr 1fr 1fr 1fr 1fr 0.9fr 72px;
+  grid-template-columns: 1.5fr 0.8fr 3fr 1fr 1fr 0.9fr 72px;
+}
+
+.timer-timing,
+.timer-timing-fields {
+  display: grid;
+  gap: 4px;
+}
+
+.timer-timing-fields {
+  grid-template-columns: repeat(3, minmax(70px, 1fr));
+}
+
+#timerPreview {
+  white-space: pre-wrap;
 }
 
 .timer-grid-head {

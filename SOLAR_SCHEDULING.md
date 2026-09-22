@@ -2,9 +2,9 @@
 
 ## Status
 
-Future feature specification.
-
-Do **not** implement this feature merely because this file exists.
+Implemented in the current scheduler. `README.md` is the source of truth for
+the shipped configuration schema and runtime behavior; this document remains
+the original design rationale and broader future guidance.
 
 This document describes the intended behavior and architecture for a future scheduling system that supports:
 

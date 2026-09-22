@@ -5,19 +5,30 @@
 #
 # Add only values that are truly site-specific. Common examples:
 #
-# pump_timer:
+# site:
 #   timezone: America/Chicago
-#   schedules:
-#     - name: site_schedule_name
-#       start: "08:00"
-#       end: "12:00"
-#       pump_speed: low
-#       booster: off
-#       allow_dosing: true
+#   latitude: <site latitude required by solar schedules>
+#   longitude: <site longitude required by solar schedules>
+#
+# pump_timer:
+#   active_profile: normal
+#   profiles:
+#     - name: normal
+#       schedules:
+#         - name: site_schedule_name
+#           enabled: true
+#           timing:
+#             type: solar_anchor
+#             anchor: sunrise
+#             offset_minutes: 30
+#             duration_minutes: 240
+#           pump_speed: low
+#           booster: off
+#           allow_dosing: true
 #
 # IMPORTANT: YAML list overrides replace the entire base list. Defining
-# pump_timer.schedules here replaces every schedule in pi-prod.yaml, so include
-# the site's complete schedule and an explicit allow_dosing value per window.
+# pump_timer.profiles here replaces every profile in pi-prod.yaml, so include
+# the site's complete profiles and an explicit allow_dosing value per event.
 #
 # chlorination:
 #   pump_output_oz_per_min: <measured calibration>
@@ -33,9 +44,7 @@
 #   clean_flow_gpm: <Qclean measured just after filter cleaning>
 #
 # weather:
-#   enabled: true
-#   latitude: <site latitude>
-#   longitude: <site longitude>
+#   enabled: true  # coordinates come from the shared site block
 #
 # Hardware paths/slave IDs belong here only when they differ from pi-prod.yaml,
 # for example modbus_rtu.port, modbus_*_sensor.slave_id, or GPIO mappings.
