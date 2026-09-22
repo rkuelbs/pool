@@ -94,6 +94,10 @@ class SensorId(str, Enum):
     RAW_PH = "raw_ph"
     PH_TEMP = "ph_temp"
 
+    # Canonical pool water temperature selected from PH_TEMP, then ORP_TEMP.
+    # TEMP remains a simulator/raw-source signal rather than the production
+    # definition of pool water temperature.
+    WATER_TEMP = "water_temp"
     TEMP = "temp"
     CPU_TEMP = "cpu_temp"
     CPU_LOAD_PERCENT = "cpu_load_percent"

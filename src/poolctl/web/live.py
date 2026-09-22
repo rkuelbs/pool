@@ -64,7 +64,8 @@ SENSOR_LABELS = {
     SensorId.ORP_TEMP: "ORP temp",
     SensorId.RAW_PH: "pH",
     SensorId.PH_TEMP: "pH temp",
-    SensorId.TEMP: "Water temp",
+    SensorId.WATER_TEMP: "Water temperature",
+    SensorId.TEMP: "Simulated water temp",
     SensorId.CPU_TEMP: "CPU temp",
     SensorId.CPU_LOAD_PERCENT: "CPU load",
     SensorId.CPU_FAN_RPM: "CPU fan",
@@ -182,6 +183,8 @@ async def build_live_snapshot(app: PoolControllerApp) -> dict[str, Any]:
     tick = await app.tick()
     latest_measurements = app.acquisition_service.latest_measurements if app.acquisition_service else {}
     snapshot_measurements = dict(latest_measurements)
+    if tick.water_temperature_measurement is not None:
+        snapshot_measurements[SensorId.WATER_TEMP] = tick.water_temperature_measurement
     if tick.csi_measurement is not None:
         snapshot_measurements[tick.csi_measurement.sensor_id] = tick.csi_measurement
     chlorine_tank_measurement = app.chlorine_tank_level_measurement(

@@ -2143,9 +2143,15 @@ def serialize_safety_config(app: PoolControllerApp) -> dict[str, Any]:
         },
         "freeze_protection": {
             "enabled": config.freeze_protection.enabled,
-            "source": config.freeze_protection.source.value,
-            "temp_sensor": config.freeze_protection.temp_sensor.value,
-            "ph_temp_sensor": config.freeze_protection.ph_temp_sensor.value,
+            "primary_temperature_sensor": (
+                config.freeze_protection.primary_temperature_sensor.value
+            ),
+            "fallback_temperature_sensor": (
+                config.freeze_protection.fallback_temperature_sensor.value
+            ),
+            "max_temperature_age_seconds": (
+                config.freeze_protection.max_temperature_age_seconds
+            ),
             "low_speed_on_below_temp": config.freeze_protection.low_speed_on_below_temp,
             "low_speed_off_above_temp": config.freeze_protection.low_speed_off_above_temp,
             "high_speed_on_below_temp": config.freeze_protection.high_speed_on_below_temp,

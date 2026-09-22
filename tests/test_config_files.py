@@ -5,6 +5,7 @@ from pathlib import Path
 import yaml  # type: ignore[import-untyped]
 
 from poolctl.config_files import load_config_with_overrides, merge_config_mappings
+from poolctl.services.weather import WeatherConfig
 
 
 def test_merge_config_mappings_recurses_mappings_and_replaces_lists() -> None:
@@ -73,3 +74,24 @@ def test_load_config_with_overrides_merges_local_file(tmp_path: Path) -> None:
     assert data["runtime"]["driver_profile"] == "raspberry_pi"
     assert data["chlorination"]["enabled"] is True
     assert data["chlorination"]["daily_dose_oz"] == 18.0
+
+
+def test_minimal_pi_local_example_and_tracked_configs_parse() -> None:
+    repository = Path(__file__).resolve().parents[1]
+    local_example = yaml.safe_load(
+        (repository / "configs" / "pi-local.example.yaml").read_text(encoding="utf-8")
+    )
+    pi_prod = yaml.safe_load(
+        (repository / "configs" / "pi-prod.yaml").read_text(encoding="utf-8")
+    )
+    windows_dev = yaml.safe_load(
+        (repository / "configs" / "windows-dev.yaml").read_text(encoding="utf-8")
+    )
+
+    assert local_example == {}
+    for config in (pi_prod, windows_dev):
+        assert isinstance(config, dict)
+        weather = WeatherConfig.from_mapping(config)
+        assert weather.enabled is False
+        assert weather.latitude is None
+        assert weather.longitude is None

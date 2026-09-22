@@ -188,19 +188,13 @@
         </div>
         <div class="config-grid">
           <label><span>Freeze enabled</span><input id="safetyFreezeEnabled" type="checkbox"></label>
-          <label>Freeze source
-            <select id="safetyFreezeSource">
-              <option value="temp">temp</option>
-              <option value="ph_temp">ph_temp</option>
-              <option value="both">both</option>
-            </select>
+          <label>Water temp primary
+            <select id="safetyFreezePrimaryTempSensor"></select>
           </label>
-          <label>Freeze temp sensor
-            <select id="safetyFreezeTempSensor"></select>
+          <label>Water temp fallback
+            <select id="safetyFreezeFallbackTempSensor"></select>
           </label>
-          <label>Freeze ph_temp sensor
-            <select id="safetyFreezePhTempSensor"></select>
-          </label>
+          <label>Temperature max age s <input id="safetyFreezeMaxTempAge" type="number" step="1" min="0"></label>
           <label>Freeze low ON <= <input id="safetyFreezeLowOnTemp" type="number" step="0.1"></label>
           <label>Freeze low OFF >= <input id="safetyFreezeLowOffTemp" type="number" step="0.1"></label>
           <label>Freeze high ON <= <input id="safetyFreezeHighOnTemp" type="number" step="0.1"></label>

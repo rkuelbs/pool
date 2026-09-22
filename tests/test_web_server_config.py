@@ -393,7 +393,7 @@ def test_start_chlorination_supplemental_dose_sets_runtime_plan() -> None:
     assert result["started"] is True
     assert status["active"] is True
     assert status["phase"] == "preparing"
-    assert status["delivered_runtime_s"] == 0.0
+    assert status["committed_runtime_s"] == 0.0
     assert status["planned_dose_oz"] == 1.0
     assert status["duty_cycle"] == 0.5
     assert status["pulse_seconds"] == 60.0
@@ -506,9 +506,9 @@ def test_safety_update_applies_live_and_persists(tmp_path: Path) -> None:
         },
         "freeze_protection": {
             "enabled": True,
-            "source": "both",
-            "temp_sensor": "temp",
-            "ph_temp_sensor": "orp_temp",
+            "primary_temperature_sensor": "ph_temp",
+            "fallback_temperature_sensor": "orp_temp",
+            "max_temperature_age_seconds": 1800.0,
             "low_speed_on_below_temp": 35.0,
             "low_speed_off_above_temp": 37.0,
             "high_speed_on_below_temp": 33.0,
@@ -541,7 +541,9 @@ def test_safety_update_applies_live_and_persists(tmp_path: Path) -> None:
     saved = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert saved["safety"]["thresholds"]["pump_prime_min_output_psi"] == 1.1
     assert saved["safety"]["timeouts"]["pump_output_max_age_seconds"] == 12.0
-    assert saved["safety"]["freeze_protection"]["source"] == "both"
+    assert saved["safety"]["freeze_protection"]["primary_temperature_sensor"] == "ph_temp"
+    assert saved["safety"]["freeze_protection"]["fallback_temperature_sensor"] == "orp_temp"
+    assert saved["safety"]["freeze_protection"]["max_temperature_age_seconds"] == 1800.0
     assert saved["safety"]["chlorine_tank"]["inhibit_below_gal"] == 1.25
     assert saved["safety"]["chlorine_tank"]["forecast_reserve_gal"] == 2.0
     serialized = serialize_safety_config(app)
@@ -549,6 +551,7 @@ def test_safety_update_applies_live_and_persists(tmp_path: Path) -> None:
     assert serialized["thresholds"]["pump_prime_min_output_psi"] == 1.1
     assert serialized["timeouts"]["pump_output_max_age_seconds"] == 12.0
     assert serialized["freeze_protection"]["high_speed_on_below_temp"] == 33.0
+    assert serialized["freeze_protection"]["primary_temperature_sensor"] == "ph_temp"
     assert serialized["chlorine_tank"]["reenable_at_gal"] == 2.5
 
 
@@ -654,6 +657,10 @@ def test_notifications_update_applies_live_and_persists(tmp_path: Path) -> None:
                     "warning_above": 16.0,
                     "warning_repeat_minutes": 1440.0,
                 },
+                "freeze_temperature_unavailable": {
+                    "enabled": True,
+                    "warning_repeat_minutes": 180.0,
+                },
             },
         },
     )
@@ -668,6 +675,11 @@ def test_notifications_update_applies_live_and_persists(tmp_path: Path) -> None:
     assert saved["notifications"]["alerts"]["chlorine_tank"]["warning_below"] == 1.5
     assert saved["notifications"]["alerts"]["ph"]["warning_repeat_minutes"] == 60.0
     assert saved["notifications"]["alerts"]["filter_flow_loss"]["warning_above"] == 16.0
+    assert (
+        saved["notifications"]["alerts"]["freeze_temperature_unavailable"]
+        ["warning_repeat_minutes"]
+        == 180.0
+    )
     assert "app_token" not in saved["notifications"]["pushover"]
     assert "user_key" not in saved["notifications"]["pushover"]
 

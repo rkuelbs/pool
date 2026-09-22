@@ -23,14 +23,14 @@ class CalciumSaturationIndexConfig:
     """
 
     enabled: bool = True
-    temp_sensor_id: SensorId = SensorId.TEMP
+    temp_sensor_id: SensorId = SensorId.WATER_TEMP
     ph_sensor_id: SensorId = SensorId.RAW_PH
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> CalciumSaturationIndexConfig:
         section = _mapping_value(data, "calcium_saturation_index", default={})
         enabled = _bool_value(section, "enabled", True)
-        temp_sensor = _sensor_id_value(section, "temp_sensor_id", SensorId.TEMP)
+        temp_sensor = _sensor_id_value(section, "temp_sensor_id", SensorId.WATER_TEMP)
         ph_sensor = _sensor_id_value(section, "ph_sensor_id", SensorId.RAW_PH)
         return cls(
             enabled=enabled,

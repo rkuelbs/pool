@@ -1,5 +1,6 @@
 const SENSOR_ORDER = [
   "pump_output_psi",
+  "water_temp",
   "raw_orp",
   "orp_temp",
   "raw_ph",
@@ -11,6 +12,7 @@ const SENSOR_ORDER = [
   "tank_level",
   "chlorine_tank_level_gal",
 ];
+const ACQUISITION_SENSOR_ORDER = SENSOR_ORDER.filter((sensorId) => sensorId !== "water_temp");
 
 const SENSOR_LABELS = {
   pump_output_psi: "Pump output",
@@ -82,7 +84,8 @@ const SENSOR_LABELS = {
   orp_temp: "ORP temp",
   raw_ph: "pH",
   ph_temp: "pH temp",
-  temp: "Water temp",
+  water_temp: "Water temperature",
+  temp: "Simulated water temp",
   cpu_temp: "CPU temp",
   cpu_load_percent: "CPU load",
   cpu_fan_rpm: "CPU fan",
@@ -879,13 +882,20 @@ function renderFreezeStatus(safety) {
     return;
   }
   if (!freeze.active) {
-    setValue("Freeze protection: idle");
+    const source = freeze.active_source ? ` | ${freeze.active_source}` : " | temperature unavailable";
+    const fallback = freeze.using_fallback ? " (fallback)" : "";
+    setValue(`Freeze protection: idle${source}${fallback}`);
     return;
   }
   const hold = Number(freeze.hold_remaining_s || 0);
   const rounded = hold > 0 ? `${Math.ceil(hold)}s hold` : "release eligible";
   const observation = freeze.observation ? ` @ ${freeze.observation}` : "";
-  setValue(`Freeze ${String(freeze.latched_speed || "").toUpperCase()} (${rounded})${observation}`);
+  const failSafe = freeze.fail_safe ? " FAIL-SAFE" : "";
+  const fallback = freeze.using_fallback ? " fallback" : "";
+  setValue(
+    `Freeze${failSafe} ${String(freeze.latched_speed || "").toUpperCase()} ` +
+    `(${rounded})${observation}${fallback}`,
+  );
 }
 
 function renderCsiStatus(sensors) {
@@ -1186,13 +1196,13 @@ function renderLiveFilterCard(sensors, flows) {
 }
 
 function renderLiveChemCard(sensors) {
-  const tempStatus = sensorStatus(sensors, "temp");
+  const tempStatus = sensorStatus(sensors, "water_temp");
   const phStatus = sensorStatus(sensors, "raw_ph");
   const orpStatus = sensorStatus(sensors, "raw_orp");
   const csiStatus = sensorStatus(sensors, "calcium_saturation_index");
   setLiveCardStatus("liveChemCard", worstSensorCardStatus([tempStatus, phStatus, orpStatus, csiStatus]));
 
-  setNodeText("liveTempLine", `Temp: ${sensorDisplay(sensors, "temp")}`);
+  setNodeText("liveTempLine", `Temp: ${sensorDisplay(sensors, "water_temp")}`);
   setNodeText(
     "livePhLine",
     `pH: ${sensorDisplay(sensors, "raw_ph")} | Temp: ${sensorDisplay(sensors, "ph_temp")}`,
@@ -2576,9 +2586,13 @@ async function loadSafetyConfig() {
     const tank = payload.chlorine_tank || {};
     document.getElementById("safetySensorPumpOutput").value = payload.pressure_sensor_ids.pump_output;
     document.getElementById("safetyFreezeEnabled").checked = Boolean(freeze.enabled);
-    document.getElementById("safetyFreezeSource").value = freeze.source || "temp";
-    document.getElementById("safetyFreezeTempSensor").value = freeze.temp_sensor || "temp";
-    document.getElementById("safetyFreezePhTempSensor").value = freeze.ph_temp_sensor || "ph_temp";
+    document.getElementById("safetyFreezePrimaryTempSensor").value =
+      freeze.primary_temperature_sensor || "ph_temp";
+    document.getElementById("safetyFreezeFallbackTempSensor").value =
+      freeze.fallback_temperature_sensor || "orp_temp";
+    document.getElementById("safetyFreezeMaxTempAge").value = String(
+      freeze.max_temperature_age_seconds ?? 3600.0,
+    );
     document.getElementById("safetyFreezeLowOnTemp").value = String(
       freeze.low_speed_on_below_temp ?? freeze.low_speed_below_temp ?? 35.0,
     );
@@ -2629,9 +2643,9 @@ async function saveSafetyConfig() {
         },
         freeze_protection: {
           enabled: document.getElementById("safetyFreezeEnabled").checked,
-          source: document.getElementById("safetyFreezeSource").value,
-          temp_sensor: document.getElementById("safetyFreezeTempSensor").value,
-          ph_temp_sensor: document.getElementById("safetyFreezePhTempSensor").value,
+          primary_temperature_sensor: document.getElementById("safetyFreezePrimaryTempSensor").value,
+          fallback_temperature_sensor: document.getElementById("safetyFreezeFallbackTempSensor").value,
+          max_temperature_age_seconds: Number(document.getElementById("safetyFreezeMaxTempAge").value),
           low_speed_on_below_temp: Number(document.getElementById("safetyFreezeLowOnTemp").value),
           low_speed_off_above_temp: Number(document.getElementById("safetyFreezeLowOffTemp").value),
           high_speed_on_below_temp: Number(document.getElementById("safetyFreezeHighOnTemp").value),
@@ -2685,21 +2699,30 @@ function setSafetyStatus(message) {
 }
 
 function initializeSafetyControls() {
-  const selects = [
+  const sensorSelects = [
     "safetySensorPumpOutput",
-    "safetyFreezeTempSensor",
-    "safetyFreezePhTempSensor",
     "safetyChlorineTankLevelSensor",
   ];
-  selects.forEach((selectId) => {
+  sensorSelects.forEach((selectId) => {
     const select = document.getElementById(selectId);
-    SENSOR_ORDER.forEach((sensorId) => {
+    ACQUISITION_SENSOR_ORDER.forEach((sensorId) => {
       const option = document.createElement("option");
       option.value = sensorId;
       option.textContent = sensorId;
       select.appendChild(option);
     });
   });
+  ["safetyFreezePrimaryTempSensor", "safetyFreezeFallbackTempSensor"].forEach(
+    (selectId) => {
+      const select = document.getElementById(selectId);
+      ["ph_temp", "orp_temp"].forEach((sensorId) => {
+        const option = document.createElement("option");
+        option.value = sensorId;
+        option.textContent = sensorId;
+        select.appendChild(option);
+      });
+    },
+  );
 
   document.getElementById("safetyReload").addEventListener("click", loadSafetyConfig);
   document.getElementById("safetySave").addEventListener("click", saveSafetyConfig);
@@ -2871,7 +2894,7 @@ function acquisitionGroupRow(name = "", group = {}) {
   const sensorsBlock = document.createElement("div");
   sensorsBlock.className = "group-sensors";
   const selected = new Set(group.sensor_ids || []);
-  SENSOR_ORDER.forEach((sensorId) => {
+  ACQUISITION_SENSOR_ORDER.forEach((sensorId) => {
     const sensorLabel = document.createElement("label");
     const box = document.createElement("input");
     box.type = "checkbox";
@@ -3076,6 +3099,7 @@ function renderNotificationsConfig(payload) {
   renderSignalAlertConfig("notifyPh", alerts.ph || {});
   renderSignalAlertConfig("notifyOrp", alerts.orp || {});
   renderFilterAlertConfig(alerts.filter_flow_loss || {});
+  renderFreezeTemperatureAlertConfig(alerts.freeze_temperature_unavailable || {});
 }
 
 function collectNotificationsConfig() {
@@ -3101,6 +3125,7 @@ function collectNotificationsConfig() {
       ph: collectSignalAlertConfig("notifyPh", { includeAbove: true }),
       orp: collectSignalAlertConfig("notifyOrp", { includeAbove: true }),
       filter_flow_loss: collectFilterAlertConfig(),
+      freeze_temperature_unavailable: collectFreezeTemperatureAlertConfig(),
     },
   };
 }
@@ -3120,6 +3145,27 @@ function collectFilterAlertConfig() {
     enabled: document.getElementById("notifyFilterAlertEnabled").checked,
     warning_above: numberOrNull(document.getElementById("notifyFilterWarningAbove").value),
     warning_repeat_minutes: Number(document.getElementById("notifyFilterWarningRepeat").value),
+  };
+}
+
+function renderFreezeTemperatureAlertConfig(config) {
+  const enabled = document.getElementById("notifyFreezeTempAlertEnabled");
+  if (!enabled) {
+    return;
+  }
+  enabled.checked = config.enabled !== false;
+  setOptionalNumberInput(
+    "notifyFreezeTempWarningRepeat",
+    config.warning_repeat_minutes ?? 240.0,
+  );
+}
+
+function collectFreezeTemperatureAlertConfig() {
+  return {
+    enabled: document.getElementById("notifyFreezeTempAlertEnabled").checked,
+    warning_repeat_minutes: Number(
+      document.getElementById("notifyFreezeTempWarningRepeat").value,
+    ),
   };
 }
 

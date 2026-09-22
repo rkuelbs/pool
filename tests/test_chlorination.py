@@ -118,8 +118,39 @@ def test_non_dosing_overlap_does_not_extend_allowed_dosing_window() -> None:
 
     assert len(windows) == 1
     assert windows[0].start == at(8)
-    assert windows[0].end == at(9, 50)
-    assert windows[0].duration_seconds == 110.0 * 60.0
+    assert windows[0].end == at(10)
+    assert windows[0].duration_seconds == 120.0 * 60.0
+
+
+def test_no_dose_buffers_use_contiguous_circulation_run_boundaries() -> None:
+    config = timer_config(
+        schedule(
+            name="morning_high",
+            start="06:00",
+            end="07:00",
+            pump_speed=ActuatorState.HIGH,
+            allow_dosing=False,
+        ),
+        schedule(name="dosing", start="07:00", end="14:00", allow_dosing=True),
+        schedule(
+            name="post_dose_circulation",
+            start="14:00",
+            end="15:00",
+            allow_dosing=False,
+        ),
+    )
+
+    windows = valid_dosing_windows_for_day(
+        config,
+        at(0).date(),
+        no_dose_first_minutes=30.0,
+        no_dose_last_minutes=10.0,
+    )
+
+    assert len(windows) == 1
+    assert windows[0].start == at(7)
+    assert windows[0].end == at(14)
+    assert windows[0].duration_seconds == 7 * 60 * 60
 
 
 def test_valid_dosing_windows_handle_overnight_schedules_without_midnight_trim() -> None:

@@ -174,6 +174,38 @@ class SignalNotificationConfig:
 
 
 @dataclass(frozen=True)
+class ConditionNotificationConfig:
+    enabled: bool = True
+    warning_repeat_minutes: float = 240.0
+
+    def __post_init__(self) -> None:
+        if self.warning_repeat_minutes <= 0:
+            raise ValueError("warning_repeat_minutes must be > 0")
+
+    @classmethod
+    def from_mapping(
+        cls,
+        data: Mapping[str, Any],
+        *,
+        default: ConditionNotificationConfig,
+    ) -> ConditionNotificationConfig:
+        return cls(
+            enabled=_bool_value(data, "enabled", default.enabled),
+            warning_repeat_minutes=_float_value(
+                data,
+                "warning_repeat_minutes",
+                default.warning_repeat_minutes,
+            ),
+        )
+
+    def as_payload(self) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "warning_repeat_minutes": self.warning_repeat_minutes,
+        }
+
+
+@dataclass(frozen=True)
 class NotificationAlertConfig:
     chlorine_tank: SignalNotificationConfig = field(
         default_factory=lambda: SignalNotificationConfig(
@@ -203,6 +235,9 @@ class NotificationAlertConfig:
             warning_repeat_minutes=1440.0,
         )
     )
+    freeze_temperature_unavailable: ConditionNotificationConfig = field(
+        default_factory=ConditionNotificationConfig
+    )
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> NotificationAlertConfig:
@@ -224,6 +259,10 @@ class NotificationAlertConfig:
                 _mapping_value(data, "filter_flow_loss", default={}),
                 default=defaults.filter_flow_loss,
             ),
+            freeze_temperature_unavailable=ConditionNotificationConfig.from_mapping(
+                _mapping_value(data, "freeze_temperature_unavailable", default={}),
+                default=defaults.freeze_temperature_unavailable,
+            ),
         )
 
     def as_payload(self) -> dict[str, Any]:
@@ -232,6 +271,9 @@ class NotificationAlertConfig:
             "ph": self.ph.as_payload(),
             "orp": self.orp.as_payload(),
             "filter_flow_loss": self.filter_flow_loss.as_payload(),
+            "freeze_temperature_unavailable": (
+                self.freeze_temperature_unavailable.as_payload()
+            ),
         }
 
 
@@ -306,7 +348,11 @@ class NotificationAlert:
                 f"threshold ({threshold})"
             )
         if self.signal_key == "filter_flow_loss":
-            return f"Clean filter soon: estimated standardized flow loss is {value}."
+            age_text = _test_age_text(self.context.get("test_age_seconds"))
+            suffix = f" (last hydraulic test: {age_text})" if age_text else ""
+            return f"Clean filter soon: standardized flow loss is {value}{suffix}."
+        if self.signal_key == "freeze_temperature_unavailable":
+            return "Freeze protection temperature unavailable; using fail-safe freeze protection."
         return (
             f"{self.label} {self.severity.value}: {value} is {relation} "
             f"the {self.severity.value} threshold ({threshold})"
@@ -438,6 +484,7 @@ def evaluate_notification_alerts(
     measurements: Mapping[SensorId, Measurement],
     now: datetime,
     last_sent_at: Mapping[str, datetime],
+    freeze_status: Mapping[str, Any] | None = None,
 ) -> tuple[NotificationAlert, ...]:
     alerts: list[NotificationAlert] = []
     specs = (
@@ -472,6 +519,29 @@ def evaluate_notification_alerts(
         last_sent = last_sent_at.get(alert.throttle_key)
         if last_sent is None or now - last_sent >= timedelta(minutes=alert.repeat_minutes):
             alerts.append(alert)
+    freeze_config = config.freeze_temperature_unavailable
+    if (
+        freeze_config.enabled
+        and freeze_status is not None
+        and freeze_status.get("fail_safe") is True
+    ):
+        freeze_alert = NotificationAlert(
+            sensor_id=SensorId.WATER_TEMP,
+            signal_key="freeze_temperature_unavailable",
+            label="Freeze protection temperature",
+            severity=NotificationAlertSeverity.WARNING,
+            direction="unavailable",
+            value=0.0,
+            unit="",
+            threshold=0.0,
+            repeat_minutes=freeze_config.warning_repeat_minutes,
+            context=dict(freeze_status),
+        )
+        last_sent = last_sent_at.get(freeze_alert.throttle_key)
+        if last_sent is None or now - last_sent >= timedelta(
+            minutes=freeze_alert.repeat_minutes
+        ):
+            alerts.append(freeze_alert)
     return tuple(alerts)
 
 
@@ -577,6 +647,21 @@ def _optional_float(value: Any) -> float | None:
     if isinstance(value, int | float):
         return float(value)
     return None
+
+
+def _test_age_text(value: Any) -> str | None:
+    age_seconds = _optional_float(value)
+    if age_seconds is None:
+        return None
+    age_seconds = max(0.0, age_seconds)
+    if age_seconds < 3600.0:
+        minutes = max(0, round(age_seconds / 60.0))
+        return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
+    if age_seconds < 48.0 * 3600.0:
+        hours = max(1, round(age_seconds / 3600.0))
+        return f"{hours} hour{'s' if hours != 1 else ''} ago"
+    days = max(1, round(age_seconds / 86400.0))
+    return f"{days} day{'s' if days != 1 else ''} ago"
 
 
 def _default_post_form(

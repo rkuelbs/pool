@@ -49,8 +49,19 @@ def _states(
     }
 
 
+FLOW_NOW = datetime(2026, 5, 21, tzinfo=timezone.utc)
+
+
+def _estimate_flows(**kwargs: object):
+    return estimate_flows(
+        now=FLOW_NOW,
+        max_pressure_age_seconds=10.0,
+        **kwargs,  # type: ignore[arg-type]
+    )
+
+
 def test_flow_estimation_returns_zero_when_pump_is_off() -> None:
-    estimates = estimate_flows(
+    estimates = _estimate_flows(
         measurements={SensorId.PUMP_OUTPUT_PSI: _pressure(12.0)},
         actuator_states=_states(pump=ActuatorState.OFF),
     )
@@ -65,7 +76,7 @@ def test_flow_estimation_returns_zero_when_pump_is_off() -> None:
 
 def test_flow_estimation_uses_high_speed_pressure_model() -> None:
     pressure = 10.0
-    estimates = estimate_flows(
+    estimates = _estimate_flows(
         measurements={SensorId.PUMP_OUTPUT_PSI: _pressure(pressure)},
         actuator_states=_states(speed=ActuatorState.HIGH),
     )
@@ -82,7 +93,7 @@ def test_flow_estimation_uses_high_speed_pressure_model() -> None:
 
 def test_flow_estimation_uses_low_speed_pressure_model() -> None:
     pressure = 5.0
-    estimates = estimate_flows(
+    estimates = _estimate_flows(
         measurements={SensorId.PUMP_OUTPUT_PSI: _pressure(pressure)},
         actuator_states=_states(speed=ActuatorState.LOW),
     )
@@ -98,7 +109,7 @@ def test_flow_estimation_uses_low_speed_pressure_model() -> None:
 
 
 def test_flow_estimation_clamps_negative_term_to_zero() -> None:
-    estimates = estimate_flows(
+    estimates = _estimate_flows(
         measurements={SensorId.PUMP_OUTPUT_PSI: _pressure(60.0)},
         actuator_states=_states(speed=ActuatorState.HIGH),
     )
@@ -120,7 +131,7 @@ def test_flow_estimation_constants_are_configurable() -> None:
             }
         }
     )
-    estimates = estimate_flows(
+    estimates = _estimate_flows(
         measurements={SensorId.PUMP_OUTPUT_PSI: _pressure(0.5)},
         actuator_states=_states(speed=ActuatorState.HIGH),
         config=config,
@@ -144,6 +155,35 @@ def test_flow_estimation_rejects_negative_c_suction() -> None:
                 }
             }
         )
+
+
+def test_flow_estimation_requires_fresh_good_pressure() -> None:
+    fresh = _estimate_flows(
+        measurements={SensorId.PUMP_OUTPUT_PSI: _pressure(10.0, observed_at=FLOW_NOW)},
+        actuator_states=_states(),
+    )
+    stale = _estimate_flows(
+        measurements={
+            SensorId.PUMP_OUTPUT_PSI: _pressure(
+                10.0,
+                observed_at=FLOW_NOW - timedelta(seconds=11),
+            )
+        },
+        actuator_states=_states(),
+    )
+    bad_pressure = _pressure(10.0, observed_at=FLOW_NOW).model_copy(
+        update={"quality": Quality.BAD}
+    )
+    bad = _estimate_flows(
+        measurements={SensorId.PUMP_OUTPUT_PSI: bad_pressure},
+        actuator_states=_states(),
+    )
+
+    assert fresh.pump_flow_gpm is not None
+    assert stale.pump_flow_gpm is None
+    assert stale.pump_dynamic_head_psi is None
+    assert bad.pump_flow_gpm is None
+    assert bad.pump_dynamic_head_psi is None
 
 
 def test_filter_loading_ignores_low_speed_and_booster_on() -> None:
@@ -235,6 +275,59 @@ def test_filter_loading_stabilizes_averages_and_latches_result() -> None:
     )
     assert latched.result == complete.result
     assert latched.reason == "pump is not high speed"
+
+
+def test_filter_loading_counts_distinct_source_measurements_not_controller_ticks() -> None:
+    start = datetime(2026, 5, 21, 7, 0, tzinfo=timezone.utc)
+    estimator = FilterLoadingEstimator(
+        FilterLoadingConfig(
+            stabilization_seconds=0,
+            averaging_seconds=2,
+            max_pressure_age_seconds=10,
+        )
+    )
+    same_measurement = _pressure(15.0, observed_at=start)
+
+    first = estimator.update(
+        now=start,
+        measurements={SensorId.PUMP_OUTPUT_PSI: same_measurement},
+        actuator_states=_states(),
+    )
+    repeated = estimator.update(
+        now=start + timedelta(seconds=2),
+        measurements={SensorId.PUMP_OUTPUT_PSI: same_measurement},
+        actuator_states=_states(),
+    )
+    second = estimator.update(
+        now=start + timedelta(seconds=2),
+        measurements={
+            SensorId.PUMP_OUTPUT_PSI: _pressure(
+                16.0,
+                observed_at=start + timedelta(seconds=1),
+            )
+        },
+        actuator_states=_states(),
+    )
+    complete = estimator.update(
+        now=start + timedelta(seconds=2),
+        measurements={
+            SensorId.PUMP_OUTPUT_PSI: _pressure(
+                17.0,
+                observed_at=start + timedelta(seconds=2),
+            )
+        },
+        actuator_states=_states(),
+    )
+
+    assert first.result is None
+    assert repeated.result is None
+    assert repeated.reason == "averaging"
+    assert second.result is None
+    assert complete.completed_this_tick is True
+    assert complete.result is not None
+    assert complete.result.sample_count == 3
+    assert complete.result.averaging_seconds == 2.0
+    assert complete.result.completed_at == start + timedelta(seconds=2)
 
 
 def test_filter_loading_uncalibrated_completes_without_flow_loss() -> None:

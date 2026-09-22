@@ -18,7 +18,7 @@ pump_timer:
     pump_speed: high
     booster: 'off'
     allow_dosing: true
-  - name: afternoon_filter
+  - name: afternoon_circulation
     start: '15:00'
     end: '18:00'
     pump_speed: low
@@ -66,9 +66,9 @@ safety:
     pump_output: pump_output_psi
   freeze_protection:
     enabled: true
-    source: temp
-    temp_sensor: temp
-    ph_temp_sensor: ph_temp
+    primary_temperature_sensor: ph_temp
+    fallback_temperature_sensor: orp_temp
+    max_temperature_age_seconds: 3600
     low_speed_on_below_temp: 35
     low_speed_off_above_temp: 37
     high_speed_on_below_temp: 33
@@ -129,6 +129,9 @@ notifications:
       enabled: false
       warning_above: 15.0
       warning_repeat_minutes: 1440.0
+    freeze_temperature_unavailable:
+      enabled: true
+      warning_repeat_minutes: 240.0
 acquisition:
   groups:
     pressures:
@@ -235,7 +238,7 @@ live_view:
       caution_max: 0.6
 calcium_saturation_index:
   enabled: true
-  temp_sensor_id: temp
+  temp_sensor_id: water_temp
   ph_sensor_id: raw_ph
 modbus_analog_input:
   port: COM3
@@ -268,9 +271,9 @@ filter_loading:
   averaging_seconds: 120
   max_pressure_age_seconds: 10
 weather:
-  enabled: true
-  latitude: 32.9949
-  longitude: -96.8995
+  enabled: false
+  latitude: null
+  longitude: null
   poll_interval_s: 3600
   past_hours: 2
   forecast_hours: 48

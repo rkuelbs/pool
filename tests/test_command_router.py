@@ -7,7 +7,7 @@ so these tests verify accepted, rejected, and safety-generated commands.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -89,7 +89,7 @@ def temperature(
     clock: SimulatedClock,
     value: float,
     *,
-    sensor_id: SensorId = SensorId.TEMP,
+    sensor_id: SensorId = SensorId.PH_TEMP,
     unit: str = "degF",
     quality: Quality = Quality.GOOD,
 ) -> Measurement:
@@ -423,8 +423,9 @@ async def test_freeze_protection_turns_on_pump_and_sets_low_speed() -> None:
         {
             "freeze_protection": {
                 "enabled": True,
-                "source": "temp",
-                "temp_sensor": "temp",
+                "primary_temperature_sensor": "ph_temp",
+                "fallback_temperature_sensor": "orp_temp",
+                "max_temperature_age_seconds": 60.0,
                 "low_speed_on_below_temp": 35.0,
                 "low_speed_off_above_temp": 37.0,
                 "high_speed_on_below_temp": 33.0,
@@ -445,14 +446,14 @@ async def test_freeze_protection_turns_on_pump_and_sets_low_speed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_freeze_protection_escalates_to_high_speed_and_uses_raw_quality() -> None:
+async def test_freeze_protection_uses_suspect_fallback_when_primary_is_bad() -> None:
     freeze_config = SafetyConfig.from_mapping(
         {
             "freeze_protection": {
                 "enabled": True,
-                "source": "both",
-                "temp_sensor": "temp",
-                "ph_temp_sensor": "orp_temp",
+                "primary_temperature_sensor": "ph_temp",
+                "fallback_temperature_sensor": "orp_temp",
+                "max_temperature_age_seconds": 60.0,
                 "low_speed_on_below_temp": 35.0,
                 "low_speed_off_above_temp": 37.0,
                 "high_speed_on_below_temp": 33.0,
@@ -469,7 +470,12 @@ async def test_freeze_protection_escalates_to_high_speed_and_uses_raw_quality() 
 
     results = await router.enforce_safety(
         measurements=[
-            temperature(clock, 36.0, sensor_id=SensorId.TEMP),
+            temperature(
+                clock,
+                36.0,
+                sensor_id=SensorId.PH_TEMP,
+                quality=Quality.BAD,
+            ),
             temperature(
                 clock,
                 32.5,
@@ -491,8 +497,9 @@ async def test_freeze_hysteresis_and_minimum_runtime_latch() -> None:
         {
             "freeze_protection": {
                 "enabled": True,
-                "source": "temp",
-                "temp_sensor": "temp",
+                "primary_temperature_sensor": "ph_temp",
+                "fallback_temperature_sensor": "orp_temp",
+                "max_temperature_age_seconds": 60.0,
                 "low_speed_on_below_temp": 35.0,
                 "low_speed_off_above_temp": 37.0,
                 "high_speed_on_below_temp": 33.0,
@@ -538,3 +545,81 @@ async def test_freeze_hysteresis_and_minimum_runtime_latch() -> None:
     assert release == []
     freeze_state = router.safety_gate.freeze_status(clock.now())
     assert freeze_state["active"] is False
+
+
+@pytest.mark.asyncio
+async def test_freeze_temperature_failover_fail_safe_latch_and_recovery() -> None:
+    freeze_config = SafetyConfig.from_mapping(
+        {
+            "freeze_protection": {
+                "enabled": True,
+                "primary_temperature_sensor": "ph_temp",
+                "fallback_temperature_sensor": "orp_temp",
+                "max_temperature_age_seconds": 60.0,
+                "low_speed_on_below_temp": 35.0,
+                "low_speed_off_above_temp": 37.0,
+                "high_speed_on_below_temp": 33.0,
+                "high_speed_off_above_temp": 34.0,
+                "min_run_seconds": 0.0,
+                "threshold_unit": "degF",
+            }
+        }
+    )
+    clock, _, router = make_router(SafetyGate(freeze_config))
+    stale_ph = temperature(clock, 31.0).model_copy(
+        update={"observed_at": clock.now() - timedelta(seconds=61)}
+    )
+
+    fallback_actions = await router.enforce_safety(
+        measurements=[stale_ph, temperature(clock, 32.5, sensor_id=SensorId.ORP_TEMP)]
+    )
+    fallback_status = router.safety_gate.freeze_status(clock.now())
+
+    assert fallback_actions
+    assert router.actuator_states[ActuatorId.PUMP_MOTOR_SPEED] == ActuatorState.HIGH
+    assert fallback_status["active_source"] == SensorId.ORP_TEMP.value
+    assert fallback_status["using_fallback"] is True
+    assert fallback_status["primary_stale_or_unavailable"] is True
+
+    await router.enforce_safety(measurements=[])
+    outage_status = router.safety_gate.freeze_status(clock.now())
+    assert outage_status["active"] is True
+    assert outage_status["latched_speed"] == ActuatorState.HIGH.value
+    assert outage_status["fail_safe"] is True
+    assert outage_status["fail_safe_reason"] == (
+        "Freeze protection temperature unavailable; using fail-safe freeze protection."
+    )
+
+    await router.enforce_safety(
+        measurements=[
+            temperature(clock, 38.0, sensor_id=SensorId.PH_TEMP),
+            pressure(clock, SensorId.PUMP_OUTPUT_PSI, 5.0),
+        ]
+    )
+    recovered_status = router.safety_gate.freeze_status(clock.now())
+    assert recovered_status["active"] is False
+    assert recovered_status["active_source"] == SensorId.PH_TEMP.value
+    assert recovered_status["fail_safe"] is False
+
+
+@pytest.mark.asyncio
+async def test_freeze_temperature_total_loss_activates_fail_safe_from_idle() -> None:
+    config = SafetyConfig.from_mapping(
+        {
+            "freeze_protection": {
+                "enabled": True,
+                "max_temperature_age_seconds": 60.0,
+                "min_run_seconds": 0.0,
+            }
+        }
+    )
+    clock, _, router = make_router(SafetyGate(config))
+
+    actions = await router.enforce_safety(measurements=[])
+    status = router.safety_gate.freeze_status(clock.now())
+
+    assert actions
+    assert router.actuator_states[ActuatorId.PUMP_MOTOR] == ActuatorState.ON
+    assert router.actuator_states[ActuatorId.PUMP_MOTOR_SPEED] == ActuatorState.LOW
+    assert status["active"] is True
+    assert status["fail_safe"] is True

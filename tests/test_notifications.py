@@ -33,6 +33,8 @@ def test_notifications_config_defaults_to_disabled_pushover() -> None:
     assert config.alerts.filter_flow_loss.enabled is False
     assert config.alerts.filter_flow_loss.warning_above == 15.0
     assert config.alerts.filter_flow_loss.warning_repeat_minutes == 1440.0
+    assert config.alerts.freeze_temperature_unavailable.enabled is True
+    assert config.alerts.freeze_temperature_unavailable.warning_repeat_minutes == 240.0
 
 
 def test_pushover_config_normalizes_credentials_entered_as_env_names() -> None:
@@ -312,6 +314,7 @@ def test_notification_alert_evaluator_uses_filter_flow_loss_threshold() -> None:
             value=15.8,
             unit="percent",
             quality=Quality.GOOD,
+            metadata={"test_age_seconds": 2 * 86400.0},
         )
     }
 
@@ -332,9 +335,91 @@ def test_notification_alert_evaluator_uses_filter_flow_loss_threshold() -> None:
     assert first[0].sensor_id == SensorId.FILTER_FLOW_LOSS_PERCENT
     assert first[0].throttle_key == "filter_flow_loss:warning"
     assert first[0].message() == (
-        "Clean filter soon: estimated standardized flow loss is 15.8%."
+        "Clean filter soon: standardized flow loss is 15.8% "
+        "(last hydraulic test: 2 days ago)."
     )
     assert throttled == ()
+
+
+def test_filter_alert_repeats_for_old_latched_result_and_clean_retest_clears() -> None:
+    config = NotificationsConfig.from_mapping(
+        {
+            "notifications": {
+                "alerts": {
+                    "filter_flow_loss": {
+                        "enabled": True,
+                        "warning_above": 15.0,
+                        "warning_repeat_minutes": 60.0,
+                    }
+                }
+            }
+        }
+    )
+    now = datetime(2026, 5, 21, 12, tzinfo=timezone.utc)
+    old_result = Measurement(
+        sensor_id=SensorId.FILTER_FLOW_LOSS_PERCENT,
+        observed_at=now - timedelta(days=5),
+        value=16.2,
+        unit="percent",
+        quality=Quality.GOOD,
+        metadata={"test_age_seconds": 5 * 86400.0},
+    )
+
+    repeated = evaluate_notification_alerts(
+        config=config.alerts,
+        measurements={SensorId.FILTER_FLOW_LOSS_PERCENT: old_result},
+        now=now,
+        last_sent_at={"filter_flow_loss:warning": now - timedelta(minutes=61)},
+    )
+    clean = evaluate_notification_alerts(
+        config=config.alerts,
+        measurements={
+            SensorId.FILTER_FLOW_LOSS_PERCENT: old_result.model_copy(
+                update={"observed_at": now, "value": 8.0, "metadata": {"test_age_seconds": 0.0}}
+            )
+        },
+        now=now,
+        last_sent_at={},
+    )
+
+    assert len(repeated) == 1
+    assert "5 days ago" in repeated[0].message()
+    assert clean == ()
+
+
+def test_freeze_temperature_loss_notification_is_throttled() -> None:
+    config = NotificationsConfig.from_mapping({})
+    now = datetime(2026, 5, 21, 12, tzinfo=timezone.utc)
+    freeze_status = {"fail_safe": True}
+
+    first = evaluate_notification_alerts(
+        config=config.alerts,
+        measurements={},
+        now=now,
+        last_sent_at={},
+        freeze_status=freeze_status,
+    )
+    throttled = evaluate_notification_alerts(
+        config=config.alerts,
+        measurements={},
+        now=now + timedelta(minutes=30),
+        last_sent_at={"freeze_temperature_unavailable:warning": now},
+        freeze_status=freeze_status,
+    )
+    repeated = evaluate_notification_alerts(
+        config=config.alerts,
+        measurements={},
+        now=now + timedelta(minutes=241),
+        last_sent_at={"freeze_temperature_unavailable:warning": now},
+        freeze_status=freeze_status,
+    )
+
+    assert len(first) == 1
+    assert first[0].message() == (
+        "Freeze protection temperature unavailable; using fail-safe freeze protection."
+    )
+    assert throttled == ()
+    assert len(repeated) == 1
 
 
 def test_notification_alert_evaluator_throttles_ph_caution_across_directions() -> None:

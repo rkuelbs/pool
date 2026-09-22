@@ -14,10 +14,11 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
-from poolctl.domain.models import ActuatorId, ActuatorState, Measurement, Quality, SensorId
+from poolctl.domain.models import ActuatorId, ActuatorState, Measurement, SensorId
+from poolctl.services.measurement_quality import usable_numeric_measurement_value
 
 
 @dataclass(frozen=True)
@@ -296,6 +297,7 @@ class FilterLoadingEstimator:
         self.pump_pressure_model = pump_pressure_model
         self._qualifying_started_at: datetime | None = None
         self._samples: list[tuple[datetime, float]] = []
+        self._seen_observed_at: set[datetime] = set()
         self._completed_for_session = False
         self._last_result: FilterLoadingResult | None = None
 
@@ -327,7 +329,7 @@ class FilterLoadingEstimator:
             return FilterLoadingUpdate(result=self._last_result, reason="disabled")
 
         measurement = measurements.get(SensorId.PUMP_OUTPUT_PSI)
-        pressure = _fresh_good_pressure(
+        pressure = usable_numeric_measurement_value(
             measurement,
             now=now,
             max_age_seconds=self.config.max_pressure_age_seconds,
@@ -355,9 +357,13 @@ class FilterLoadingEstimator:
         if self._qualifying_started_at is None:
             self._qualifying_started_at = now
             self._samples = []
+            self._seen_observed_at = set()
             self._completed_for_session = False
 
         assert pressure is not None
+        stabilization_ends_at = self._qualifying_started_at + timedelta(
+            seconds=self.config.stabilization_seconds
+        )
         elapsed_s = (now - self._qualifying_started_at).total_seconds()
         if elapsed_s < self.config.stabilization_seconds:
             return FilterLoadingUpdate(
@@ -367,13 +373,19 @@ class FilterLoadingEstimator:
                 qualifying_started_at=self._qualifying_started_at,
             )
 
-        self._samples.append((now, pressure))
-        cutoff = now.timestamp() - self.config.averaging_seconds
-        self._samples = [
-            (sampled_at, value)
-            for sampled_at, value in self._samples
-            if sampled_at.timestamp() >= cutoff
-        ]
+        assert measurement is not None
+        if measurement.observed_at < stabilization_ends_at:
+            return FilterLoadingUpdate(
+                result=self._last_result,
+                qualifying=True,
+                reason="awaiting post-stabilization pressure observation",
+                qualifying_started_at=self._qualifying_started_at,
+            )
+
+        if measurement.observed_at not in self._seen_observed_at:
+            self._seen_observed_at.add(measurement.observed_at)
+            self._samples.append((measurement.observed_at, pressure))
+            self._samples.sort(key=lambda item: item[0])
 
         if self._completed_for_session:
             return FilterLoadingUpdate(
@@ -383,7 +395,7 @@ class FilterLoadingEstimator:
                 qualifying_started_at=self._qualifying_started_at,
             )
 
-        if not self._has_sufficient_average(now):
+        if not self._has_sufficient_average():
             return FilterLoadingUpdate(
                 result=self._last_result,
                 qualifying=True,
@@ -392,11 +404,14 @@ class FilterLoadingEstimator:
             )
 
         reference_psi = sum(value for _, value in self._samples) / len(self._samples)
+        averaging_seconds = (
+            self._samples[-1][0] - self._samples[0][0]
+        ).total_seconds()
         result = self._build_result(
             reference_psi=reference_psi,
-            completed_at=now,
+            completed_at=self._samples[-1][0],
             sample_count=len(self._samples),
-            averaging_seconds=self.config.averaging_seconds,
+            averaging_seconds=averaging_seconds,
         )
         self._last_result = result
         self._completed_for_session = True
@@ -408,11 +423,14 @@ class FilterLoadingEstimator:
             qualifying_started_at=self._qualifying_started_at,
         )
 
-    def _has_sufficient_average(self, now: datetime) -> bool:
+    def _has_sufficient_average(self) -> bool:
         if not self._samples:
             return False
         first_sampled_at = self._samples[0][0]
-        return (now - first_sampled_at).total_seconds() >= self.config.averaging_seconds
+        last_sampled_at = self._samples[-1][0]
+        return (
+            last_sampled_at - first_sampled_at
+        ).total_seconds() >= self.config.averaging_seconds
 
     def _build_result(
         self,
@@ -485,13 +503,16 @@ class FilterLoadingEstimator:
     def _reset_session(self) -> None:
         self._qualifying_started_at = None
         self._samples = []
+        self._seen_observed_at = set()
         self._completed_for_session = False
 
 
 def estimate_flows(
     *,
+    now: datetime,
     measurements: Mapping[SensorId, Measurement],
     actuator_states: Mapping[ActuatorId, ActuatorState],
+    max_pressure_age_seconds: float,
     config: FlowEstimationConfig = FlowEstimationConfig(),
     filter_loading: FilterLoadingUpdate | None = None,
 ) -> FlowEstimates:
@@ -499,11 +520,17 @@ def estimate_flows(
     pump_dynamic_head_psi: float | None = None
     pump_state = actuator_states.get(ActuatorId.PUMP_MOTOR)
     speed_state = actuator_states.get(ActuatorId.PUMP_MOTOR_SPEED)
-    pump_pressure = _measurement_value(measurements, SensorId.PUMP_OUTPUT_PSI)
+    pump_pressure = usable_numeric_measurement_value(
+        measurements.get(SensorId.PUMP_OUTPUT_PSI),
+        now=now,
+        max_age_seconds=max_pressure_age_seconds,
+    )
 
-    if pump_state != ActuatorState.ON:
+    if pump_pressure is None:
+        pump_flow_gpm = None
+    elif pump_state != ActuatorState.ON:
         pump_flow_gpm = 0.0
-    elif pump_pressure is not None:
+    else:
         pump_flow_gpm = estimate_pump_flow_from_pressure(
             pressure_psi=pump_pressure,
             speed=speed_state,
@@ -595,42 +622,6 @@ def _pump_dynamic_head_from_pressure_and_flow(
     if flow_gpm <= 0:
         return 0.0
     return pump_output_pressure_psi + (pressure_scale_psi * c_suction * (flow_gpm**2))
-
-
-def _fresh_good_pressure(
-    measurement: Measurement | None,
-    *,
-    now: datetime,
-    max_age_seconds: float,
-) -> float | None:
-    if measurement is None:
-        return None
-    if measurement.quality != Quality.GOOD:
-        return None
-    age_s = max(0.0, (now - measurement.observed_at).total_seconds())
-    if age_s > max_age_seconds:
-        return None
-    if not isinstance(measurement.value, int | float):
-        return None
-    value = float(measurement.value)
-    if not math.isfinite(value):
-        return None
-    return value
-
-
-def _measurement_value(
-    measurements: Mapping[SensorId, Measurement],
-    sensor_id: SensorId,
-) -> float | None:
-    measurement = measurements.get(sensor_id)
-    if measurement is None:
-        return None
-    if not isinstance(measurement.value, int | float):
-        return None
-    value = float(measurement.value)
-    if not math.isfinite(value):
-        return None
-    return value
 
 
 def _filter_loading_nonqualifying_reason(

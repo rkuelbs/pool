@@ -108,6 +108,11 @@ Notes:
 - The runtime loop keeps acquisition, timers, dosing, logging, and safety moving
   even when the browser is closed. Weather polling runs in a separate background
   worker so slow HTTP requests cannot delay relay decisions.
+- Each tick evaluates timer state and time-critical chlorine relay transitions
+  before potentially slower sensor acquisition. Acquisition then refreshes due
+  measurements, after which derived values and SafetyGate enforcement use the
+  latest available readings. On supported Pi relays, timed flash independently
+  ends each normal dosing pulse even if process scheduling is delayed.
 - Stop the process with `Ctrl+C`.
 
 After installing the editable package, the console entry point is also valid:
@@ -160,14 +165,24 @@ Use this local file for values that change on the actual pool:
 - daily chlorine dose
 - dosing pump calibration rate
 - FC-demand target, pool volume, and operating mode
+- site weather latitude/longitude (tracked configs leave weather disabled)
+- measured clean-filter `clean_flow_gpm` (`Qclean`)
 - site-specific paths or hardware settings if they differ from the tracked base
 
 `configs/pi-local.yaml` is ignored by git. `configs/pi-local.example.yaml` is a
-tracked template you can copy on the Pi:
+minimal, comments-only template you can copy on the Pi. Copying it as-is adds no
+overrides:
 
 ```bash
 cp configs/pi-local.example.yaml configs/pi-local.yaml
 ```
+
+Tracked production and development configs intentionally keep weather disabled
+with null coordinates so the public repository contains no site location. To
+collect weather, set `weather.enabled: true` plus the real `latitude` and
+`longitude` in `pi-local.yaml`. Enabling weather without both coordinates is a
+configuration error; leaving it disabled skips weather cleanly without creating
+misleading observations for a fake location.
 
 The dashboard Config and Schedule forms save to the local override when the
 server is started with `--local-config`. This lets `git pull` update
@@ -203,7 +218,8 @@ Important sections:
 - `live_view`: dashboard display limits.
 - `weather`: Open-Meteo location, units, and polling settings.
 - `notifications`: push notification provider settings and optional alert rules
-  for usable chlorine tank days remaining, pH, ORP, and filter flow loss.
+  for usable chlorine tank days remaining, pH, ORP, filter flow loss, and total
+  freeze-temperature loss.
   Pushover keys can be entered on the Config page or supplied through
   environment variables.
 
@@ -236,6 +252,14 @@ weather service, and notification service from the active config.
 `runtime.enabled_sensor_groups` selects acquisition groups from the YAML. Service
 behavior is controlled by each service's own `enabled` or calibration fields.
 SafetyGate itself is not optional.
+
+Tick sequencing is intentionally control-first: actuator state is refreshed,
+the pump timer and chlorination boundary decisions run, and only then does due
+acquisition run. Derived calculations and SafetyGate enforcement follow using
+the latest available measurement set. This avoids stretching a chlorine ON
+pulse while waiting for an optional Modbus probe. Waveshare timed flash is the
+primary independent pulse-end protection; the later redundant OFF remains a
+secondary confirmation.
 
 The current hydraulic safety instrumentation is `pump_output_psi`. Return,
 booster, bubbler, and filter-output pressure channels are not part of the active
@@ -276,11 +300,40 @@ holding up actuator timing:
         min_samples: 1
 ```
 
-The Pi pressure group uses a 2-sample boxcar so overpressure safety still reacts
-in about two seconds or less. The chemistry group reads less often and uses a
+The production Pi pressure group reads every 1 second and uses a 5-sample
+boxcar (`window_samples: 5`, `min_samples: 1`). Windows simulation reads every
+0.5 seconds and uses a 2-sample boxcar. SafetyGate intentionally uses the
+filtered, calibrated `pump_output_psi`; the modest smoothing delay is accepted
+because the configured pressure limits are deliberately conservative relative
+to the plumbing damage concern and intended pump hydraulic envelope. Exact
+reaction time is not guaranteed solely by filter length because scheduling and
+device-read timing also apply. The chemistry group reads less often and uses a
 60-second boxcar. Pump-flow-qualified chemistry readings that are invalid
 because the pump is off or not yet stirred are not logged and do not enter the
 rolling filter.
+
+Normal live flow and dynamic-head estimates require the same fresh, finite,
+GOOD pump-output pressure semantics used by SafetyGate. If pressure is stale,
+bad, or unavailable, derived hydraulic flow is unavailable rather than shown as
+a normal estimate.
+
+## Canonical Water Temperature and Freeze Protection
+
+`water_temp` is the single derived pool-water-temperature metric used by the
+primary Live display, CSI, daily water-temperature summaries, and future
+weather/FC feature history. It selects fresh `ph_temp` first and falls back to
+fresh `orp_temp`; both raw probe-temperature signals remain visible and logged
+for diagnostics. The generic `temp` signal remains available to simulation but
+is not the production Water Temperature card input.
+
+Freeze protection uses the same selection and freshness semantics. The default
+`max_temperature_age_seconds: 3600` matches the intentionally slow/off-cycle
+chemistry refresh cadence. Status exposes the configured primary/fallback,
+active source and age, each source's availability, and fallback/fail-safe use.
+If neither source is usable, freeze protection latches LOW as a fail-safe (or
+keeps its already latched speed) and cannot clear until a trustworthy warm
+reading satisfies the normal hysteresis and minimum-run rules. The existing
+notification service can repeat a throttled Pushover warning for this condition.
 
 ## Dashboard Pages
 
@@ -387,7 +440,8 @@ The controller:
 2. Merges overlapping or adjacent dosing-allowed pump timer windows.
 3. Removes the first `no_dose_first_minutes` from each continuous pump run so
    pump output pressure and flow can stabilize.
-4. Removes the final `no_dose_last_minutes` from each continuous allowed run.
+4. Removes the final `no_dose_last_minutes` before the end of the full
+   continuous pump run, not before each dosing-eligible sub-window.
 5. Computes total valid daily dosing minutes.
 6. Converts `daily_dose_oz` to dosing pump minutes using
    `pump_output_oz_per_min`.
@@ -413,6 +467,11 @@ This allows the same pump timer to run the pool at night for skimming or
 vacuuming while keeping the day's chlorine dose in morning and daytime windows
 before evening FC tests.
 
+An adjacent `allow_dosing: false` window still provides circulation. For
+example, if dosing is allowed through 14:00 and the pump continues through
+15:00 with dosing disabled, a 10-minute final exclusion does not also remove
+13:50-14:00; the circulation run itself ends at 15:00.
+
 Pulse timing is configured with three values:
 
 - `cycle_on_seconds`: nominal ON pulse used at normal duty cycles.
@@ -434,7 +493,11 @@ forward. The controller does not try to make up for earlier parts of the day.
 When a chlorine tank level test has been entered, the dashboard estimates
 remaining tank gallons from that baseline minus logged dosing delivery plus any
 recorded tank refills. Tank level tests and refill records use the true tank
-level, including the 2 gallon reserve. The top status strip displays `Usable
+level. Tank safety uses the independent `low_warning_gal`, `inhibit_below_gal`,
+and `reenable_at_gal` thresholds. Supply forecasting separately subtracts
+`forecast_reserve_gal` (2 gallons by default) to calculate usable gallons and
+days remaining; that forecast reserve is not the dosing inhibit threshold. The
+top status strip displays `Usable
 chlorine remaining X gallons, Y days`, where usable gallons subtract the 2
 gallon reserve from the true estimated level. Days are computed from the
 FC-demand maintenance dose when one is available; otherwise they use the current
@@ -461,7 +524,8 @@ supplemental sodium-hypochlorite dose. Enter the extra fluid ounces to add; the
 runtime forces the filter pump on at low speed, keeps the booster off, doses at
 the configured `max_duty_cycle`, then keeps the pump running for
 `no_dose_last_minutes` after the final dosing pulse. Supplemental dosing uses
-the same pump-output-pressure/booster-off/tank-reserve interlocks as scheduled
+the same pump-output-pressure/booster-off/tank safety inhibit/re-enable
+interlocks as scheduled
 normal dosing. This is normal pool dosing, not a diagnostic run: it does not
 bypass safety, and delivered runtime is included in logged chlorine delivery,
 daily sodium-hypochlorite totals, and FC-demand addition math.
@@ -476,6 +540,11 @@ supplemental run temporarily owns the pump at low speed, records any already
 delivered scheduled chlorine up to the handoff, and then resumes the schedule
 after post-dose circulation completes. `Stop Extra Dose` cancels the remaining
 supplemental run and logs any partial chlorine already injected.
+
+Supplemental status calls pulse time `committed_runtime_s` as soon as a timed
+hardware pulse is accepted and uses `estimated_completion_at` for its nominal
+completion prediction. Actual delivered runtime remains the elapsed/applied
+actuator accounting recorded by the chlorine delivery logger.
 
 The History page can graph chlorination control signals:
 
@@ -510,9 +579,10 @@ The History page can graph chlorination control signals:
   uses only the weighted FC-test/addition history, with no pH, ORP, UV, weather,
   or temperature modifier.
 - `Daily ORP avg`, `Daily water temp min/avg/max`, and `Daily pH avg`: daily
-  summaries from `raw_orp`, `orp_temp`, and `raw_ph`. The water-temperature
-  minimum is logged because it may better represent pool water than daytime
-  plumbing warmed by sun.
+  summaries from `raw_orp`, canonical `water_temp`, and `raw_ph`. Canonical
+  water temperature uses fresh `ph_temp` with `orp_temp` fallback. The minimum
+  is logged because it may better represent pool water than daytime plumbing
+  warmed by sun.
 - `ORP 7d/28d avg`, `Water temp 7d/28d avg`, `pH 7d/28d avg`, and
   `UV dose 7d/28d avg`: moving averages of the completed-day summary rows for
   seasonal demand tracking.
@@ -580,6 +650,11 @@ configured pump-output pressure window for head-pressure qualification:
 
 ```yaml
 safety:
+  freeze_protection:
+    enabled: true
+    primary_temperature_sensor: ph_temp
+    fallback_temperature_sensor: orp_temp
+    max_temperature_age_seconds: 3600
   chlorine_tank:
     level_sensor: chlorine_tank_level_gal
     low_warning_gal: 2.0
@@ -607,8 +682,10 @@ HIGH, booster-OFF schedule window, or run the same condition manually. When the
 system enters main pump ON, speed HIGH, booster OFF, with a fresh GOOD
 `pump_output_psi` measurement, the estimator starts a qualifying session. It
 ignores the first `filter_loading.stabilization_seconds` (default 60 s), then
-collects valid pressure samples until `averaging_seconds` (default 120 s) of
-qualifying data is available. If the pump stops, leaves HIGH, the booster turns
+collects distinct source pressure observations until their timestamps cover
+`averaging_seconds` (default 120 s). Repeated controller ticks holding the same
+measurement do not increase `sample_count` or complete a test early. If the
+pump stops, leaves HIGH, the booster turns
 ON, or pressure becomes stale/bad/unavailable, the in-progress session resets
 and samples are not mixed across sessions.
 
@@ -851,17 +928,25 @@ notifications:
       enabled: false
       warning_above: 15.0
       warning_repeat_minutes: 1440.0
+    freeze_temperature_unavailable:
+      enabled: true
+      warning_repeat_minutes: 240.0
 ```
 
-Alert rules are disabled by default even when the provider block exists in the
+Most threshold alert rules are disabled by default even when the provider block exists in the
 tracked configs. `chlorine_tank` thresholds are usable days remaining, computed
-from the estimated true tank gallons minus the 2 gallon reserve and the
+from the estimated true tank gallons minus the forecast reserve and the
 maintenance chlorine daily estimate when available; tank notifications include
 both usable days and usable gallons in the message. `ph` thresholds are pH
 units, `orp` thresholds are mV, and `filter_flow_loss` thresholds are raw
 standardized flow-loss percent. The filter alert is disabled by default; when
-enabled, a warning says, for example, `Clean filter soon: estimated standardized
-flow loss is 15.8%.`
+enabled, it repeats at `warning_repeat_minutes` while the latched latest test
+remains above threshold, even if that test is old. A new clean standardized
+test clears the condition. Messages include test age, for example,
+`Clean filter soon: standardized flow loss is 15.8% (last hydraulic test: 2 days ago).`
+The freeze-temperature-unavailable warning is enabled at the alert-rule level
+by default (the overall notification provider must still be enabled) and uses
+its own repeat interval to avoid continuous messages.
 Warning thresholds are evaluated before caution thresholds. Each signal has a
 separate caution and warning repeat interval; the throttle key is signal plus
 severity, so pH or ORP values that bounce above and below threshold do not keep
@@ -990,9 +1075,28 @@ BACKUP_KEEP_COUNT=720 \
 ./deploy/systemd/install-pi-services.sh
 ```
 
-If you still have old local Pi edits in `configs/pi-prod.yaml`, move the local
-sections into `configs/pi-local.yaml`, then restore the tracked base file before
-pulling:
+For this config-schema update, discard the old local override rather than
+merging it. Back it up outside the repository, update, create a fresh local file
+from the minimal example, and manually re-enter only current site values:
+
+```bash
+cd /home/pool/projects/pool
+mv configs/pi-local.yaml ~/pi-local.yaml.pre-consistency-cleanup
+git pull --ff-only
+cp configs/pi-local.example.yaml configs/pi-local.yaml
+nano configs/pi-local.yaml
+```
+
+Re-enter the real pump schedule and every `allow_dosing` flag, calibrated
+chlorine-pump oz/min, FC pool volume, FC target, FC-demand mode, site-specific
+maximum daily dose, measured filter `clean_flow_gpm` (`Qclean`), local weather
+latitude/longitude, hardware paths/slave IDs that differ from production
+defaults, and notification environment/settings. A local schedules list
+replaces the entire tracked list. Do not copy retired keys wholesale from the
+backup.
+
+If you also have old local Pi edits in tracked `configs/pi-prod.yaml`, preserve
+their values separately, restore the tracked base file, and then pull:
 
 ```bash
 git restore configs/pi-prod.yaml

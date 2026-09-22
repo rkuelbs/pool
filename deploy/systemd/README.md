@@ -95,6 +95,16 @@ BACKUP_KEEP_COUNT=720 \
 and may be missing on first boot. When present, it is merged on top of
 `CONFIG_PATH`; dashboard config edits are saved there so `git pull` can update
 the tracked base config without conflicting with schedule or dose changes.
+The tracked `pi-local.example.yaml` is deliberately an empty override with
+commented examples. A local schedules list replaces the complete base list.
+
+For the current config migration, back up an existing `pi-local.yaml` outside
+the repository, update the repo, copy a fresh minimal example, and manually
+re-enter only current values. Restore the real schedule/`allow_dosing` flags,
+chlorine pump oz/min, FC pool volume and target, FC-demand mode, site maximum
+dose, filter `clean_flow_gpm`, weather location, non-default hardware paths or
+slave IDs, and notification settings/secrets. Do not copy retired keys
+wholesale from the old file.
 
 ## Reinstall or Update Services
 

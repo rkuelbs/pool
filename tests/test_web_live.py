@@ -260,7 +260,7 @@ async def test_build_live_snapshot_includes_csi_when_inputs_are_available(
         "acquisition": {
             "groups": {
                 "chemistry_loop": {
-                    "sensor_ids": ["temp", "raw_ph"],
+                    "sensor_ids": ["ph_temp", "raw_ph"],
                     "read_interval_s": 1.0,
                     "log_interval_s": 1.0,
                     "requires_pump_flow": False,
@@ -288,7 +288,13 @@ async def test_build_live_snapshot_includes_csi_when_inputs_are_available(
         config,
         clock=clock,
         sensor_drivers=[
-            FixedSensor(name="temp_sensor", sensor_id=SensorId.TEMP, clock=clock, value=84.0, unit="degF"),
+            FixedSensor(
+                name="temp_sensor",
+                sensor_id=SensorId.PH_TEMP,
+                clock=clock,
+                value=84.0,
+                unit="degF",
+            ),
             FixedSensor(name="ph_sensor", sensor_id=SensorId.RAW_PH, clock=clock, value=7.5, unit="pH"),
         ],
     )
@@ -302,6 +308,67 @@ async def test_build_live_snapshot_includes_csi_when_inputs_are_available(
     csi = snapshot["sensors"][SensorId.CALCIUM_SATURATION_INDEX.value]
     assert csi["label"] == "CSI"
     assert csi["unit"] == "csi"
+
+
+@pytest.mark.asyncio
+async def test_live_snapshot_uses_canonical_ph_then_orp_water_temperature() -> None:
+    clock = make_clock()
+    config = {
+        "runtime": {
+            "driver_profile": "simulated",
+            "enabled_actuators": [],
+            "enabled_sensor_groups": ["chemistry_loop"],
+        },
+        "acquisition": {
+            "groups": {
+                "chemistry_loop": {
+                    "sensor_ids": ["ph_temp", "orp_temp"],
+                    "read_interval_s": 1.0,
+                    "log_interval_s": 1.0,
+                    "requires_pump_flow": False,
+                    "oversample": {
+                        "sample_count": 1,
+                        "sample_interval_s": 0.0,
+                        "reducer": "last",
+                    },
+                }
+            }
+        },
+    }
+    ph = FixedSensor(
+        name="ph_temp",
+        sensor_id=SensorId.PH_TEMP,
+        clock=clock,
+        value=82.0,
+        unit="degF",
+    )
+    orp = FixedSensor(
+        name="orp_temp",
+        sensor_id=SensorId.ORP_TEMP,
+        clock=clock,
+        value=81.0,
+        unit="degF",
+    )
+    app = build_app_from_mapping(config, clock=clock, sensor_drivers=[ph, orp])
+
+    snapshot = await build_live_snapshot(app)
+
+    water = snapshot["sensors"][SensorId.WATER_TEMP.value]
+    assert water["value"] == 82.0
+    assert water["metadata"]["active_source"] == SensorId.PH_TEMP.value
+
+    acquisition = config["acquisition"]
+    assert isinstance(acquisition, dict)
+    groups = acquisition["groups"]
+    assert isinstance(groups, dict)
+    chemistry = groups["chemistry_loop"]
+    assert isinstance(chemistry, dict)
+    chemistry["sensor_ids"] = ["orp_temp"]
+    fallback_app = build_app_from_mapping(config, clock=clock, sensor_drivers=[orp])
+    fallback_snapshot = await build_live_snapshot(fallback_app)
+    fallback = fallback_snapshot["sensors"][SensorId.WATER_TEMP.value]
+    assert fallback["value"] == 81.0
+    assert fallback["metadata"]["active_source"] == SensorId.ORP_TEMP.value
 
 
 @pytest.mark.asyncio

@@ -100,6 +100,7 @@ from poolctl.services.safety import (
     SafetyGate,
 )
 from poolctl.services.weather import WeatherConfig, WeatherPollResult, WeatherService
+from poolctl.services.water_temperature import select_water_temperature
 
 
 FLUID_OUNCES_PER_GALLON = 128.0
@@ -185,6 +186,7 @@ class AppTickResult:
     logged_measurement_count: int = 0
     logged_lab_test_count: int = 0
     flow_estimates: FlowEstimates = FlowEstimates()
+    water_temperature_measurement: Measurement | None = None
     csi_measurement: Measurement | None = None
     weather_result: WeatherPollResult = field(default_factory=WeatherPollResult)
     fc_demand_status: FcDemandStatus | None = None
@@ -272,7 +274,7 @@ class SupplementalChlorineDoseState:
         return ActuatorState.ON if elapsed_since_pulse_s >= self.cycle_period_s else ActuatorState.OFF
 
     @property
-    def dosing_until(self) -> datetime | None:
+    def estimated_completion_at(self) -> datetime | None:
         if self.completed_dosing_at is not None:
             return self.completed_dosing_at
         if self.dosing_started_at is None:
@@ -286,12 +288,12 @@ class SupplementalChlorineDoseState:
         return self.completed_dosing_at + timedelta(seconds=self.no_dose_last_seconds)
 
     @property
-    def delivered_runtime_s(self) -> float:
+    def committed_runtime_s(self) -> float:
         return self.accepted_pulse_count * self.pulse_seconds
 
     @property
     def remaining_pump_runtime_s(self) -> float:
-        return max(0.0, self.pump_runtime_s - self.delivered_runtime_s)
+        return max(0.0, self.pump_runtime_s - self.committed_runtime_s)
 
     def pulse_index(self, now: datetime) -> int | None:
         if self.completed_dosing_at is not None:
@@ -420,9 +422,11 @@ class PoolControllerApp:
     """
     Composed runtime object for one pool controller deployment.
 
-    It owns the services that participate in the control loop. The first loop
-    is deliberately small: refresh actuator state, acquire due measurements,
-    and enforce safety on the freshest available measurements.
+    It owns the services that participate in the control loop. Time-critical
+    timer and dosing decisions run before acquisition so a slow optional sensor
+    cannot delay a chlorine OFF boundary. Acquisition and safety enforcement
+    then use the latest available measurements; timed relay flash provides an
+    independent hardware pulse-end safeguard on supported Pi relays.
     """
 
     runtime_config: RuntimeConfig
@@ -532,6 +536,17 @@ class PoolControllerApp:
             if self.acquisition_service is not None
             else {}
         )
+        water_temperature_selection = select_water_temperature(
+            latest_measurements,
+            now=self.clock.now(),
+            config=self.safety_config.freeze_protection.water_temperature_config,
+        )
+        water_temperature_measurement = (
+            water_temperature_selection.canonical_measurement()
+        )
+        derived_input_measurements = dict(latest_measurements)
+        if water_temperature_measurement is not None:
+            derived_input_measurements[SensorId.WATER_TEMP] = water_temperature_measurement
 
         # Flow, filter loading, and CSI are not directly read from sensors;
         # they are derived from the latest measurements and then logged like
@@ -546,8 +561,10 @@ class PoolControllerApp:
             else None
         )
         flow_estimates = estimate_flows(
+            now=self.clock.now(),
             measurements=latest_measurements,
             actuator_states=self.router.actuator_states,
+            max_pressure_age_seconds=self.safety_config.pump_output_max_age_seconds,
             config=self.flow_estimation_config,
             filter_loading=filter_loading_update,
         )
@@ -555,7 +572,7 @@ class PoolControllerApp:
             flow_estimates=flow_estimates,
             observed_at=self.clock.now(),
         )
-        csi_measurement = self._csi_derived_measurement(latest_measurements)
+        csi_measurement = self._csi_derived_measurement(derived_input_measurements)
         source_logged_sensor_ids = {measurement.sensor_id for measurement in acquisition.loggable_measurements}
         flow_source_sensor_ids = {
             SensorId.PUMP_OUTPUT_PSI,
@@ -569,17 +586,21 @@ class PoolControllerApp:
         should_log_csi = (
             csi_measurement is not None
             and (
-                SensorId.TEMP in source_logged_sensor_ids
+                water_temperature_selection.active_source in source_logged_sensor_ids
                 or SensorId.RAW_PH in source_logged_sensor_ids
             )
         )
-        loggable_measurements = (
-            tuple(acquisition.loggable_measurements) + flow_derived_measurements
-            if should_log_flow_derived
-            else acquisition.loggable_measurements
+        should_log_water_temperature = (
+            water_temperature_measurement is not None
+            and water_temperature_selection.active_source in source_logged_sensor_ids
         )
+        loggable_measurements = tuple(acquisition.loggable_measurements)
+        if should_log_water_temperature and water_temperature_measurement is not None:
+            loggable_measurements += (water_temperature_measurement,)
+        if should_log_flow_derived:
+            loggable_measurements += flow_derived_measurements
         if should_log_csi and csi_measurement is not None:
-            loggable_measurements = tuple(loggable_measurements) + (csi_measurement,)
+            loggable_measurements += (csi_measurement,)
         logged_lab_test_count = 0
         logged_measurement_count = self._log_measurements(loggable_measurements)
         daily_summary_measurements = self._daily_environment_measurements(
@@ -606,11 +627,11 @@ class PoolControllerApp:
             )
         )
         safety_results: tuple[ActuatorCommandResult, ...] = ()
-        safety_measurements = acquisition.measurements
-        if not safety_measurements and self.acquisition_service is not None:
-            safety_measurements = tuple(
-                self.acquisition_service.latest_measurements.values()
-            )
+        safety_measurements = (
+            tuple(self.acquisition_service.latest_measurements.values())
+            if self.acquisition_service is not None
+            else acquisition.measurements
+        )
         safety_measurements = self.safety_measurements(
             safety_measurements,
             observed_at=self.clock.now(),
@@ -643,11 +664,12 @@ class PoolControllerApp:
         )
         notification_results = self._run_notification_alerts(
             measurements=self._notification_alert_measurements(
-                latest_measurements=latest_measurements,
+                latest_measurements=derived_input_measurements,
                 control_measurements=control_measurements,
                 observed_at=self.clock.now(),
                 daily_dose_oz=chlorine_supply_daily_dose,
-            )
+            ),
+            freeze_status=self.router.safety_gate.freeze_status(self.clock.now()),
         )
 
         return AppTickResult(
@@ -660,6 +682,7 @@ class PoolControllerApp:
             logged_measurement_count=logged_measurement_count,
             logged_lab_test_count=logged_lab_test_count,
             flow_estimates=flow_estimates,
+            water_temperature_measurement=water_temperature_measurement,
             csi_measurement=csi_measurement,
             chlorination_results=chlorination_results,
             chlorination_status=chlorination_status,
@@ -972,7 +995,7 @@ class PoolControllerApp:
                 "pulse_count": 0,
                 "cycle_period_s": 0.0,
                 "pump_runtime_s": 0.0,
-                "delivered_runtime_s": 0.0,
+                "committed_runtime_s": 0.0,
                 "remaining_pump_runtime_s": 0.0,
                 "no_dose_last_seconds": 0.0,
                 "min_cycle_on_seconds": 0.0,
@@ -982,13 +1005,13 @@ class PoolControllerApp:
                 "requested_at": None,
                 "dosing_started_at": None,
                 "completed_dosing_at": None,
-                "dosing_until": None,
+                "estimated_completion_at": None,
                 "circulate_until": None,
             }
 
         now = self.clock.now()
         phase = state.phase(now)
-        dosing_until = state.dosing_until
+        estimated_completion_at = state.estimated_completion_at
         remaining_s = (
             max(0.0, (state.circulate_until - now).total_seconds())
             if state.completed_dosing_at is not None
@@ -1002,8 +1025,8 @@ class PoolControllerApp:
             "planned_dose_oz": state.planned_dose_oz,
             "remaining_s": remaining_s,
             "dosing_remaining_s": (
-                max(0.0, (dosing_until - now).total_seconds())
-                if dosing_until is not None and phase == "dosing"
+                max(0.0, (estimated_completion_at - now).total_seconds())
+                if estimated_completion_at is not None and phase == "dosing"
                 else state.remaining_pump_runtime_s
             ),
             "circulation_remaining_s": (
@@ -1016,7 +1039,7 @@ class PoolControllerApp:
             "pulse_count": state.pulse_count,
             "cycle_period_s": state.cycle_period_s,
             "pump_runtime_s": state.pump_runtime_s,
-            "delivered_runtime_s": state.delivered_runtime_s,
+            "committed_runtime_s": state.committed_runtime_s,
             "remaining_pump_runtime_s": state.remaining_pump_runtime_s,
             "no_dose_last_seconds": state.no_dose_last_seconds,
             "min_cycle_on_seconds": state.min_cycle_on_seconds,
@@ -1036,7 +1059,11 @@ class PoolControllerApp:
                 if state.completed_dosing_at is not None
                 else None
             ),
-            "dosing_until": dosing_until.isoformat() if dosing_until is not None else None,
+            "estimated_completion_at": (
+                estimated_completion_at.isoformat()
+                if estimated_completion_at is not None
+                else None
+            ),
             "circulate_until": (
                 state.circulate_until.isoformat()
                 if state.completed_dosing_at is not None
@@ -1207,6 +1234,10 @@ class PoolControllerApp:
             else None
         )
         if filter_result is not None and filter_result.raw_flow_loss_percent is not None:
+            test_age_seconds = max(
+                0.0,
+                (observed_at - filter_result.completed_at).total_seconds(),
+            )
             measurements[SensorId.FILTER_FLOW_LOSS_PERCENT] = Measurement(
                 sensor_id=SensorId.FILTER_FLOW_LOSS_PERCENT,
                 observed_at=filter_result.completed_at,
@@ -1219,6 +1250,8 @@ class PoolControllerApp:
                     "reference_psi": filter_result.reference_psi,
                     "estimated_flow_gpm": filter_result.estimated_flow_gpm,
                     "clean_flow_gpm": filter_result.clean_flow_gpm,
+                    "last_hydraulic_test_at": filter_result.completed_at.isoformat(),
+                    "test_age_seconds": test_age_seconds,
                 },
             )
         return measurements
@@ -1227,6 +1260,7 @@ class PoolControllerApp:
         self,
         *,
         measurements: Mapping[SensorId, Measurement],
+        freeze_status: Mapping[str, Any] | None = None,
     ) -> tuple[NotificationResult, ...]:
         if not self.notifications_config.enabled:
             return ()
@@ -1241,6 +1275,7 @@ class PoolControllerApp:
             measurements=measurements,
             now=now,
             last_sent_at=self.notification_alert_last_sent_at,
+            freeze_status=freeze_status,
         )
         if not alerts:
             return ()
@@ -1506,7 +1541,7 @@ class PoolControllerApp:
                 if phase == "circulating"
                 else "supplemental chlorine dose active"
             )
-            dosing_until = supplemental_dose.dosing_until
+            estimated_completion_at = supplemental_dose.estimated_completion_at
             status = replace(
                 evaluation.status,
                 desired_state=desired_state,
@@ -1532,7 +1567,7 @@ class PoolControllerApp:
                 no_dose_last_minutes=(
                     supplemental_dose.no_dose_last_seconds / 60.0
                 ),
-                current_window_end=dosing_until,
+                current_window_end=estimated_completion_at,
             )
             if current_state != desired_state or needs_on_pulse_command:
                 pulse_seconds = (
@@ -2270,7 +2305,7 @@ class PoolControllerApp:
             )
 
         water_summary = self.measurement_logger.measurement_value_summary(
-            sensor_id=SensorId.ORP_TEMP,
+            sensor_id=SensorId.WATER_TEMP,
             since=start_utc,
             until=end_utc,
             qualities=(Quality.GOOD,),
@@ -2290,7 +2325,7 @@ class PoolControllerApp:
                         aggregation="min",
                         value=water_summary.min_value,
                         unit=water_unit,
-                        source="orp_temp",
+                        source="water_temp",
                     ),
                     _daily_summary_measurement(
                         sensor_id=SensorId.DAILY_WATER_TEMP_AVG,
@@ -2303,7 +2338,7 @@ class PoolControllerApp:
                         aggregation="avg",
                         value=water_summary.avg_value,
                         unit=water_unit,
-                        source="orp_temp",
+                        source="water_temp",
                     ),
                     _daily_summary_measurement(
                         sensor_id=SensorId.DAILY_WATER_TEMP_MAX,
@@ -2316,7 +2351,7 @@ class PoolControllerApp:
                         aggregation="max",
                         value=water_summary.max_value,
                         unit=water_unit,
-                        source="orp_temp",
+                        source="water_temp",
                     ),
                 )
             )
@@ -3079,7 +3114,7 @@ class PoolControllerApp:
             quality=Quality.GOOD,
             metadata={
                 "driver": "calcium_saturation_index",
-                "source": "raw_ph,temp,lab_tests",
+                "source": "raw_ph,water_temp,lab_tests",
                 "temp_sensor_id": self.calcium_saturation_index_config.temp_sensor_id.value,
                 "ph_sensor_id": self.calcium_saturation_index_config.ph_sensor_id.value,
                 "lab_values": lab_values,
@@ -3529,7 +3564,7 @@ def _fc_demand_trend_measurements(
         "observation_count": status.observation_count,
         "effective_normalized_weights": list(status.effective_normalized_weights),
         "modifier_model": "phase_1_weather_adjustment_zero",
-        "water_temp_source": SensorId.ORP_TEMP.value,
+        "water_temp_source": SensorId.WATER_TEMP.value,
         "uv_modifier_ppm_per_day": 0.0,
         "temperature_modifier_ppm_per_day": 0.0,
     }

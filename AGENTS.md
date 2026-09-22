@@ -73,6 +73,12 @@ running even when no browser is open.
 
 Timing-sensitive principles:
 
+- Each tick refreshes actuator state and runs timer/chlorination boundary
+  decisions before potentially slower acquisition. Derived calculations and
+  SafetyGate enforcement follow using the latest available measurements.
+- The control-first order is intentional: optional sensor/Modbus latency must
+  not stretch a chlorine ON pulse. Supported Pi relays also use timed flash for
+  independent hardware OFF timing, followed by redundant software OFF.
 - Avoid blocking the main tick with slow operations.
 - Keep weather/network work outside the control-critical path.
 - Keep Modbus traffic efficient. Prefer one bulk read per hardware device when

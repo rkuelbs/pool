@@ -22,9 +22,9 @@ safety:
     pump_output: pump_output_psi
   freeze_protection:
     enabled: true
-    source: both
-    temp_sensor: temp
-    ph_temp_sensor: orp_temp
+    primary_temperature_sensor: ph_temp
+    fallback_temperature_sensor: orp_temp
+    max_temperature_age_seconds: 3600
     low_speed_on_below_temp: 35
     low_speed_off_above_temp: 37
     high_speed_on_below_temp: 33
@@ -52,9 +52,9 @@ safety:
 
     assert config.pressure_sensors.pump_output == SensorId.PUMP_OUTPUT_PSI
     assert config.freeze_protection.enabled is True
-    assert config.freeze_protection.source.value == "both"
-    assert config.freeze_protection.temp_sensor == SensorId.TEMP
-    assert config.freeze_protection.ph_temp_sensor == SensorId.ORP_TEMP
+    assert config.freeze_protection.primary_temperature_sensor == SensorId.PH_TEMP
+    assert config.freeze_protection.fallback_temperature_sensor == SensorId.ORP_TEMP
+    assert config.freeze_protection.max_temperature_age_seconds == 3600.0
     assert config.freeze_protection.low_speed_on_below_temp == 35.0
     assert config.freeze_protection.low_speed_off_above_temp == 37.0
     assert config.freeze_protection.high_speed_on_below_temp == 33.0
@@ -92,10 +92,11 @@ def test_safety_config_accepts_top_level_safety_mapping() -> None:
     assert config.chlorine_max_pump_output_psi == 3.5
 
 
-def test_freeze_ph_temp_default_uses_ph_temp_sensor() -> None:
+def test_freeze_temperature_defaults_use_ph_then_orp() -> None:
     config = SafetyConfig()
 
-    assert config.freeze_protection.ph_temp_sensor == SensorId.PH_TEMP
+    assert config.freeze_protection.primary_temperature_sensor == SensorId.PH_TEMP
+    assert config.freeze_protection.fallback_temperature_sensor == SensorId.ORP_TEMP
 
 
 def test_freeze_config_accepts_legacy_on_threshold_keys() -> None:

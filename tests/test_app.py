@@ -1138,13 +1138,20 @@ async def test_supplemental_chlorine_dose_waits_for_pressure_without_consuming_r
     assert dosing_driver.commands == []
     waiting_status = app.supplemental_chlorine_dose_status()
     assert waiting_status["phase"] == "preparing"
-    assert waiting_status["delivered_runtime_s"] == 0.0
+    assert waiting_status["committed_runtime_s"] == 0.0
     assert waiting_status["remaining_pump_runtime_s"] == 60.0
     assert app.router.actuator_states[ActuatorId.PUMP_MOTOR] == ActuatorState.ON
 
     await clock.advance(31.0)
     seed_dosing_pressure(app, clock)
     recovered = await app.tick()
+    committed_status = app.supplemental_chlorine_dose_status()
+    assert committed_status["committed_runtime_s"] == 60.0
+    assert "delivered_runtime_s" not in committed_status
+    assert committed_status["estimated_completion_at"] is not None
+    assert app.measurement_logger is not None
+    before_elapsed = app.measurement_logger.chlorine_delivery_summary()
+    assert before_elapsed.runtime_seconds == 0.0
     await clock.advance(60.1)
     completed = await app.tick()
 
@@ -1152,13 +1159,12 @@ async def test_supplemental_chlorine_dose_waits_for_pressure_without_consuming_r
     assert dosing_driver.commands[0].state == ActuatorState.ON
     assert dosing_driver.commands[0].metadata[ACTUATOR_ON_PULSE_SECONDS_METADATA] == 60.0
     assert completed.logged_chlorine_delivery_count == 1
-    assert app.measurement_logger is not None
     summary = app.measurement_logger.chlorine_delivery_summary()
     assert round(summary.runtime_seconds, 3) == 60.0
     assert round(summary.delivered_oz, 3) == 1.0
     status = app.supplemental_chlorine_dose_status()
     assert status["phase"] == "circulating"
-    assert status["delivered_runtime_s"] == 60.0
+    assert status["committed_runtime_s"] == 60.0
     assert status["remaining_pump_runtime_s"] == 0.0
 
 
@@ -1909,7 +1915,7 @@ def test_poll_weather_due_fetches_weather_and_logs_hourly_observation(
 
 
 @pytest.mark.asyncio
-async def test_tick_logs_daily_environment_summaries_from_orp_temp_and_weather(
+async def test_tick_logs_daily_environment_summaries_from_canonical_water_temp_and_weather(
     tmp_path: Path,
 ) -> None:
     clock = make_clock()
@@ -1932,28 +1938,28 @@ async def test_tick_logs_daily_environment_summaries_from_orp_temp_and_weather(
     app.measurement_logger.log_measurements(
         (
             Measurement(
-                sensor_id=SensorId.ORP_TEMP,
+                sensor_id=SensorId.WATER_TEMP,
                 observed_at=start + timedelta(hours=1),
                 value=70.0,
                 unit="degF",
                 quality=Quality.GOOD,
             ),
             Measurement(
-                sensor_id=SensorId.ORP_TEMP,
+                sensor_id=SensorId.WATER_TEMP,
                 observed_at=start + timedelta(hours=12),
                 value=82.0,
                 unit="degF",
                 quality=Quality.GOOD,
             ),
             Measurement(
-                sensor_id=SensorId.ORP_TEMP,
+                sensor_id=SensorId.WATER_TEMP,
                 observed_at=start + timedelta(hours=23),
                 value=74.0,
                 unit="degF",
                 quality=Quality.GOOD,
             ),
             Measurement(
-                sensor_id=SensorId.ORP_TEMP,
+                sensor_id=SensorId.WATER_TEMP,
                 observed_at=start + timedelta(hours=6),
                 value=65.0,
                 unit="degF",
@@ -2218,7 +2224,7 @@ async def test_tick_computes_csi_from_valid_live_temp_ph_and_latest_sparse_lab_v
     clock = make_clock()
     temp_sensor = FixedSensor(
         name="temp_sensor",
-        sensor_id=SensorId.TEMP,
+        sensor_id=SensorId.PH_TEMP,
         clock=clock,
         value=84.0,
         unit="degF",
@@ -2244,7 +2250,7 @@ async def test_tick_computes_csi_from_valid_live_temp_ph_and_latest_sparse_lab_v
         "acquisition": {
             "groups": {
                 "chemistry_loop": {
-                    "sensor_ids": ["temp", "raw_ph"],
+                    "sensor_ids": ["ph_temp", "raw_ph"],
                     "read_interval_s": 1.0,
                     "log_interval_s": 1.0,
                     "requires_pump_flow": False,
@@ -2352,4 +2358,52 @@ async def test_tick_sends_notification_alerts_with_repeat_throttle() -> None:
     assert notifications.messages == [
         "pH caution: 7.90 is above the caution threshold (7.80)",
         "pH caution: 7.10 is below the caution threshold (7.20)",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_tick_notifies_and_throttles_fail_safe_freeze_temperature_loss() -> None:
+    clock = make_clock()
+    config = {
+        **simulated_runtime_config(),
+        **minimal_acquisition_config(),
+        "safety": {
+            "freeze_protection": {
+                "enabled": True,
+                "primary_temperature_sensor": "ph_temp",
+                "fallback_temperature_sensor": "orp_temp",
+                "max_temperature_age_seconds": 60.0,
+                "min_run_seconds": 0.0,
+            }
+        },
+        "notifications": {
+            "enabled": True,
+            "alerts": {
+                "freeze_temperature_unavailable": {
+                    "enabled": True,
+                    "warning_repeat_minutes": 60.0,
+                }
+            },
+        },
+    }
+    app = build_app_from_mapping(
+        config,
+        clock=clock,
+        sensor_drivers=[fixed_dosing_pressure_sensor(clock, pressure_psi=5.0)],
+    )
+    notifications = CapturingNotificationService()
+    object.__setattr__(app, "notification_service", notifications)
+
+    first = await app.tick(force_acquisition=True)
+    await clock.advance(30 * 60)
+    second = await app.tick(force_acquisition=True)
+    await clock.advance(31 * 60)
+    third = await app.tick(force_acquisition=True)
+
+    assert len(first.notification_results) == 1
+    assert second.notification_results == ()
+    assert len(third.notification_results) == 1
+    assert notifications.messages == [
+        "Freeze protection temperature unavailable; using fail-safe freeze protection.",
+        "Freeze protection temperature unavailable; using fail-safe freeze protection.",
     ]

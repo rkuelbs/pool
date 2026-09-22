@@ -28,6 +28,12 @@ from poolctl.domain.models import (
     Quality,
     SensorId,
 )
+from poolctl.services.measurement_quality import usable_numeric_measurement_value
+from poolctl.services.water_temperature import (
+    WaterTemperatureConfig,
+    WaterTemperatureSelection,
+    select_water_temperature,
+)
 
 
 class SafetySeverity(str, Enum):
@@ -37,12 +43,6 @@ class SafetySeverity(str, Enum):
 
     WARNING = "warning"
     ERROR = "error"
-
-
-class FreezeProtectionSource(str, Enum):
-    TEMP = "temp"
-    PH_TEMP = "ph_temp"
-    BOTH = "both"
 
 
 class TemperatureUnit(str, Enum):
@@ -67,14 +67,15 @@ class FreezeProtectionConfig:
     """
     Freeze protection settings.
 
-    The freeze gate uses raw temperature measurements (quality is ignored) so
-    it can still protect plumbing while chemistry-loop validity is false.
+    PH probe temperature is preferred, with ORP probe temperature as fallback.
+    Fresh GOOD or SUSPECT values are usable; BAD, missing, non-finite, and stale
+    readings trigger fail-safe freeze protection when neither source is usable.
     """
 
     enabled: bool = False
-    source: FreezeProtectionSource = FreezeProtectionSource.TEMP
-    temp_sensor: SensorId = SensorId.TEMP
-    ph_temp_sensor: SensorId = SensorId.PH_TEMP
+    primary_temperature_sensor: SensorId = SensorId.PH_TEMP
+    fallback_temperature_sensor: SensorId = SensorId.ORP_TEMP
+    max_temperature_age_seconds: float = 3600.0
     low_speed_on_below_temp: float = 35.0
     low_speed_off_above_temp: float = 37.0
     high_speed_on_below_temp: float = 33.0
@@ -101,6 +102,24 @@ class FreezeProtectionConfig:
             )
         if self.min_run_seconds < 0:
             raise ValueError("freeze min_run_seconds must be >= 0")
+        if self.max_temperature_age_seconds < 0:
+            raise ValueError("freeze max_temperature_age_seconds must be >= 0")
+        if self.primary_temperature_sensor == self.fallback_temperature_sensor:
+            raise ValueError("freeze primary and fallback temperature sensors must differ")
+        allowed_temperature_sensors = {SensorId.PH_TEMP, SensorId.ORP_TEMP}
+        if (
+            self.primary_temperature_sensor not in allowed_temperature_sensors
+            or self.fallback_temperature_sensor not in allowed_temperature_sensors
+        ):
+            raise ValueError("freeze temperature sensors must be ph_temp or orp_temp")
+
+    @property
+    def water_temperature_config(self) -> WaterTemperatureConfig:
+        return WaterTemperatureConfig(
+            primary_sensor=self.primary_temperature_sensor,
+            fallback_sensor=self.fallback_temperature_sensor,
+            max_age_seconds=self.max_temperature_age_seconds,
+        )
 
 
 @dataclass(frozen=True)
@@ -193,20 +212,20 @@ class SafetyConfig:
                     "enabled",
                     FreezeProtectionConfig.enabled,
                 ),
-                source=_freeze_source_value(
+                primary_temperature_sensor=_sensor_id_value(
                     freeze_data,
-                    "source",
-                    FreezeProtectionConfig.source,
+                    "primary_temperature_sensor",
+                    FreezeProtectionConfig().primary_temperature_sensor,
                 ),
-                temp_sensor=_sensor_id_value(
+                fallback_temperature_sensor=_sensor_id_value(
                     freeze_data,
-                    "temp_sensor",
-                    FreezeProtectionConfig().temp_sensor,
+                    "fallback_temperature_sensor",
+                    FreezeProtectionConfig().fallback_temperature_sensor,
                 ),
-                ph_temp_sensor=_sensor_id_value(
+                max_temperature_age_seconds=_float_value(
                     freeze_data,
-                    "ph_temp_sensor",
-                    FreezeProtectionConfig().ph_temp_sensor,
+                    "max_temperature_age_seconds",
+                    FreezeProtectionConfig.max_temperature_age_seconds,
                 ),
                 low_speed_on_below_temp=_float_alias_value(
                     freeze_data,
@@ -330,38 +349,17 @@ class SafetySnapshot:
     def state_since(self, actuator_id: ActuatorId) -> datetime:
         return self.state_started_at.get(actuator_id, self.now)
 
-    def pressure_psi(self, sensor_id: SensorId) -> float | None:
-        measurement = self.measurements.get(sensor_id)
-
-        if measurement is None:
-            return None
-
-        if measurement.quality != Quality.GOOD:
-            return None
-
-        return measurement.value
-
     def fresh_pressure_psi(
         self,
         sensor_id: SensorId,
         *,
         max_age_seconds: float,
     ) -> float | None:
-        measurement = self.measurements.get(sensor_id)
-
-        if measurement is None:
-            return None
-
-        if measurement.quality != Quality.GOOD:
-            return None
-
-        age_s = (self.now - measurement.observed_at).total_seconds()
-        if age_s < 0:
-            age_s = 0.0
-        if age_s > max_age_seconds:
-            return None
-
-        return measurement.value
+        return usable_numeric_measurement_value(
+            self.measurements.get(sensor_id),
+            now=self.now,
+            max_age_seconds=max_age_seconds,
+        )
 
     def raw_measurement(self, sensor_id: SensorId) -> Measurement | None:
         return self.measurements.get(sensor_id)
@@ -417,6 +415,9 @@ class SafetyGate:
         self._freeze_latched_speed: ActuatorState | None = None
         self._freeze_started_at: datetime | None = None
         self._freeze_observation: str | None = None
+        self._freeze_fail_safe = False
+        self._freeze_fail_safe_reason: str | None = None
+        self._water_temperature_selection: WaterTemperatureSelection | None = None
         self._chlorine_tank_hysteresis_inhibited = False
         self._chlorine_tank_status: dict[str, Any] = (
             self._chlorine_tank_status_payload(
@@ -441,6 +442,7 @@ class SafetyGate:
         Replace safety settings while preserving active safety latches.
         """
         self.config = config
+        self._water_temperature_selection = None
 
     def set_chlorine_pump_stabilization_seconds(self, value: float) -> None:
         if value < 0:
@@ -449,12 +451,18 @@ class SafetyGate:
 
     def freeze_status(self, now: datetime) -> dict[str, Any]:
         freeze = self.config.freeze_protection
+        selection = self._water_temperature_selection or select_water_temperature(
+            {},
+            now=now,
+            config=freeze.water_temperature_config,
+        )
         active = self._freeze_latched_speed is not None
         hold_remaining_s = 0.0
         if active and self._freeze_started_at is not None:
             run_for_s = max(0.0, (now - self._freeze_started_at).total_seconds())
             hold_remaining_s = max(0.0, freeze.min_run_seconds - run_for_s)
 
+        selection_payload = selection.as_payload()
         return {
             "enabled": freeze.enabled,
             "active": active,
@@ -462,7 +470,11 @@ class SafetyGate:
             "started_at": self._freeze_started_at.isoformat() if self._freeze_started_at else None,
             "hold_remaining_s": hold_remaining_s,
             "observation": self._freeze_observation,
-            "source": freeze.source.value,
+            **selection_payload,
+            "primary_stale_or_unavailable": not selection.primary.available,
+            "fallback_stale_or_unavailable": not selection.fallback.available,
+            "fail_safe": self._freeze_fail_safe,
+            "fail_safe_reason": self._freeze_fail_safe_reason,
             "threshold_unit": freeze.threshold_unit.value,
         }
 
@@ -763,17 +775,41 @@ class SafetyGate:
         snapshot: SafetySnapshot,
     ) -> tuple[ActuatorState | None, str | None]:
         freeze = self.config.freeze_protection
+        selection = select_water_temperature(
+            snapshot.measurements,
+            now=snapshot.now,
+            config=freeze.water_temperature_config,
+        )
+        self._water_temperature_selection = selection
         if not freeze.enabled:
             self._clear_freeze_state()
             return None, None
 
-        observation = self._freeze_observation_text(snapshot)
-        if observation is None:
-            self._freeze_observation = None
-            return self._freeze_latched_speed, None
+        if not selection.available:
+            self._freeze_fail_safe = True
+            self._freeze_fail_safe_reason = (
+                "Freeze protection temperature unavailable; using fail-safe freeze protection."
+            )
+            self._freeze_observation = "temperature unavailable"
+            if self._freeze_latched_speed is None:
+                self._set_freeze_latch(ActuatorState.LOW, now=snapshot.now)
+            return self._freeze_latched_speed, self._freeze_fail_safe_reason
 
-        observed_temp = observation[0]
-        observed_at_text = observation[1]
+        assert selection.active_value is not None
+        assert selection.active_unit is not None
+        assert selection.active_source is not None
+        source_unit = TemperatureUnit(selection.active_unit)
+        observed_temp = _convert_temperature(
+            selection.active_value,
+            source_unit=source_unit,
+            target_unit=freeze.threshold_unit,
+        )
+        observed_at_text = (
+            f"{observed_temp:.1f} {freeze.threshold_unit.value} "
+            f"({selection.active_source.value})"
+        )
+        self._freeze_fail_safe = False
+        self._freeze_fail_safe_reason = None
         self._freeze_observation = observed_at_text
 
         now = snapshot.now
@@ -804,72 +840,6 @@ class SafetyGate:
                     self._clear_freeze_state()
 
         return self._freeze_latched_speed, observed_at_text
-
-    def _freeze_observation_text(
-        self,
-        snapshot: SafetySnapshot,
-    ) -> tuple[float, str] | None:
-        freeze = self.config.freeze_protection
-        candidates: list[tuple[str, float]] = []
-        include_temp = freeze.source in (
-            FreezeProtectionSource.TEMP,
-            FreezeProtectionSource.BOTH,
-        )
-        include_ph_temp = freeze.source in (
-            FreezeProtectionSource.PH_TEMP,
-            FreezeProtectionSource.BOTH,
-        )
-
-        if include_temp:
-            reading = self._freeze_temperature_reading(
-                snapshot,
-                sensor_id=freeze.temp_sensor,
-                target_unit=freeze.threshold_unit,
-            )
-            if reading is not None:
-                candidates.append((freeze.temp_sensor.value, reading))
-
-        if include_ph_temp:
-            reading = self._freeze_temperature_reading(
-                snapshot,
-                sensor_id=freeze.ph_temp_sensor,
-                target_unit=freeze.threshold_unit,
-            )
-            if reading is not None:
-                candidates.append((freeze.ph_temp_sensor.value, reading))
-
-        if not candidates:
-            return None
-
-        # If both temperature sources are enabled, protect against the coldest
-        # observed value.
-        observed_sensor, observed_temp = min(candidates, key=lambda item: item[1])
-        observation = f"{observed_temp:.1f} {freeze.threshold_unit.value} ({observed_sensor})"
-        return observed_temp, observation
-
-    def _freeze_temperature_reading(
-        self,
-        snapshot: SafetySnapshot,
-        *,
-        sensor_id: SensorId,
-        target_unit: TemperatureUnit,
-    ) -> float | None:
-        measurement = snapshot.raw_measurement(sensor_id)
-        if measurement is None:
-            return None
-
-        # Freeze protection uses raw measurements, not quality-filtered values,
-        # because it must still work when chemistry readings are marked invalid
-        # due to the pump being off.
-        if measurement.unit not in {TemperatureUnit.DEG_F.value, TemperatureUnit.DEG_C.value}:
-            return None
-
-        source_unit = TemperatureUnit(measurement.unit)
-        return _convert_temperature(
-            measurement.value,
-            source_unit=source_unit,
-            target_unit=target_unit,
-        )
 
     def _freeze_actions(
         self,
@@ -982,6 +952,8 @@ class SafetyGate:
         self._freeze_latched_speed = None
         self._freeze_started_at = None
         self._freeze_observation = None
+        self._freeze_fail_safe = False
+        self._freeze_fail_safe_reason = None
 
     def _update_pump_prime_tracking(
         self,
@@ -1171,19 +1143,6 @@ def _sensor_id_value(
         raise ValueError(f"{key} must be a sensor ID string")
 
     return SensorId(value)
-
-
-def _freeze_source_value(
-    data: Mapping[str, Any],
-    key: str,
-    default: FreezeProtectionSource,
-) -> FreezeProtectionSource:
-    value = data.get(key, default.value)
-
-    if not isinstance(value, str):
-        raise ValueError(f"{key} must be one of: temp, ph_temp, both")
-
-    return FreezeProtectionSource(value)
 
 
 def _temperature_unit_value(

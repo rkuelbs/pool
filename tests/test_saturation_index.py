@@ -29,7 +29,7 @@ def _measurement(sensor_id: SensorId, value: float, unit: str, quality: Quality 
 def test_estimate_calcium_saturation_index_returns_none_without_required_inputs() -> None:
     estimate = estimate_calcium_saturation_index(
         measurement_by_sensor={
-            SensorId.TEMP: _measurement(SensorId.TEMP, 84.0, "degF"),
+            SensorId.WATER_TEMP: _measurement(SensorId.WATER_TEMP, 84.0, "degF"),
         },
         lab_values={"alkalinity": 100.0, "calcium_hardness": 300.0, "tds": 1000.0},
     )
@@ -39,7 +39,9 @@ def test_estimate_calcium_saturation_index_returns_none_without_required_inputs(
 def test_estimate_calcium_saturation_index_requires_good_quality_live_measurements() -> None:
     estimate = estimate_calcium_saturation_index(
         measurement_by_sensor={
-            SensorId.TEMP: _measurement(SensorId.TEMP, 84.0, "degF", quality=Quality.SUSPECT),
+            SensorId.WATER_TEMP: _measurement(
+                SensorId.WATER_TEMP, 84.0, "degF", quality=Quality.SUSPECT
+            ),
             SensorId.RAW_PH: _measurement(SensorId.RAW_PH, 7.5, "pH"),
         },
         lab_values={"alkalinity": 100.0, "calcium_hardness": 300.0, "tds": 1000.0},
@@ -50,7 +52,7 @@ def test_estimate_calcium_saturation_index_requires_good_quality_live_measuremen
 def test_estimate_calcium_saturation_index_matches_revised_equation_example() -> None:
     estimate = estimate_calcium_saturation_index(
         measurement_by_sensor={
-            SensorId.TEMP: _measurement(SensorId.TEMP, 84.0, "degF"),
+            SensorId.WATER_TEMP: _measurement(SensorId.WATER_TEMP, 84.0, "degF"),
             SensorId.RAW_PH: _measurement(SensorId.RAW_PH, 7.5, "pH"),
         },
         lab_values={"alkalinity": 100.0, "calcium_hardness": 300.0, "tds": 1000.0},

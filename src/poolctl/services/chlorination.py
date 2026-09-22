@@ -569,16 +569,18 @@ def valid_dosing_windows_for_day(
     windows: list[DosingWindow] = []
 
     for raw_start, raw_end in merged_allowed_intervals:
-        pump_start = _containing_interval_start(pump_run_intervals, raw_start, raw_end)
-        if pump_start is None:
+        pump_interval = _containing_interval(pump_run_intervals, raw_start, raw_end)
+        if pump_interval is None:
             continue
+        pump_start, pump_end = pump_interval
         # Remove the first part of the continuous pump run so pump output
         # pressure and flow can stabilize. This is based on actual scheduled
         # pump continuity, not on each allow-dosing sub-window.
         valid_start = max(raw_start, pump_start + start_trim)
-        # Remove the end of each dosing-allowed run so the dosing pump stops
-        # while the filter pump still has time to circulate treated water.
-        valid_end = raw_end - end_trim
+        # The final exclusion is relative to the actual continuous circulation
+        # run. A following allow_dosing=false window already provides post-dose
+        # circulation and must not cause an extra early cutoff.
+        valid_end = min(raw_end, pump_end - end_trim)
         if valid_end <= valid_start:
             continue
         clipped_start = max(valid_start, day_start)
@@ -646,16 +648,14 @@ def _merge_intervals(
     return tuple(merged)
 
 
-def _containing_interval_start(
+def _containing_interval(
     intervals: tuple[tuple[datetime, datetime], ...],
     start: datetime,
     end: datetime,
-) -> datetime | None:
+) -> tuple[datetime, datetime] | None:
     for interval_start, interval_end in intervals:
         if interval_start <= start and end <= interval_end:
-            return interval_start
-        if interval_start < end and start < interval_end:
-            return interval_start
+            return interval_start, interval_end
     return None
 
 
