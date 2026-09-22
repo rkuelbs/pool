@@ -1,1 +1,3 @@
 Updated filter estimation using flow estimates
+
+Add scheduling as percentages of daylight hours - refit daily to match sunrise/sunset?  This would automatically account for daylight savings, as well as stretching runtime in summer
