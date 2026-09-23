@@ -13,6 +13,7 @@ import inspect
 import struct
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from importlib import import_module
 from typing import Any
 
 
@@ -311,12 +312,13 @@ class SharedModbusRtuBus:
 
     async def _connected_client(self) -> Any:
         if self._client is None:
-            try:
-                from pymodbus.client import AsyncModbusSerialClient  # type: ignore[import-not-found]
-            except ImportError as error:
-                raise RuntimeError("pymodbus is required for Raspberry Pi Modbus drivers") from error
+            client_class = _load_pymodbus_attribute(
+                "pymodbus.client",
+                "AsyncModbusSerialClient",
+                purpose="Raspberry Pi Modbus drivers",
+            )
 
-            self._client = AsyncModbusSerialClient(
+            self._client = client_class(
                 port=self._config.port,
                 baudrate=self._config.baudrate,
                 timeout=self._config.timeout_s,
@@ -394,25 +396,38 @@ def _raise_for_modbus_error(response: Any, operation: str) -> None:
         raise RuntimeError(f"Modbus error during {operation}: {response}")
 
 
+def _load_pymodbus_attribute(
+    module_name: str,
+    attribute_name: str,
+    *,
+    purpose: str,
+) -> Any:
+    try:
+        module = import_module(module_name)
+    except ImportError as error:
+        raise RuntimeError(f"pymodbus is required for {purpose}") from error
+
+    try:
+        return getattr(module, attribute_name)
+    except AttributeError as error:
+        raise RuntimeError(
+            f"installed pymodbus does not provide {module_name}.{attribute_name}"
+        ) from error
+
+
 def _raw_write_single_coil_request(
     *,
     slave_id: int,
     coil_address: int,
     value: int,
 ) -> Any:
-    try:
-        from pymodbus.pdu import ModbusPDU
+    base_class = _load_pymodbus_attribute(
+        "pymodbus.pdu",
+        "ModbusPDU",
+        purpose="raw Modbus relay writes",
+    )
 
-        base_class: Any = ModbusPDU
-    except ImportError:
-        try:
-            from pymodbus.pdu import ModbusRequest  # type: ignore[import-not-found]
-
-            base_class = ModbusRequest
-        except ImportError as error:
-            raise RuntimeError("pymodbus is required for raw Modbus relay writes") from error
-
-    class RawWriteSingleCoilRequest(base_class):  # type: ignore[misc]
+    class RawWriteSingleCoilRequest(base_class):  # type: ignore[valid-type, misc]
         function_code = 0x05
         rtu_frame_size = 8
 

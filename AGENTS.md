@@ -176,7 +176,36 @@ Run focused tests for the changed area, then run the full suite when practical:
 ```powershell
 .\.venv\Scripts\python.exe -m pytest
 .\.venv\Scripts\python.exe -m ruff check src tests
+.\.venv\Scripts\python.exe -m mypy src
+.\.venv\Scripts\python.exe -m pip check
 ```
+
+### Local CI Parity and Temp Directories
+
+- `.github/workflows/python-compatibility.yml` is the source of truth for the
+  CI Python matrix and verification dependencies. CI installs the editable
+  project with `.[dev,raspberrypi]`; do not assume `.[dev]` alone includes
+  hardware dependencies such as `pymodbus`. Before reproducing CI locally,
+  install with:
+
+  ```powershell
+  .\.venv\Scripts\python.exe -m pip install -e ".[dev,raspberrypi]"
+  .\.venv\Scripts\python.exe -m pip check
+  ```
+
+- Sandboxed Windows agent runs may not be able to write to the default user
+  temp directory or an existing `.pytest_cache`. Use a dedicated workspace
+  temp directory from the first full-suite run:
+
+  ```powershell
+  .\.venv\Scripts\python.exe -m pytest --basetemp .codex-test-tmp -p no:cacheprovider
+  ```
+
+  This avoids misleading `tmp_path` fixture `PermissionError` failures and
+  cache warnings. After the run, verify that `.codex-test-tmp` resolves inside
+  the repository, then remove only that dedicated directory. Never use the
+  repository root, the user temp root, or an unresolved variable as a recursive
+  cleanup target.
 
 Useful focused areas:
 
