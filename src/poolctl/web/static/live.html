@@ -115,11 +115,117 @@
           </article>
         </section>
 
-        <div class="dashboard-main-grid">
-          <section class="dashboard-card trends-card" aria-labelledby="liveTrendsHeading">
+        <div class="live-entry-grid">
+          <details class="dashboard-card action-panel chemical-actions-card">
+            <summary>
+              <span>
+                <span class="eyebrow">Common task</span>
+                <strong>Chemicals</strong>
+              </span>
+              <span class="details-toggle" aria-hidden="true"></span>
+            </summary>
+            <div class="action-panel-body chemical-panel-grid">
+              <section class="live-form-section" aria-labelledby="chemicalAdditionHeading">
+                <div class="control-section-heading">
+                  <h3 id="chemicalAdditionHeading">Log a chemical addition</h3>
+                  <span>Blank time uses now</span>
+                </div>
+                <div class="live-form-grid">
+                  <label>Added at <input id="chemicalAddedAt" type="datetime-local" step="60"></label>
+                  <label>Chemical
+                    <select id="chemicalType">
+                      <option value="muriatic_acid" selected>Muriatic Acid</option>
+                      <option value="sodium_hypochlorite">Sodium Hypochlorite</option>
+                    </select>
+                  </label>
+                  <label>Amount <input id="chemicalAmount" type="number" step="0.1" min="0" inputmode="decimal"></label>
+                  <label>Unit
+                    <select id="chemicalUnit">
+                      <option value="fl_oz" selected>fl oz</option>
+                      <option value="gal">gal</option>
+                      <option value="ml">mL</option>
+                      <option value="l">L</option>
+                    </select>
+                  </label>
+                  <label>Strength % <input id="chemicalStrength" type="number" step="0.01" min="0" inputmode="decimal"></label>
+                  <label>Notes <input id="chemicalNotes" type="text"></label>
+                </div>
+                <button id="chemicalAdditionSave" class="button-primary action-save" type="button">Add chemical</button>
+                <p id="chemicalAdditionStatus" class="action-status" role="status">Ready</p>
+              </section>
+
+              <section class="live-form-section dose-control" aria-labelledby="liveChlorinationHeading">
+                <div class="control-section-heading">
+                  <h3 id="liveChlorinationHeading">Chlorination</h3>
+                  <span id="liveChlorinationDoseDisplay">Dose: -- oz/day</span>
+                </div>
+                <small id="liveChlorinationDutyStatus">Duty: --</small>
+                <div class="dose-entry">
+                  <label class="sr-only" for="liveChlorinationDoseInput">Daily dose in ounces</label>
+                  <input id="liveChlorinationDoseInput" type="number" step="0.1" min="0" inputmode="decimal" placeholder="Daily oz">
+                  <button id="liveChlorinationDoseSave" type="button">Set daily dose</button>
+                </div>
+                <div class="dose-entry supplemental-entry">
+                  <label class="sr-only" for="liveSupplementalChlorineDoseInput">Supplemental dose in ounces</label>
+                  <input id="liveSupplementalChlorineDoseInput" type="number" step="0.1" min="0" inputmode="decimal" placeholder="Extra oz">
+                  <button id="liveSupplementalChlorineDoseStart" class="button-caution" type="button">Review extra dose</button>
+                </div>
+                <button id="liveSupplementalChlorineDoseStop" class="button-danger-secondary" type="button">Stop extra dose</button>
+                <p id="liveChemicalControlStatus" class="action-status" role="status">Ready</p>
+              </section>
+            </div>
+
+            <dialog id="liveSupplementalConfirm" class="confirmation-dialog" aria-labelledby="supplementalConfirmTitle">
+              <form method="dialog">
+                <span class="dialog-icon" aria-hidden="true">Cl</span>
+                <h2 id="supplementalConfirmTitle">Confirm supplemental chlorine</h2>
+                <p id="liveSupplementalConfirmText">Review the amount before starting.</p>
+                <p class="dialog-safety-note">The controller will force low-speed circulation and will still enforce every dosing safety interlock.</p>
+                <div class="dialog-actions">
+                  <button value="cancel" type="submit">Cancel</button>
+                  <button id="liveSupplementalConfirmStart" class="button-caution" value="default" type="button">Start dose</button>
+                </div>
+              </form>
+            </dialog>
+          </details>
+
+          <details class="dashboard-card action-panel test-entry-card">
+            <summary>
+              <span>
+                <span class="eyebrow">Common task</span>
+                <strong>Test entry</strong>
+              </span>
+              <span class="details-toggle" aria-hidden="true"></span>
+            </summary>
+            <div class="action-panel-body">
+              <div class="live-form-grid test-entry-grid">
+                <label>Sampled at <input id="labSampledAt" type="datetime-local" step="60"></label>
+                <label>pH <input id="labPh" type="number" step="0.01" inputmode="decimal"></label>
+                <label>Free chlorine <input id="labFreeChlorine" type="number" step="0.01" inputmode="decimal"></label>
+                <label>Combined chlorine <input id="labCombinedChlorine" type="number" step="0.01" inputmode="decimal"></label>
+                <label>Total chlorine <input id="labTotalChlorine" type="number" step="0.01" inputmode="decimal"></label>
+                <label>Alkalinity <input id="labAlkalinity" type="number" step="0.1" inputmode="decimal"></label>
+                <label>CYA <input id="labCya" type="number" step="0.1" inputmode="decimal"></label>
+                <label>Calcium hardness <input id="labCalciumHardness" type="number" step="0.1" inputmode="decimal"></label>
+                <label>TDS <input id="labTds" type="number" step="0.1" inputmode="decimal"></label>
+                <label>Salt <input id="labSalt" type="number" step="0.1" inputmode="decimal"></label>
+                <label>Borates <input id="labBorates" type="number" step="0.1" inputmode="decimal"></label>
+                <label>Water temperature <input id="labWaterTemp" type="number" step="0.1" inputmode="decimal"></label>
+                <label>Chlorine tank level (gal) <input id="labChlorineTankLevelGal" type="number" step="0.01" min="0" inputmode="decimal"></label>
+                <label class="form-field-wide">Notes <input id="labNotes" type="text"></label>
+              </div>
+              <button id="labTestSave" class="button-primary action-save" type="button">Add test result</button>
+              <p id="labTestStatus" class="action-status" role="status">Ready</p>
+              <p id="labTestFcDemandStatus" class="action-feedback">FC demand: --</p>
+              <p id="labTestTankStatus" class="action-feedback">Chlorine tank: --</p>
+            </div>
+          </details>
+        </div>
+
+        <section class="dashboard-card trends-card" aria-labelledby="liveTrendsHeading">
             <div class="section-heading">
               <div>
-                <span class="eyebrow">Last 24 hours</span>
+                <span class="eyebrow">Last 7 days</span>
                 <h2 id="liveTrendsHeading">Pool trends</h2>
               </div>
               <div class="trend-time-summary">
@@ -140,23 +246,43 @@
                 <div class="trend-strip-label"><span>ORP</span><strong id="liveTrendOrpValue">--</strong></div>
                 <svg id="liveTrendOrp" viewBox="0 0 720 92" role="img" aria-label="ORP trend"></svg>
               </div>
-              <div class="trend-strip" data-live-trend="pump_flow_gpm">
-                <div class="trend-strip-label"><span>Estimated flow</span><strong id="liveTrendFlowValue">--</strong></div>
-                <svg id="liveTrendFlow" viewBox="0 0 720 92" role="img" aria-label="Estimated flow trend"></svg>
+              <div class="trend-strip" data-live-trend="lab_free_chlorine">
+                <div class="trend-strip-label"><span>FC (tested)</span><strong id="liveTrendFcValue">--</strong></div>
+                <svg id="liveTrendFc" viewBox="0 0 720 92" role="img" aria-label="Tested free chlorine trend"></svg>
               </div>
             </div>
-            <p id="liveTrendsStatus" class="section-note">Loading validated history…</p>
-          </section>
+            <p id="liveTrendsStatus" class="sr-only" role="status">Loading validated history…</p>
+        </section>
 
-          <aside class="dashboard-card quick-actions-card" id="liveControlsCard" aria-labelledby="quickActionsHeading">
-            <div class="section-heading compact">
-              <div>
-                <span class="eyebrow">Control</span>
-                <h2 id="quickActionsHeading">Quick actions</h2>
-              </div>
-              <span id="liveTimerModeBadge" class="mode-badge">Automatic</span>
+        <section class="dashboard-card today-card" aria-labelledby="todayHeading">
+          <div class="section-heading">
+            <div>
+              <h2 id="todayHeading">Today</h2>
             </div>
+            <p id="liveScheduleStatus" class="schedule-next">Schedule: --</p>
+          </div>
+          <div class="schedule-legend" aria-label="Schedule timeline legend">
+            <span><i class="legend-swatch pump-low"></i>Low</span>
+            <span><i class="legend-swatch pump-high"></i>High</span>
+            <span><i class="legend-swatch dosing"></i>Dosing</span>
+            <span><i class="legend-swatch vacuum"></i>Vacuum</span>
+            <span><i class="legend-line now"></i>Now</span>
+          </div>
+          <div id="todayTimeline" class="today-timeline" aria-label="Today's operating schedule">
+            <div class="timeline-empty">Waiting for the resolved schedule…</div>
+          </div>
+        </section>
 
+        <section class="dashboard-card quick-actions-card controls-card" id="liveControlsCard" aria-labelledby="controlsHeading">
+          <div class="section-heading compact">
+            <div>
+              <span class="eyebrow">Equipment</span>
+              <h2 id="controlsHeading">Controls</h2>
+            </div>
+            <span id="liveTimerModeBadge" class="mode-badge">Automatic</span>
+          </div>
+
+          <div class="controls-layout">
             <div class="control-section">
               <div class="control-section-heading">
                 <h3>Main pump</h3>
@@ -169,7 +295,6 @@
                 <button type="button" data-command="pump_motor_speed:high">Pump High</button>
               </div>
               <div class="quick-timer-actions">
-                <button id="liveOverridePumpOnHour" type="button">Run high for 1 hour</button>
                 <button id="liveOverridePumpOffManual" type="button">Hold pump off</button>
                 <button id="liveOverrideResumeSchedule" class="button-primary" type="button">Resume schedule</button>
               </div>
@@ -198,61 +323,9 @@
                 <button id="liveScheduleProfileActivate" type="button" disabled>Activate</button>
               </div>
             </div>
-
-            <div class="control-section dose-control">
-              <div class="control-section-heading">
-                <h3>Chlorination</h3>
-                <span id="liveChlorinationDoseDisplay">Dose: -- oz/day</span>
-              </div>
-              <small id="liveChlorinationDutyStatus">Duty: --</small>
-              <div class="dose-entry">
-                <label class="sr-only" for="liveChlorinationDoseInput">Daily dose in ounces</label>
-                <input id="liveChlorinationDoseInput" type="number" step="0.1" min="0" inputmode="decimal" placeholder="Daily oz">
-                <button id="liveChlorinationDoseSave" type="button">Set dose</button>
-              </div>
-              <div class="dose-entry supplemental-entry">
-                <label class="sr-only" for="liveSupplementalChlorineDoseInput">Supplemental dose in ounces</label>
-                <input id="liveSupplementalChlorineDoseInput" type="number" step="0.1" min="0" inputmode="decimal" placeholder="Extra oz">
-                <button id="liveSupplementalChlorineDoseStart" class="button-caution" type="button">Review extra dose</button>
-              </div>
-              <button id="liveSupplementalChlorineDoseStop" class="button-danger-secondary" type="button">Stop extra dose</button>
-            </div>
-
-            <p id="liveCommandStatus" class="command-status" role="status">Ready</p>
-
-            <dialog id="liveSupplementalConfirm" class="confirmation-dialog" aria-labelledby="supplementalConfirmTitle">
-              <form method="dialog">
-                <span class="dialog-icon" aria-hidden="true">Cl</span>
-                <h2 id="supplementalConfirmTitle">Confirm supplemental chlorine</h2>
-                <p id="liveSupplementalConfirmText">Review the amount before starting.</p>
-                <p class="dialog-safety-note">The controller will force low-speed circulation and will still enforce every dosing safety interlock.</p>
-                <div class="dialog-actions">
-                  <button value="cancel" type="submit">Cancel</button>
-                  <button id="liveSupplementalConfirmStart" class="button-caution" value="default" type="button">Start dose</button>
-                </div>
-              </form>
-            </dialog>
-          </aside>
-        </div>
-
-        <section class="dashboard-card today-card" aria-labelledby="todayHeading">
-          <div class="section-heading">
-            <div>
-              <span class="eyebrow">Resolved by the controller</span>
-              <h2 id="todayHeading">Today</h2>
-            </div>
-            <p id="liveScheduleStatus" class="schedule-next">Schedule: --</p>
           </div>
-          <div class="schedule-legend" aria-label="Schedule timeline legend">
-            <span><i class="legend-swatch pump-low"></i>Low</span>
-            <span><i class="legend-swatch pump-high"></i>High</span>
-            <span><i class="legend-swatch dosing"></i>Dosing permitted</span>
-            <span><i class="legend-line now"></i>Now</span>
-          </div>
-          <div id="todayTimeline" class="today-timeline" aria-label="Today's resolved pump and dosing schedule">
-            <div class="timeline-empty">Waiting for the resolved schedule…</div>
-          </div>
-          <div id="todaySolar" class="solar-summary">Sunrise and sunset unavailable</div>
+
+          <p id="liveCommandStatus" class="command-status" role="status">Ready</p>
         </section>
 
         <section class="dashboard-card attention-card" aria-labelledby="attentionHeading">
@@ -544,38 +617,6 @@
           </div>
         </div>
         <div id="faultTimeline" class="timeline-list">--</div>
-      </section>
-
-      <section class="history-panel" aria-label="Water test entry" data-view-section="history">
-        <div class="history-header">
-          <h2>Water Tests</h2>
-          <div class="history-controls">
-            <button id="labTestReload" type="button">Reload</button>
-          </div>
-        </div>
-        <div class="config-grid">
-          <label>Sampled At (Local, blank = now) <input id="labSampledAt" type="datetime-local" step="60"></label>
-          <label>pH <input id="labPh" type="number" step="0.01"></label>
-          <label>Free Chlorine <input id="labFreeChlorine" type="number" step="0.01"></label>
-          <label>Combined Chlorine <input id="labCombinedChlorine" type="number" step="0.01"></label>
-          <label>Total Chlorine <input id="labTotalChlorine" type="number" step="0.01"></label>
-          <label>Alkalinity <input id="labAlkalinity" type="number" step="0.1"></label>
-          <label>CYA <input id="labCya" type="number" step="0.1"></label>
-          <label>Calcium Hardness <input id="labCalciumHardness" type="number" step="0.1"></label>
-          <label>TDS <input id="labTds" type="number" step="0.1"></label>
-          <label>Salt <input id="labSalt" type="number" step="0.1"></label>
-          <label>Borates <input id="labBorates" type="number" step="0.1"></label>
-          <label>Water Temp <input id="labWaterTemp" type="number" step="0.1"></label>
-          <label>Chlorine Tank Level (gal) <input id="labChlorineTankLevelGal" type="number" step="0.01" min="0"></label>
-          <label>Notes <input id="labNotes" type="text"></label>
-        </div>
-        <div class="timer-actions">
-          <button id="labTestSave" type="button">Add Test Result</button>
-        </div>
-        <div id="labTestStatus" class="history-status">--</div>
-        <div id="labTestFcDemandStatus" class="history-status">FC demand: --</div>
-        <div id="labTestTankStatus" class="history-status">Chlorine tank: --</div>
-        <div id="labTestList" class="timeline-list">--</div>
       </section>
 
       <section class="history-panel" aria-label="Analog input config" data-view-section="config">

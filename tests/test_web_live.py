@@ -585,7 +585,9 @@ def test_measurement_status_uses_configured_display_bands() -> None:
 def test_live_dashboard_preserves_control_hooks_and_product_sections() -> None:
     static_dir = Path(__file__).parents[1] / "src" / "poolctl" / "web" / "static"
     markup = (static_dir / "live.html").read_text(encoding="utf-8")
+    history_markup = (static_dir / "history.html").read_text(encoding="utf-8")
     script = (static_dir / "app.js").read_text(encoding="utf-8")
+    styles = (static_dir / "styles.css").read_text(encoding="utf-8")
     element_ids = re.findall(r'\bid="([^"]+)"', markup)
 
     assert len(element_ids) == len(set(element_ids))
@@ -601,6 +603,20 @@ def test_live_dashboard_preserves_control_hooks_and_product_sections() -> None:
         "liveSupplementalChlorineDoseStart",
         "liveSupplementalConfirm",
         "liveSupplementalConfirmStart",
+        "chemicalAdditionSave",
+        "labTestSave",
+        "labFreeChlorine",
+        "labCombinedChlorine",
+        "labTotalChlorine",
+        "labAlkalinity",
+        "labCya",
+        "labCalciumHardness",
+        "labTds",
+        "labSalt",
+        "labBorates",
+        "labWaterTemp",
+        "labChlorineTankLevelGal",
+        "liveTrendFc",
     }.issubset(element_ids)
     assert markup.count('class="kpi-card"') == 6
     assert 'data-command="pump_motor:on"' in markup
@@ -609,9 +625,26 @@ def test_live_dashboard_preserves_control_hooks_and_product_sections() -> None:
     assert 'data-command="pump_motor_speed:high"' in markup
     assert 'data-command="booster_pump:on"' in markup
     assert 'data-command="booster_pump:off"' in markup
+    assert "Quick actions" not in markup
+    assert "Run high for 1 hour" not in markup
+    assert 'id="liveOverridePumpOnHour"' not in markup
+    assert "schedule-window-chip" not in markup
+    assert 'id="todaySolar"' not in markup
+    assert 'data-live-trend="lab_free_chlorine"' in markup
+    assert 'id="liveTrendsStatus" class="sr-only"' in markup
+    assert '<option value="muriatic_acid" selected>' in markup
+    assert '<option value="muriatic_acid" selected>' in history_markup
     assert "openSupplementalChlorineConfirmation(inputId)" in script
     assert 'fetch("/api/live"' in script
     assert "fetch(`/api/history?${params.toString()}`" in script
+    assert "const LIVE_KPI_HISTORY_HOURS = 24;" in script
+    assert "const LIVE_TREND_HISTORY_HOURS = 168;" in script
+    assert 'sensorId: "lab_free_chlorine"' in script
+    assert 'return { className: "dosing", label: "Dosing" };' in script
+    assert 'return { className: "vacuum", label: "Vacuum" };' in script
+    assert ".live-dashboard > .today-card" in styles
+    assert ".live-dashboard > .kpi-grid" in styles
+    assert ".timeline-segment.vacuum" in styles
 
 
 def test_history_payload_can_filter_to_validated_measurements(tmp_path: Path) -> None:

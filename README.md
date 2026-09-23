@@ -411,13 +411,14 @@ notification service can repeat a throttled Pushover warning for this condition.
 - Live: responsive consumer-style operating dashboard with controller/safety,
   active-profile, and pump-mode status in the header; six primary KPI cards for
   water temperature, pH, ORP, estimated flow, filter flow loss, and usable
-  chlorine inventory; aligned 24-hour trend strips; quick pump, booster,
-  profile, dose-target, and supplemental-dose controls; an exception-first
-  attention list; and a visual timeline built from the controller's resolved
-  schedule day. Supplemental chlorine requires a review/confirmation step before
-  the existing command is sent. Detailed hydraulics, chlorination/FC-demand,
-  CPU, health, and runtime-loop information remains available in the collapsed
-  engineering status section.
+  chlorine inventory; aligned seven-day trend strips for water temperature, pH,
+  ORP, and tested free chlorine; collapsible chemical-addition, chlorination,
+  and complete water-test entry panels; pump, booster, and active-profile
+  controls; an exception-first attention list; and a compact operating timeline
+  built from the controller's resolved schedule day. Supplemental chlorine
+  requires a review/confirmation step before the existing command is sent.
+  Detailed hydraulics, chlorination/FC-demand, CPU, health, and runtime-loop
+  information remains available in the collapsed engineering status section.
 - History: measurement/weather/test-result/chemical-addition charts with
   selectable series, hover readouts, automatic rollup resolution, past-window
   navigation, calendar/time jump, CSV export, water-test and chemical-addition
@@ -436,12 +437,15 @@ drivers or long-lived services must be rebuilt.
 The Live page continues to poll `GET /api/live` for current state and commands
 the existing timer, actuator, profile, chlorination-config, and supplemental-dose
 endpoints; the browser does not bypass controller safety routing. Its KPI
-sparklines and aligned strip charts refresh from the existing `GET /api/history`
-API using validated 24-hour data, with chemical-addition event markers when
-available. Configured pH/ORP alert ranges from `GET /api/config/notifications`
-provide subtle chart bands. The Today timeline uses `schedule.today` from the
-live payload, including already-resolved windows and sunrise/sunset, rather than
-reimplementing schedule or astronomy calculations in JavaScript.
+sparklines retain validated 24-hour data while the aligned strip charts request
+seven days from the existing `GET /api/history` API, with chemical-addition
+event markers when available. Configured pH/ORP alert ranges from
+`GET /api/config/notifications` provide subtle chart bands. The Today timeline
+uses `schedule.today` from the live payload, including already-resolved windows
+and sunrise/sunset, rather than reimplementing schedule or astronomy
+calculations in JavaScript. It displays dosing-eligible windows as a distinct
+green state, booster/vacuum windows in purple, and low/high circulation in light
+and dark blue respectively.
 
 ## History and Rollups
 

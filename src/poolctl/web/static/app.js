@@ -208,13 +208,12 @@ const HISTORY_SERIES_COLORS = [
 const HISTORY_AXIS_SPAN_RATIO_THRESHOLD = 5.0;
 const HISTORY_AXIS_CENTER_SPREAD_FACTOR = 2.0;
 const HISTORY_AXIS_EPSILON = 1e-6;
-const LIVE_HISTORY_HOURS = 24;
+const LIVE_KPI_HISTORY_HOURS = 24;
+const LIVE_TREND_HISTORY_HOURS = 168;
 const LIVE_EVENT_SENSOR_IDS = ["chemical_sodium_hypochlorite", "chemical_muriatic_acid"];
-const LIVE_TREND_DEFINITIONS = [
+const LIVE_KPI_DEFINITIONS = [
   {
     sensorId: "water_temp",
-    svgId: "liveTrendWater",
-    valueId: "liveTrendWaterValue",
     sparkId: "liveSparkWaterTemp",
     trendId: "liveTempTrend",
     decimals: 1,
@@ -223,8 +222,6 @@ const LIVE_TREND_DEFINITIONS = [
   },
   {
     sensorId: "raw_ph",
-    svgId: "liveTrendPh",
-    valueId: "liveTrendPhValue",
     sparkId: "liveSparkPh",
     trendId: "livePhTrend",
     decimals: 2,
@@ -233,8 +230,6 @@ const LIVE_TREND_DEFINITIONS = [
   },
   {
     sensorId: "raw_orp",
-    svgId: "liveTrendOrp",
-    valueId: "liveTrendOrpValue",
     sparkId: "liveSparkOrp",
     trendId: "liveOrpTrend",
     decimals: 0,
@@ -243,8 +238,6 @@ const LIVE_TREND_DEFINITIONS = [
   },
   {
     sensorId: "pump_flow_gpm",
-    svgId: "liveTrendFlow",
-    valueId: "liveTrendFlowValue",
     sparkId: "liveSparkFlow",
     trendId: "liveFlowTrend",
     decimals: 1,
@@ -272,6 +265,37 @@ const LIVE_TREND_DEFINITIONS = [
     decimals: 2,
     deltaDecimals: 2,
     unit: " gal",
+    includeZero: true,
+  },
+];
+const LIVE_TREND_DEFINITIONS = [
+  {
+    sensorId: "water_temp",
+    svgId: "liveTrendWater",
+    valueId: "liveTrendWaterValue",
+    decimals: 1,
+    unit: "°F",
+  },
+  {
+    sensorId: "raw_ph",
+    svgId: "liveTrendPh",
+    valueId: "liveTrendPhValue",
+    decimals: 2,
+    unit: "",
+  },
+  {
+    sensorId: "raw_orp",
+    svgId: "liveTrendOrp",
+    valueId: "liveTrendOrpValue",
+    decimals: 0,
+    unit: " mV",
+  },
+  {
+    sensorId: "lab_free_chlorine",
+    svgId: "liveTrendFc",
+    valueId: "liveTrendFcValue",
+    decimals: 2,
+    unit: " ppm",
     includeZero: true,
   },
 ];
@@ -717,6 +741,7 @@ function setChlorinationPrimeStatus(message) {
 function setChlorinationQuickStatus(message) {
   [
     "liveChlorinationStatus",
+    "liveChemicalControlStatus",
   ].forEach((id) => {
     const node = document.getElementById(id);
     if (node) {
@@ -1455,7 +1480,6 @@ function renderLivePumpCard(sensors, actuators, flows) {
     "livePumpState",
     `${stateText} · output ${sensorDisplay(sensors, "pump_output_psi")}`,
   );
-  setNodeText("liveTrendFlowValue", flow.display || "--");
   setNodeText(
     "livePumpPsi",
     `Pump output: ${sensorDisplay(sensors, "pump_output_psi")} | Dynamic head: ${flowDisplay(flows, "pump_dynamic_head_psi")}`,
@@ -1652,13 +1676,19 @@ async function refreshLiveTrends(force) {
   }
   try {
     const params = new URLSearchParams({
-      hours: String(LIVE_HISTORY_HOURS),
-      limit: String(historyQueryLimit(LIVE_HISTORY_HOURS)),
+      hours: String(LIVE_TREND_HISTORY_HOURS),
+      limit: String(historyQueryLimit(LIVE_TREND_HISTORY_HOURS)),
       validated_only: "true",
       max_points: "360",
       resolution: "auto",
     });
-    [...LIVE_TREND_DEFINITIONS.map((definition) => definition.sensorId), ...LIVE_EVENT_SENSOR_IDS]
+    [
+      ...new Set([
+        ...LIVE_KPI_DEFINITIONS.map((definition) => definition.sensorId),
+        ...LIVE_TREND_DEFINITIONS.map((definition) => definition.sensorId),
+        ...LIVE_EVENT_SENSOR_IDS,
+      ]),
+    ]
       .forEach((sensorId) => params.append("sensor_id", sensorId));
     const requests = [fetch(`/api/history?${params.toString()}`, { cache: "no-store" })];
     if (!liveTrendBandsLoaded) {
@@ -1682,7 +1712,7 @@ async function refreshLiveTrends(force) {
       0,
     );
     status.textContent = totalPoints
-      ? `${totalPoints} validated samples · aligned 24-hour window · hover any strip to compare`
+      ? `${totalPoints} validated samples loaded for the aligned 7-day window`
       : "No validated history is available yet; current values will continue to update.";
   } catch (error) {
     status.textContent = `Trend history unavailable: ${error.message}`;
@@ -1716,9 +1746,16 @@ function renderLiveTrendDashboard(series, windowInfo) {
     byId[entry.sensor_id] = entry;
   });
   const fallbackEnd = historyReferenceNowMs();
-  const window = windowInfo || {
-    startMs: fallbackEnd - LIVE_HISTORY_HOURS * 3600 * 1000,
+  const trendWindow = windowInfo || {
+    startMs: fallbackEnd - LIVE_TREND_HISTORY_HOURS * 3600 * 1000,
     endMs: fallbackEnd,
+  };
+  const kpiWindow = {
+    startMs: Math.max(
+      trendWindow.startMs,
+      trendWindow.endMs - LIVE_KPI_HISTORY_HOURS * 3600 * 1000,
+    ),
+    endMs: trendWindow.endMs,
   };
   const events = LIVE_EVENT_SENSOR_IDS.flatMap((sensorId) => {
     const entry = byId[sensorId];
@@ -1726,21 +1763,31 @@ function renderLiveTrendDashboard(series, windowInfo) {
   });
 
   liveTrendChartState = [];
-  const visibleDefinitions = LIVE_TREND_DEFINITIONS.filter((definition) => definition.svgId);
-  LIVE_TREND_DEFINITIONS.forEach((definition) => {
+  LIVE_KPI_DEFINITIONS.forEach((definition) => {
+    const entry = byId[definition.sensorId] || { points: [] };
+    const points = normalizedLivePoints(entry.points || []).filter(
+      (point) => point._time >= kpiWindow.startMs && point._time <= kpiWindow.endMs,
+    );
+    drawLiveSparkline(definition, points, kpiWindow);
+    renderLiveKpiTrend(definition, points);
+  });
+  LIVE_TREND_DEFINITIONS.forEach((definition, index) => {
     const entry = byId[definition.sensorId] || { points: [] };
     const points = normalizedLivePoints(entry.points || []);
-    drawLiveSparkline(definition, points, window);
-    renderLiveKpiTrend(definition, points);
-    if (definition.svgId) {
-      drawLiveTrendStrip(
-        definition,
-        points,
-        events,
-        window,
-        visibleDefinitions.indexOf(definition) === visibleDefinitions.length - 1,
-      );
-    }
+    const latest = points[points.length - 1];
+    setNodeText(
+      definition.valueId,
+      latest
+        ? latest.display || `${latest._value.toFixed(definition.decimals)}${definition.unit}`
+        : "--",
+    );
+    drawLiveTrendStrip(
+      definition,
+      points,
+      events,
+      trendWindow,
+      index === LIVE_TREND_DEFINITIONS.length - 1,
+    );
   });
 }
 
@@ -1926,7 +1973,7 @@ function drawLiveTrendStrip(definition, points, events, window, showTimeAxis) {
       const anchor = ratio === 0 ? "start" : ratio === 1 ? "end" : "middle";
       chart.appendChild(
         svgText(
-          new Date(timestamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+          formatLiveTrendAxisLabel(timestamp, window),
           margin.left + plotWidth * ratio,
           height - 4,
           "live-trend-axis",
@@ -1966,6 +2013,16 @@ function drawLiveTrendStrip(definition, points, events, window, showTimeAxis) {
     syncLiveTrendHover(window.startMs + ratio * (window.endMs - window.startMs));
   };
   chart.onpointerleave = clearLiveTrendHover;
+}
+
+function formatLiveTrendAxisLabel(timestamp, window) {
+  if (window.endMs - window.startMs > 48 * 3600 * 1000) {
+    return new Date(timestamp).toLocaleDateString([], {
+      month: "short",
+      day: "numeric",
+    });
+  }
+  return new Date(timestamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
 function syncLiveTrendHover(timestamp) {
@@ -2038,7 +2095,6 @@ function renderTodaySchedule(schedule, observedAt) {
     empty.className = "timeline-empty";
     empty.textContent = "The resolved schedule is unavailable.";
     container.appendChild(empty);
-    setNodeText("todaySolar", "Sunrise and sunset unavailable");
     return;
   }
 
@@ -2055,25 +2111,20 @@ function renderTodaySchedule(schedule, observedAt) {
   scale.append(scaleSpacer, scaleLabels);
   container.appendChild(scale);
 
-  const pumpTrack = appendScheduleTimelineRow(container, "Pump");
-  const dosingTrack = appendScheduleTimelineRow(container, "Dosing");
+  const scheduleTrack = appendScheduleTimelineRow(container, "Mode");
   const windows = Array.isArray(today.windows) ? today.windows : [];
   windows.forEach((window) => {
-    appendScheduleSegment(pumpTrack, window, window.pump_speed === "high" ? "pump-high" : "pump-low", today.local_date);
-    if (window.allow_dosing && window.booster !== "on") {
-      appendScheduleSegment(dosingTrack, window, "dosing", today.local_date);
-    }
+    const state = resolvedScheduleDisplayState(window);
+    appendScheduleSegment(scheduleTrack, window, state.className, state.label, today.local_date);
   });
 
   const clock = zonedClockParts(observedAt, today.timezone);
   if (clock && clock.localDate === today.local_date) {
-    [pumpTrack, dosingTrack].forEach((track) => {
-      const marker = document.createElement("span");
-      marker.className = "timeline-now";
-      marker.style.left = `${Math.max(0, Math.min(100, (clock.minute / 1440) * 100))}%`;
-      marker.title = `Current time ${clock.label}`;
-      track.appendChild(marker);
-    });
+    const marker = document.createElement("span");
+    marker.className = "timeline-now";
+    marker.style.left = `${Math.max(0, Math.min(100, (clock.minute / 1440) * 100))}%`;
+    marker.title = `Current time ${clock.label}`;
+    scheduleTrack.appendChild(marker);
   }
 
   [today.sunrise, today.sunset].forEach((timestamp) => {
@@ -2085,33 +2136,21 @@ function renderTodaySchedule(schedule, observedAt) {
     marker.className = "timeline-solar-marker";
     marker.style.left = `${(minute / 1440) * 100}%`;
     marker.title = `${timestamp === today.sunrise ? "Sunrise" : "Sunset"} ${formatWallClock(timestamp)}`;
-    pumpTrack.appendChild(marker);
+    scheduleTrack.appendChild(marker);
   });
+}
 
-  const list = document.createElement("div");
-  list.className = "schedule-window-list";
-  if (windows.length) {
-    windows.forEach((window) => {
-      const chip = document.createElement("span");
-      chip.className = "schedule-window-chip";
-      const dosing = window.allow_dosing && window.booster !== "on" ? " · dose eligible" : "";
-      chip.textContent = `${window.name} · ${formatWallClock(window.start)}–${formatWallClock(window.end)} · ${String(window.pump_speed).toUpperCase()}${dosing}`;
-      list.appendChild(chip);
-    });
-  } else {
-    const chip = document.createElement("span");
-    chip.className = "schedule-window-chip";
-    chip.textContent = "No pump windows today";
-    list.appendChild(chip);
+function resolvedScheduleDisplayState(window) {
+  if (window.allow_dosing) {
+    return { className: "dosing", label: "Dosing" };
   }
-  container.appendChild(list);
-
-  const sunrise = today.sunrise ? formatWallClock(today.sunrise) : "--";
-  const sunset = today.sunset ? formatWallClock(today.sunset) : "--";
-  setNodeText(
-    "todaySolar",
-    `Sunrise ${sunrise} · sunset ${sunset} · ${today.timezone || "controller local time"} · dosing bars show schedule permission; controller buffers and safety still apply`,
-  );
+  if (window.booster === "on") {
+    return { className: "vacuum", label: "Vacuum" };
+  }
+  if (window.pump_speed === "high") {
+    return { className: "pump-high", label: "High" };
+  }
+  return { className: "pump-low", label: "Low" };
 }
 
 function appendScheduleTimelineRow(container, labelText) {
@@ -2127,7 +2166,7 @@ function appendScheduleTimelineRow(container, labelText) {
   return track;
 }
 
-function appendScheduleSegment(track, window, className, localDate) {
+function appendScheduleSegment(track, window, className, stateLabel, localDate) {
   const start = wallClockMinute(window.start, localDate);
   const end = wallClockMinute(window.end, localDate);
   if (start === null || end === null || end <= 0 || start >= 1440) {
@@ -2139,7 +2178,7 @@ function appendScheduleSegment(track, window, className, localDate) {
   segment.className = `timeline-segment ${className}`;
   segment.style.left = `${(clampedStart / 1440) * 100}%`;
   segment.style.width = `${((clampedEnd - clampedStart) / 1440) * 100}%`;
-  segment.title = `${window.name}: ${formatWallClock(window.start)}–${formatWallClock(window.end)}`;
+  segment.title = `${stateLabel} · ${window.name}: ${formatWallClock(window.start)}–${formatWallClock(window.end)}`;
   track.appendChild(segment);
 }
 
@@ -5024,14 +5063,22 @@ async function saveLabTest() {
     setLabTestStatus("Lab test saved");
     renderLabTestFcDemandFeedback(payload.fc_demand);
     renderLabTestTankFeedback(payload.chlorine_tank);
-    await loadLabTests();
+    if (document.getElementById("labTestList")) {
+      await loadLabTests();
+    }
     if (
       payload.lab_test &&
       payload.lab_test.chlorine_tank_level_gal !== null &&
       payload.lab_test.chlorine_tank_level_gal !== undefined
     ) {
       await loadChlorineTankRefills();
-      await refreshHistory(true);
+      if (PAGE_MODE === "history") {
+        await refreshHistory(true);
+      }
+    }
+    if (PAGE_MODE === "live") {
+      await loadLive();
+      await refreshLiveTrends(true);
     }
   } catch (error) {
     setLabTestStatus(error.message);
@@ -5063,6 +5110,9 @@ function collectLabTestPayload() {
 
 function renderLabTests(tests) {
   const list = document.getElementById("labTestList");
+  if (!list) {
+    return;
+  }
   if (!tests.length) {
     list.textContent = "No lab tests recorded";
     return;
@@ -5089,7 +5139,10 @@ function renderLabTests(tests) {
 }
 
 function setLabTestStatus(message) {
-  document.getElementById("labTestStatus").textContent = message;
+  const node = document.getElementById("labTestStatus");
+  if (node) {
+    node.textContent = message;
+  }
 }
 
 function setLabTestTankStatus(message) {
@@ -5184,9 +5237,18 @@ function renderLabTestTankFeedback(chlorineTank) {
 }
 
 function initializeLabTestControls() {
-  document.getElementById("labTestReload").addEventListener("click", loadLabTests);
-  document.getElementById("labTestSave").addEventListener("click", saveLabTest);
-  loadLabTests();
+  const save = document.getElementById("labTestSave");
+  const reload = document.getElementById("labTestReload");
+  if (!save) {
+    return;
+  }
+  save.addEventListener("click", saveLabTest);
+  if (reload) {
+    reload.addEventListener("click", loadLabTests);
+  }
+  if (document.getElementById("labTestList")) {
+    loadLabTests();
+  }
 }
 
 async function loadChlorineTankRefills() {
@@ -5340,8 +5402,14 @@ async function saveChemicalAddition() {
     await parseApiResponse(response, "chemical addition save failed");
     setChemicalAdditionStatus("Chemical addition saved");
     clearChemicalAdditionInputs();
-    await loadChemicalAdditions();
-    await refreshHistory(true);
+    if (document.getElementById("chemicalAdditionList")) {
+      await loadChemicalAdditions();
+    }
+    if (PAGE_MODE === "history") {
+      await refreshHistory(true);
+    } else if (PAGE_MODE === "live") {
+      await refreshLiveTrends(true);
+    }
   } catch (error) {
     setChemicalAdditionStatus(error.message);
   }
@@ -5367,6 +5435,9 @@ function collectChemicalAdditionPayload() {
 
 function renderChemicalAdditions(additions) {
   const list = document.getElementById("chemicalAdditionList");
+  if (!list) {
+    return;
+  }
   if (!additions.length) {
     list.textContent = "No chemical additions recorded";
     return;
@@ -5415,12 +5486,19 @@ function clearChemicalAdditionInputs() {
 }
 
 function setChemicalAdditionStatus(message) {
-  document.getElementById("chemicalAdditionStatus").textContent = message;
+  const node = document.getElementById("chemicalAdditionStatus");
+  if (node) {
+    node.textContent = message;
+  }
 }
 
 function updateChemicalStrengthDefault() {
-  const chemical = document.getElementById("chemicalType").value;
-  document.getElementById("chemicalStrength").value = String(chemicalDefaultStrengthPercent(chemical));
+  const chemical = document.getElementById("chemicalType");
+  const strength = document.getElementById("chemicalStrength");
+  if (!chemical || !strength) {
+    return;
+  }
+  strength.value = String(chemicalDefaultStrengthPercent(chemical.value));
 }
 
 function initializeChemicalAdditionControls() {
@@ -5429,10 +5507,18 @@ function initializeChemicalAdditionControls() {
     return;
   }
   chemicalType.addEventListener("change", updateChemicalStrengthDefault);
-  document.getElementById("chemicalAdditionReload").addEventListener("click", loadChemicalAdditions);
-  document.getElementById("chemicalAdditionSave").addEventListener("click", saveChemicalAddition);
+  const reload = document.getElementById("chemicalAdditionReload");
+  const save = document.getElementById("chemicalAdditionSave");
+  if (reload) {
+    reload.addEventListener("click", loadChemicalAdditions);
+  }
+  if (save) {
+    save.addEventListener("click", saveChemicalAddition);
+  }
   updateChemicalStrengthDefault();
-  loadChemicalAdditions();
+  if (document.getElementById("chemicalAdditionList")) {
+    loadChemicalAdditions();
+  }
 }
 
 function numberOrNull(raw) {
@@ -5500,24 +5586,6 @@ function initializeFaultTimelineControls() {
 }
 
 function initializeTimerOverrideControls() {
-  [
-    "liveOverridePumpOnHour",
-  ].forEach((id) => {
-    const node = document.getElementById(id);
-    if (!node) {
-      return;
-    }
-    node.addEventListener("click", () =>
-      setTimerOverride({
-        mode: "force_on",
-        duration_s: 3600,
-        pump_speed: "high",
-        booster: "off",
-        reason: "manual pump run 1h",
-      }),
-    );
-  });
-
   [
     "liveOverridePumpOffManual",
   ].forEach((id) => {
@@ -5681,6 +5749,8 @@ function initializeForPage() {
     initializeTimerOverrideControls();
     initializeScheduleProfileControls();
     initializeChlorinationQuickControls();
+    initializeChemicalAdditionControls();
+    initializeLabTestControls();
     return;
   }
   if (PAGE_MODE === "history") {

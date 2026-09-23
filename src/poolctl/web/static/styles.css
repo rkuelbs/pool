@@ -1283,8 +1283,121 @@ body[data-page="live"] .page-nav a.active {
   grid-template-columns: minmax(0, 2fr) minmax(310px, 1fr);
 }
 
+.live-entry-grid {
+  display: grid;
+  gap: var(--space-4);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .dashboard-card {
   padding: var(--space-5);
+}
+
+.action-panel {
+  padding: 0;
+}
+
+.action-panel[open] {
+  grid-column: 1 / -1;
+}
+
+.action-panel summary {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  list-style: none;
+  min-height: 68px;
+  padding: var(--space-4) var(--space-5);
+}
+
+.action-panel summary::-webkit-details-marker {
+  display: none;
+}
+
+.action-panel summary strong {
+  display: block;
+  font-size: 16px;
+  margin-top: 2px;
+}
+
+.details-toggle {
+  color: var(--primary-accent);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.details-toggle::before {
+  content: "Expand";
+}
+
+.action-panel[open] .details-toggle::before {
+  content: "Collapse";
+}
+
+.action-panel-body {
+  border-top: 1px solid var(--border-color);
+  padding: var(--space-5);
+}
+
+.chemical-panel-grid {
+  display: grid;
+  gap: var(--space-5);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.live-form-section {
+  min-width: 0;
+}
+
+.live-form-section + .live-form-section {
+  border-left: 1px solid var(--border-color);
+  padding-left: var(--space-5);
+}
+
+.live-form-grid {
+  display: grid;
+  gap: var(--space-3);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.test-entry-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.live-form-grid label {
+  color: var(--text-secondary);
+  display: grid;
+  font-size: 11px;
+  font-weight: 700;
+  gap: 5px;
+}
+
+.form-field-wide {
+  grid-column: span 2;
+}
+
+.action-save {
+  margin-top: var(--space-4);
+  min-width: 150px;
+}
+
+.action-status,
+.action-feedback {
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.45;
+  margin-top: var(--space-2);
+}
+
+.action-status {
+  background: #f5f8f8;
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.action-feedback {
+  margin-bottom: 0;
 }
 
 .section-heading {
@@ -1435,6 +1548,9 @@ body[data-page="live"] .page-nav a.active {
 .quick-actions-card button,
 .quick-actions-card input,
 .quick-actions-card select,
+.action-panel button,
+.action-panel input,
+.action-panel select,
 .confirmation-dialog button {
   border: 1px solid #cbdadd;
   border-radius: var(--radius-sm);
@@ -1443,6 +1559,7 @@ body[data-page="live"] .page-nav a.active {
 }
 
 .quick-actions-card button,
+.action-panel button,
 .confirmation-dialog button {
   background: #ffffff;
   color: var(--text-primary);
@@ -1453,6 +1570,7 @@ body[data-page="live"] .page-nav a.active {
 }
 
 .quick-actions-card button:hover:not(:disabled),
+.action-panel button:hover:not(:disabled),
 .confirmation-dialog button:hover:not(:disabled) {
   border-color: #8fbec4;
   transform: translateY(-1px);
@@ -1461,6 +1579,9 @@ body[data-page="live"] .page-nav a.active {
 .quick-actions-card button:focus-visible,
 .quick-actions-card input:focus-visible,
 .quick-actions-card select:focus-visible,
+.action-panel button:focus-visible,
+.action-panel input:focus-visible,
+.action-panel select:focus-visible,
 .confirmation-dialog button:focus-visible,
 body[data-page="live"] .page-nav a:focus-visible {
   outline: 3px solid rgba(7, 139, 155, 0.2);
@@ -1468,7 +1589,9 @@ body[data-page="live"] .page-nav a:focus-visible {
 }
 
 .quick-actions-card button:disabled,
-.quick-actions-card select:disabled {
+.quick-actions-card select:disabled,
+.action-panel button:disabled,
+.action-panel select:disabled {
   color: #9ba9ac;
   cursor: not-allowed;
   transform: none;
@@ -1481,20 +1604,33 @@ body[data-page="live"] .page-nav a:focus-visible {
   color: #086a75;
 }
 
-.quick-actions-card .button-primary {
+.action-panel input,
+.action-panel select {
+  background: #ffffff;
+  color: var(--text-primary);
+  font-size: 13px;
+  min-width: 0;
+  padding: 8px 10px;
+  width: 100%;
+}
+
+.quick-actions-card .button-primary,
+.action-panel .button-primary {
   background: var(--primary-accent);
   border-color: var(--primary-accent);
   color: #ffffff;
 }
 
 .quick-actions-card .button-caution,
+.action-panel .button-caution,
 .confirmation-dialog .button-caution {
   background: #fff5e5;
   border-color: #e6c58e;
   color: #86540c;
 }
 
-.quick-actions-card .button-danger-secondary {
+.quick-actions-card .button-danger-secondary,
+.action-panel .button-danger-secondary {
   border-color: #e7c4c0;
   color: #a23a33;
   width: 100%;
@@ -1513,6 +1649,16 @@ body[data-page="live"] .page-nav a:focus-visible {
   display: grid;
   grid-template-columns: 1fr;
   margin-top: var(--space-2);
+}
+
+.controls-layout {
+  display: grid;
+  gap: var(--space-5);
+  grid-template-columns: minmax(300px, 1.5fr) minmax(220px, 1fr) minmax(260px, 1fr);
+}
+
+.controls-card .quick-timer-actions {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .control-status {
@@ -1621,6 +1767,8 @@ body[data-page="live"] .page-nav a:focus-visible {
 
 .today-card {
   overflow: hidden;
+  padding-bottom: var(--space-4);
+  padding-top: var(--space-4);
 }
 
 .schedule-next {
@@ -1653,15 +1801,19 @@ body[data-page="live"] .page-nav a:focus-visible {
 }
 
 .legend-swatch.pump-low {
-  background: #5bbbc3;
+  background: #49aebe;
 }
 
 .legend-swatch.pump-high {
-  background: #176f7b;
+  background: #185b7a;
 }
 
 .legend-swatch.dosing {
-  background: #b1d572;
+  background: #3c9b67;
+}
+
+.legend-swatch.vacuum {
+  background: #7c5ac6;
 }
 
 .legend-line {
@@ -1672,7 +1824,7 @@ body[data-page="live"] .page-nav a:focus-visible {
 }
 
 .today-timeline {
-  margin-top: var(--space-4);
+  margin-top: var(--space-3);
 }
 
 .timeline-empty {
@@ -1736,15 +1888,19 @@ body[data-page="live"] .page-nav a:focus-visible {
 }
 
 .timeline-segment.pump-low {
-  background: #5bbbc3;
+  background: #49aebe;
 }
 
 .timeline-segment.pump-high {
-  background: #176f7b;
+  background: #185b7a;
 }
 
 .timeline-segment.dosing {
-  background: #b1d572;
+  background: #3c9b67;
+}
+
+.timeline-segment.vacuum {
+  background: #7c5ac6;
 }
 
 .timeline-now,
@@ -1764,28 +1920,6 @@ body[data-page="live"] .page-nav a:focus-visible {
 
 .timeline-solar-marker {
   border-left: 1px dashed #db9c39;
-}
-
-.schedule-window-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  margin: var(--space-3) 0 0 88px;
-}
-
-.schedule-window-chip {
-  background: #f4f8f8;
-  border: 1px solid #e0eaeb;
-  border-radius: 999px;
-  color: var(--text-secondary);
-  font-size: 10px;
-  padding: 5px 8px;
-}
-
-.solar-summary {
-  color: var(--text-secondary);
-  font-size: 11px;
-  margin: var(--space-3) 0 0 88px;
 }
 
 .attention-card {
@@ -1934,8 +2068,49 @@ body[data-page="live"] .page-nav a:focus-visible {
     grid-template-columns: 1fr;
   }
 
-  .quick-actions-card {
-    order: -1;
+  .live-dashboard > .today-card {
+    order: 1;
+  }
+
+  .live-dashboard > .kpi-grid {
+    order: 2;
+  }
+
+  .live-dashboard > .trends-card {
+    order: 3;
+  }
+
+  .live-dashboard > .live-entry-grid {
+    order: 4;
+  }
+
+  .live-dashboard > .controls-card {
+    order: 5;
+  }
+
+  .live-dashboard > .attention-card {
+    order: 6;
+  }
+
+  .live-dashboard > .engineering-panel {
+    order: 7;
+  }
+
+  .live-entry-grid,
+  .chemical-panel-grid,
+  .controls-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .test-entry-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .live-form-section + .live-form-section {
+    border-left: 0;
+    border-top: 1px solid var(--border-color);
+    padding-left: 0;
+    padding-top: var(--space-5);
   }
 
   .engineering-grid {
@@ -1993,7 +2168,8 @@ body[data-page="live"] .page-nav a:focus-visible {
   }
 
   .live-dashboard,
-  .dashboard-main-grid {
+  .dashboard-main-grid,
+  .live-entry-grid {
     gap: var(--space-3);
   }
 
@@ -2039,11 +2215,6 @@ body[data-page="live"] .page-nav a:focus-visible {
     grid-template-columns: 58px minmax(0, 1fr);
   }
 
-  .schedule-window-list,
-  .solar-summary {
-    margin-left: 58px;
-  }
-
   .engineering-grid {
     grid-template-columns: 1fr;
   }
@@ -2085,6 +2256,19 @@ body[data-page="live"] .page-nav a:focus-visible {
   }
 
   .dose-entry {
+    grid-template-columns: 1fr;
+  }
+
+  .live-form-grid,
+  .test-entry-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .form-field-wide {
+    grid-column: auto;
+  }
+
+  .controls-card .quick-timer-actions {
     grid-template-columns: 1fr;
   }
 
