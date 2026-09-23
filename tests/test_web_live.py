@@ -627,6 +627,7 @@ def test_live_dashboard_preserves_control_hooks_and_product_sections() -> None:
     assert 'data-command="booster_pump:off"' in markup
     assert "Quick actions" not in markup
     assert "Run high for 1 hour" not in markup
+    assert "Common task" not in markup
     assert 'id="liveOverridePumpOnHour"' not in markup
     assert "schedule-window-chip" not in markup
     assert 'id="todaySolar"' not in markup
@@ -634,17 +635,57 @@ def test_live_dashboard_preserves_control_hooks_and_product_sections() -> None:
     assert 'id="liveTrendsStatus" class="sr-only"' in markup
     assert '<option value="muriatic_acid" selected>' in markup
     assert '<option value="muriatic_acid" selected>' in history_markup
+    assert '<h2 id="todayHeading">Schedule</h2>' in markup
+    assert markup.index('class="dashboard-card today-card"') < markup.index('id="liveCardPanel"')
+    assert markup.index('id="liveScheduleProfile"') > markup.index('id="liveControlsCard"')
+    assert 'aria-label="Filter flow loss, last 30 days"' in markup
+    assert 'aria-label="Usable chlorine supply, last 30 days"' in markup
     assert "openSupplementalChlorineConfirmation(inputId)" in script
     assert 'fetch("/api/live"' in script
-    assert "fetch(`/api/history?${params.toString()}`" in script
-    assert "const LIVE_KPI_HISTORY_HOURS = 24;" in script
+    assert "fetch(`/api/history?${shortKpiParams.toString()}`" in script
+    assert "const LIVE_SHORT_KPI_HISTORY_HOURS = 24;" in script
+    assert "const LIVE_LONG_KPI_HISTORY_HOURS = 24 * 30;" in script
     assert "const LIVE_TREND_HISTORY_HOURS = 168;" in script
+    assert 'const LIVE_CHLORINE_DELIVERY_SENSOR_ID = "chlorine_daily_delivered_oz";' in script
     assert 'sensorId: "lab_free_chlorine"' in script
+    assert "integratedFlowGallons(points, historyWindow)" in script
+    assert "cumulativeCounterIncrease(chlorineDeliveryPoints)" in script
+    assert 'chart.getBoundingClientRect()' in script
     assert 'return { className: "dosing", label: "Dosing" };' in script
     assert 'return { className: "vacuum", label: "Vacuum" };' in script
     assert ".live-dashboard > .today-card" in styles
     assert ".live-dashboard > .kpi-grid" in styles
     assert ".timeline-segment.vacuum" in styles
+
+
+def test_schedule_editor_uses_operating_modes_and_preserves_drafts() -> None:
+    static_dir = Path(__file__).parents[1] / "src" / "poolctl" / "web" / "static"
+    script = (static_dir / "app.js").read_text(encoding="utf-8")
+    styles = (static_dir / "styles.css").read_text(encoding="utf-8")
+    schedule_markup = (static_dir / "schedule.html").read_text(encoding="utf-8")
+
+    for page_name in ("live.html", "history.html", "schedule.html", "config.html"):
+        markup = (static_dir / page_name).read_text(encoding="utf-8")
+        assert "<span>Mode</span>" in markup
+        assert "<span>Pump Speed</span>" not in markup
+        assert "<span>Booster</span>" not in markup
+        assert "<span>Dosing</span>" not in markup
+        assert 'id="timerReload" type="button">Reload Saved</button>' in markup
+
+    assert 'id="pumpTimerPanel"' in schedule_markup
+    assert 'low: Object.freeze({ pump_speed: "low", booster: "off", allow_dosing: false })' in script
+    assert 'high: Object.freeze({ pump_speed: "high", booster: "off", allow_dosing: false })' in script
+    assert 'dosing: Object.freeze({ pump_speed: "low", booster: "off", allow_dosing: true })' in script
+    assert 'vacuum: Object.freeze({ pump_speed: "low", booster: "on", allow_dosing: false })' in script
+    assert "Legacy combination will normalize to" in script
+    assert "Discard unsaved schedule changes and reload the saved schedule?" in script
+    assert "profiles: normalizedTimerProfiles(timerConfigDraft.profiles)" in script
+
+    poll_source = script[script.index("async function poll()") : script.index(
+        'document.querySelectorAll("[data-command]")'
+    )]
+    assert "loadPumpTimerConfig" not in poll_source
+    assert 'grid-template-columns: 1.5fr 0.8fr 3fr 1.1fr 72px;' in styles
 
 
 def test_history_payload_can_filter_to_validated_measurements(tmp_path: Path) -> None:

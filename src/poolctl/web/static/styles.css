@@ -550,7 +550,7 @@ h2 {
   align-items: center;
   column-gap: 8px;
   display: grid;
-  grid-template-columns: 1.5fr 0.8fr 3fr 1fr 1fr 0.9fr 72px;
+  grid-template-columns: 1.5fr 0.8fr 3fr 1.1fr 72px;
 }
 
 .timer-timing,
@@ -561,6 +561,17 @@ h2 {
 
 .timer-timing-fields {
   grid-template-columns: repeat(3, minmax(70px, 1fr));
+}
+
+.timer-mode-field {
+  display: grid;
+  gap: 4px;
+}
+
+.timer-mode-warning {
+  color: #8a5a12;
+  font-size: 10px;
+  line-height: 1.3;
 }
 
 #timerPreview {
@@ -2203,11 +2214,6 @@ body[data-page="live"] .page-nav a:focus-visible {
 
   .schedule-next {
     max-width: 54%;
-  }
-
-  .schedule-legend {
-    justify-content: flex-start;
-    margin-top: var(--space-3);
   }
 
   .timeline-scale,

@@ -298,6 +298,23 @@ Any active booster window still excludes dosing for the overlapping segment.
 Set `allow_dosing: false` on night, vacuum, or skimming-only windows where the
 pump should run but chlorine should not be injected.
 
+The Schedule page presents each window as one operating mode while continuing
+to save the existing controller fields and API schema:
+
+- **Low** saves low pump speed, booster off, and dosing disallowed.
+- **High** saves high pump speed, booster off, and dosing disallowed.
+- **Dosing** saves low pump speed, booster off, and dosing allowed.
+- **Vacuum** saves low pump speed, booster on, and dosing disallowed.
+
+**Dosing** is an eligibility window, not a direct dosing-pump command. The
+chlorination controller still decides pulse timing and routes every command
+through the existing safety interlocks. Legacy combinations remain readable;
+the editor resolves booster-on as Vacuum first, then dosing-allowed as Dosing,
+then high speed as High, and otherwise Low. A noncanonical legacy row displays
+a warning and is normalized to the selected mode only when schedules are saved.
+The underlying YAML, API, overlap rules, and controller schedule model are not
+changed by this UI translation.
+
 Use named profiles for seasonal operating plans, such as daylight-oriented
 summer circulation/dosing, fall vacuum windows, and pre-sunrise winter
 filtration. The Schedule page creates and edits profiles. On the Live page,
@@ -409,13 +426,13 @@ notification service can repeat a throttled Pushover warning for this condition.
 ## Dashboard Pages
 
 - Live: responsive consumer-style operating dashboard with controller/safety,
-  active-profile, and pump-mode status in the header; six primary KPI cards for
-  water temperature, pH, ORP, estimated flow, filter flow loss, and usable
-  chlorine inventory; aligned seven-day trend strips for water temperature, pH,
-  ORP, and tested free chlorine; collapsible chemical-addition, chlorination,
-  and complete water-test entry panels; pump, booster, and active-profile
-  controls; an exception-first attention list; and a compact operating timeline
-  built from the controller's resolved schedule day. Supplemental chlorine
+  active-profile, and pump-mode status in the header; the controller-resolved
+  Schedule timeline above six primary KPI cards for water temperature, pH, ORP,
+  estimated flow, filter flow loss, and usable chlorine inventory; aligned
+  seven-day trend strips for water temperature, pH, ORP, and tested free
+  chlorine; collapsible chemical-addition, chlorination, and complete water-test
+  entry panels; pump, booster, and active-profile controls; and an exception-first
+  attention list. Supplemental chlorine
   requires a review/confirmation step before the existing command is sent.
   Detailed hydraulics, chlorination/FC-demand, CPU, health, and runtime-loop
   information remains available in the collapsed engineering status section.
@@ -424,8 +441,10 @@ notification service can repeat a throttled Pushover warning for this condition.
   navigation, calendar/time jump, CSV export, water-test and chemical-addition
   entry with local date/time pickers, and single-axis or multi-axis scaling
   depending on selected signal ranges.
-- Schedule: site coordinates, named profiles, fixed/solar/daylight timing,
-  per-window dosing eligibility, and a three-day resolved preview.
+- Schedule: site coordinates, named profiles, fixed/solar/daylight timing, a
+  four-mode operating selector, and a three-day resolved preview. The editor
+  loads saved configuration once instead of replacing in-progress edits during
+  status polling; **Reload Saved** explicitly discards a draft after confirmation.
 - Config: forms for runtime hardware profile, safety, chlorination, filter
   loading, FC demand, acquisition, logging, pressure analog input calibration,
   pH sensor enable/calibration, notifications, and diagnostic dosing-pump
@@ -436,13 +455,19 @@ drivers or long-lived services must be rebuilt.
 
 The Live page continues to poll `GET /api/live` for current state and commands
 the existing timer, actuator, profile, chlorination-config, and supplemental-dose
-endpoints; the browser does not bypass controller safety routing. Its KPI
-sparklines retain validated 24-hour data while the aligned strip charts request
-seven days from the existing `GET /api/history` API, with chemical-addition
-event markers when available. Configured pH/ORP alert ranges from
-`GET /api/config/notifications` provide subtle chart bands. The Today timeline
-uses `schedule.today` from the live payload, including already-resolved windows
-and sunrise/sunset, rather than reimplementing schedule or astronomy
+endpoints; the browser does not bypass controller safety routing. The existing
+`GET /api/history` API supplies validated 24-hour water/pH/ORP/flow history,
+30-day filter-loss and chlorine-tank history, and the aligned seven-day strip
+charts. The Flow card integrates its logged GPM samples into an approximate
+24-hour gallon total. The Filter card uses a 30-day sparkline with a seven-day
+change summary. The Chlorine Supply card charts usable gallons (estimated tank
+level minus the configured forecast reserve) over 30 days and summarizes seven
+days of logged dosing delivery. No separate UI storage is used for these
+summaries. Chemical-addition event markers remain available on the aligned
+strips, and configured pH/ORP alert ranges from
+`GET /api/config/notifications` provide subtle chart bands. The Schedule
+timeline uses `schedule.today` from the live payload, including already-resolved
+windows and sunrise/sunset, rather than reimplementing schedule or astronomy
 calculations in JavaScript. It displays dosing-eligible windows as a distinct
 green state, booster/vacuum windows in purple, and low/high circulation in light
 and dark blue respectively.

@@ -47,6 +47,23 @@
       </nav>
 
       <section class="live-dashboard" data-view-section="live">
+        <section class="dashboard-card today-card" aria-labelledby="todayHeading">
+          <div class="section-heading">
+            <h2 id="todayHeading">Schedule</h2>
+            <p id="liveScheduleStatus" class="schedule-next">Schedule: --</p>
+          </div>
+          <div class="schedule-legend" aria-label="Schedule timeline legend">
+            <span><i class="legend-swatch pump-low"></i>Low</span>
+            <span><i class="legend-swatch pump-high"></i>High</span>
+            <span><i class="legend-swatch dosing"></i>Dosing</span>
+            <span><i class="legend-swatch vacuum"></i>Vacuum</span>
+            <span><i class="legend-line now"></i>Now</span>
+          </div>
+          <div id="todayTimeline" class="today-timeline" aria-label="Today's operating schedule">
+            <div class="timeline-empty">Waiting for the schedule…</div>
+          </div>
+        </section>
+
         <section class="live-card-panel kpi-grid" id="liveCardPanel" aria-label="Current pool condition">
           <article class="kpi-card" id="liveChemCard">
             <div class="kpi-heading">
@@ -89,7 +106,7 @@
             <div class="kpi-reading"><strong id="livePumpFlow">--</strong><span id="liveFlowUnit">gpm</span></div>
             <p id="livePumpState" class="kpi-status">Pump state unavailable</p>
             <svg id="liveSparkFlow" class="kpi-sparkline" viewBox="0 0 180 44" aria-label="Estimated flow, last 24 hours"></svg>
-            <p id="liveFlowTrend" class="kpi-trend">24h trend unavailable</p>
+            <p id="liveFlowTrend" class="kpi-trend">24h total unavailable</p>
           </article>
 
           <article class="kpi-card" id="liveFilterCard">
@@ -99,8 +116,8 @@
             </div>
             <div class="kpi-reading"><strong id="liveFilterFlowLoss">--</strong><span id="liveFilterUnit">%</span></div>
             <p id="liveFilterStatus" class="kpi-status">Awaiting a standardized test</p>
-            <svg id="liveSparkFilter" class="kpi-sparkline" viewBox="0 0 180 44" aria-label="Filter flow loss, last 24 hours"></svg>
-            <p id="liveFilterTrend" class="kpi-trend">24h trend unavailable</p>
+            <svg id="liveSparkFilter" class="kpi-sparkline" viewBox="0 0 180 44" aria-label="Filter flow loss, last 30 days"></svg>
+            <p id="liveFilterTrend" class="kpi-trend">7-day trend unavailable</p>
           </article>
 
           <article class="kpi-card" id="liveTankCard">
@@ -108,10 +125,10 @@
               <h2>Chlorine supply</h2>
               <span class="kpi-icon" aria-hidden="true">Cl</span>
             </div>
-            <div class="kpi-reading"><strong id="liveTankDaysLine">--</strong><span id="liveTankUnit">days</span></div>
-            <p id="liveTankLevelLine" class="kpi-status">Tank estimate unavailable</p>
-            <svg id="liveSparkTank" class="kpi-sparkline" viewBox="0 0 180 44" aria-label="Chlorine tank inventory, last 24 hours"></svg>
-            <p id="liveTankTrend" class="kpi-trend">24h trend unavailable</p>
+            <div class="kpi-reading"><strong id="liveTankDaysLine">--</strong><span id="liveTankUnit">gal</span></div>
+            <p id="liveTankLevelLine" class="kpi-status">Days remaining unavailable</p>
+            <svg id="liveSparkTank" class="kpi-sparkline" viewBox="0 0 180 44" aria-label="Usable chlorine supply, last 30 days"></svg>
+            <p id="liveTankTrend" class="kpi-trend">7-day dose unavailable</p>
           </article>
         </section>
 
@@ -119,7 +136,6 @@
           <details class="dashboard-card action-panel chemical-actions-card">
             <summary>
               <span>
-                <span class="eyebrow">Common task</span>
                 <strong>Chemicals</strong>
               </span>
               <span class="details-toggle" aria-hidden="true"></span>
@@ -192,7 +208,6 @@
           <details class="dashboard-card action-panel test-entry-card">
             <summary>
               <span>
-                <span class="eyebrow">Common task</span>
                 <strong>Test entry</strong>
               </span>
               <span class="details-toggle" aria-hidden="true"></span>
@@ -254,25 +269,6 @@
             <p id="liveTrendsStatus" class="sr-only" role="status">Loading validated history…</p>
         </section>
 
-        <section class="dashboard-card today-card" aria-labelledby="todayHeading">
-          <div class="section-heading">
-            <div>
-              <h2 id="todayHeading">Today</h2>
-            </div>
-            <p id="liveScheduleStatus" class="schedule-next">Schedule: --</p>
-          </div>
-          <div class="schedule-legend" aria-label="Schedule timeline legend">
-            <span><i class="legend-swatch pump-low"></i>Low</span>
-            <span><i class="legend-swatch pump-high"></i>High</span>
-            <span><i class="legend-swatch dosing"></i>Dosing</span>
-            <span><i class="legend-swatch vacuum"></i>Vacuum</span>
-            <span><i class="legend-line now"></i>Now</span>
-          </div>
-          <div id="todayTimeline" class="today-timeline" aria-label="Today's operating schedule">
-            <div class="timeline-empty">Waiting for the resolved schedule…</div>
-          </div>
-        </section>
-
         <section class="dashboard-card quick-actions-card controls-card" id="liveControlsCard" aria-labelledby="controlsHeading">
           <div class="section-heading compact">
             <div>
@@ -318,11 +314,12 @@
                 <span>Applies on the next controller tick</span>
               </div>
               <div class="schedule-profile-control">
-                <label class="sr-only" for="liveScheduleProfile">Active schedule</label>
+                <label class="sr-only" for="liveScheduleProfile">Active schedule profile</label>
                 <select id="liveScheduleProfile" aria-label="Active schedule profile" disabled></select>
                 <button id="liveScheduleProfileActivate" type="button" disabled>Activate</button>
               </div>
             </div>
+
           </div>
 
           <p id="liveCommandStatus" class="command-status" role="status">Ready</p>
@@ -418,16 +415,14 @@
         </div>
         <div class="timer-grid-head">
           <span>Name</span>
-          <span>Start</span>
-          <span>End</span>
-          <span>Pump Speed</span>
-          <span>Booster</span>
-          <span>Dosing</span>
+          <span>Enabled</span>
+          <span>Timing</span>
+          <span>Mode</span>
           <span>Action</span>
         </div>
         <div id="timerRows" class="timer-rows"></div>
         <div class="timer-actions">
-          <button id="timerReload" type="button">Reload</button>
+          <button id="timerReload" type="button">Reload Saved</button>
           <button id="timerSave" type="button">Save Schedules</button>
         </div>
         <div id="timerSaveStatus" class="history-status">--</div>

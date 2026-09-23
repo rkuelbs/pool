@@ -59,7 +59,7 @@
         <div id="historyStatus" class="history-status">--</div>
       </section>
 
-      <section class="history-panel" aria-label="Pump timer schedules" data-view-section="schedule">
+      <section id="pumpTimerPanel" class="history-panel" aria-label="Pump timer schedules" data-view-section="schedule">
         <div class="history-header">
           <h2>Pump Timer Config</h2>
           <div class="history-controls">
@@ -90,15 +90,13 @@
           <span>Name</span>
           <span>Enabled</span>
           <span>Timing</span>
-          <span>Pump Speed</span>
-          <span>Booster</span>
-          <span>Dosing</span>
+          <span>Mode</span>
           <span>Action</span>
         </div>
         <div id="timerRows" class="timer-rows"></div>
         <p class="history-status">Daylight fractions are decimals: 0 = sunrise, 0.5 = daylight midpoint, and 1 = sunset. Negative values run before sunrise; values above 1 run after sunset.</p>
         <div class="timer-actions">
-          <button id="timerReload" type="button">Reload</button>
+          <button id="timerReload" type="button">Reload Saved</button>
           <button id="timerSave" type="button">Save Schedules</button>
         </div>
         <div id="timerSaveStatus" class="history-status">--</div>

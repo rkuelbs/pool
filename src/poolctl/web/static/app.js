@@ -208,8 +208,10 @@ const HISTORY_SERIES_COLORS = [
 const HISTORY_AXIS_SPAN_RATIO_THRESHOLD = 5.0;
 const HISTORY_AXIS_CENTER_SPREAD_FACTOR = 2.0;
 const HISTORY_AXIS_EPSILON = 1e-6;
-const LIVE_KPI_HISTORY_HOURS = 24;
+const LIVE_SHORT_KPI_HISTORY_HOURS = 24;
+const LIVE_LONG_KPI_HISTORY_HOURS = 24 * 30;
 const LIVE_TREND_HISTORY_HOURS = 168;
+const LIVE_CHLORINE_DELIVERY_SENSOR_ID = "chlorine_daily_delivered_oz";
 const LIVE_EVENT_SENSOR_IDS = ["chemical_sodium_hypochlorite", "chemical_muriatic_acid"];
 const LIVE_KPI_DEFINITIONS = [
   {
@@ -219,6 +221,8 @@ const LIVE_KPI_DEFINITIONS = [
     decimals: 1,
     deltaDecimals: 1,
     unit: "°F",
+    historyHours: LIVE_SHORT_KPI_HISTORY_HOURS,
+    summaryHours: 24,
   },
   {
     sensorId: "raw_ph",
@@ -227,6 +231,8 @@ const LIVE_KPI_DEFINITIONS = [
     decimals: 2,
     deltaDecimals: 2,
     unit: "",
+    historyHours: LIVE_SHORT_KPI_HISTORY_HOURS,
+    summaryHours: 24,
   },
   {
     sensorId: "raw_orp",
@@ -235,6 +241,8 @@ const LIVE_KPI_DEFINITIONS = [
     decimals: 0,
     deltaDecimals: 0,
     unit: " mV",
+    historyHours: LIVE_SHORT_KPI_HISTORY_HOURS,
+    summaryHours: 24,
   },
   {
     sensorId: "pump_flow_gpm",
@@ -244,6 +252,8 @@ const LIVE_KPI_DEFINITIONS = [
     deltaDecimals: 1,
     unit: " gpm",
     includeZero: true,
+    historyHours: LIVE_SHORT_KPI_HISTORY_HOURS,
+    summaryType: "flow-total",
   },
   {
     sensorId: "filter_flow_loss_percent",
@@ -255,6 +265,8 @@ const LIVE_KPI_DEFINITIONS = [
     deltaDecimals: 1,
     unit: "%",
     includeZero: true,
+    historyHours: LIVE_LONG_KPI_HISTORY_HOURS,
+    summaryHours: 24 * 7,
   },
   {
     sensorId: "chlorine_tank_level_gal",
@@ -266,6 +278,9 @@ const LIVE_KPI_DEFINITIONS = [
     deltaDecimals: 2,
     unit: " gal",
     includeZero: true,
+    historyHours: LIVE_LONG_KPI_HISTORY_HOURS,
+    summaryType: "chlorine-dose-total",
+    usableInventory: true,
   },
 ];
 const LIVE_TREND_DEFINITIONS = [
@@ -308,6 +323,7 @@ let timerConfigLoading = false;
 let timerConfigSaving = false;
 let timerConfigDraft = null;
 let timerEditProfileName = null;
+let timerConfigDirty = false;
 let faultLoading = false;
 let lastFaultLoadedAt = 0;
 let runtimeConfigLoading = false;
@@ -347,6 +363,8 @@ let lastLiveTrendLoadedAt = 0;
 let liveTrendBandsLoaded = false;
 let liveTrendBands = {};
 let liveTrendChartState = [];
+let liveTrendRenderState = null;
+let liveTrendResizeTimer = null;
 
 async function loadLive() {
   const response = await fetch("/api/live", { cache: "no-store" });
@@ -1554,18 +1572,18 @@ function renderLiveChemCard(sensors) {
 function renderLiveTankCard(sensors, chlorineSupply) {
   const sensorId = sensors.chlorine_tank_level_gal ? "chlorine_tank_level_gal" : "tank_level";
   const supplyStatus = chlorineSupply && chlorineSupply.status ? chlorineSupply.status : sensorStatus(sensors, sensorId);
-  const remaining =
-    chlorineSupply && chlorineSupply.remaining_gal_display
-      ? chlorineSupply.remaining_gal_display
-      : sensorDisplay(sensors, sensorId);
   setLiveCardStatus("liveTankCard", sensorCardStatus(supplyStatus));
   setNumericReading(
     "liveTankDaysLine",
-    chlorineSupply && chlorineSupply.days_remaining,
-    1,
+    chlorineSupply && chlorineSupply.usable_remaining_gal,
+    2,
   );
-  setNodeText("liveTankUnit", "days");
-  setNodeText("liveTankLevelLine", `Usable inventory ${remaining}`);
+  setNodeText("liveTankUnit", "gal");
+  const days =
+    chlorineSupply && chlorineSupply.days_remaining_display
+      ? chlorineSupply.days_remaining_display
+      : "-- days";
+  setNodeText("liveTankLevelLine", `${days} estimated remaining`);
 }
 
 function setNumericReading(id, value, decimals) {
@@ -1675,42 +1693,64 @@ async function refreshLiveTrends(force) {
     status.textContent = "Loading validated history…";
   }
   try {
-    const params = new URLSearchParams({
-      hours: String(LIVE_TREND_HISTORY_HOURS),
-      limit: String(historyQueryLimit(LIVE_TREND_HISTORY_HOURS)),
-      validated_only: "true",
-      max_points: "360",
-      resolution: "auto",
-    });
-    [
-      ...new Set([
-        ...LIVE_KPI_DEFINITIONS.map((definition) => definition.sensorId),
+    const shortKpiParams = liveHistoryParams(
+      LIVE_SHORT_KPI_HISTORY_HOURS,
+      LIVE_KPI_DEFINITIONS
+        .filter((definition) => definition.historyHours === LIVE_SHORT_KPI_HISTORY_HOURS)
+        .map((definition) => definition.sensorId),
+      1500,
+    );
+    const longKpiParams = liveHistoryParams(
+      LIVE_LONG_KPI_HISTORY_HOURS,
+      LIVE_KPI_DEFINITIONS
+        .filter((definition) => definition.historyHours === LIVE_LONG_KPI_HISTORY_HOURS)
+        .map((definition) => definition.sensorId),
+      720,
+    );
+    const trendParams = liveHistoryParams(
+      LIVE_TREND_HISTORY_HOURS,
+      [
         ...LIVE_TREND_DEFINITIONS.map((definition) => definition.sensorId),
+        LIVE_CHLORINE_DELIVERY_SENSOR_ID,
         ...LIVE_EVENT_SENSOR_IDS,
-      ]),
-    ]
-      .forEach((sensorId) => params.append("sensor_id", sensorId));
-    const requests = [fetch(`/api/history?${params.toString()}`, { cache: "no-store" })];
+      ],
+      1000,
+    );
+    const requests = [
+      fetch(`/api/history?${shortKpiParams.toString()}`, { cache: "no-store" }),
+      fetch(`/api/history?${longKpiParams.toString()}`, { cache: "no-store" }),
+      fetch(`/api/history?${trendParams.toString()}`, { cache: "no-store" }),
+    ];
     if (!liveTrendBandsLoaded) {
       requests.push(fetch("/api/config/notifications", { cache: "no-store" }));
     }
     const responses = await Promise.all(requests);
-    const history = await parseApiResponse(responses[0], "live trend history failed");
-    if (responses[1]) {
+    const [shortHistory, longHistory, trendHistory] = await Promise.all([
+      parseApiResponse(responses[0], "24-hour KPI history failed"),
+      parseApiResponse(responses[1], "30-day KPI history failed"),
+      parseApiResponse(responses[2], "live trend history failed"),
+    ]);
+    if (responses[3]) {
       try {
-        const config = await parseApiResponse(responses[1], "trend limits load failed");
+        const config = await parseApiResponse(responses[3], "trend limits load failed");
         liveTrendBands = trendBandsFromNotifications(config);
       } catch (_error) {
         liveTrendBands = {};
       }
       liveTrendBandsLoaded = true;
     }
-    renderLiveTrendDashboard(normalizeHistorySeries(history), historyWindowFromPayload(history));
+    renderLiveTrendDashboard({
+      shortSeries: normalizeHistorySeries(shortHistory),
+      shortWindow: historyWindowFromPayload(shortHistory),
+      longSeries: normalizeHistorySeries(longHistory),
+      longWindow: historyWindowFromPayload(longHistory),
+      trendSeries: normalizeHistorySeries(trendHistory),
+      trendWindow: historyWindowFromPayload(trendHistory),
+    });
     lastLiveTrendLoadedAt = now;
-    const totalPoints = normalizeHistorySeries(history).reduce(
-      (sum, series) => sum + (series.points || []).length,
-      0,
-    );
+    const totalPoints = [shortHistory, longHistory, trendHistory]
+      .flatMap((history) => normalizeHistorySeries(history))
+      .reduce((sum, series) => sum + (series.points || []).length, 0);
     status.textContent = totalPoints
       ? `${totalPoints} validated samples loaded for the aligned 7-day window`
       : "No validated history is available yet; current values will continue to update.";
@@ -1719,6 +1759,18 @@ async function refreshLiveTrends(force) {
   } finally {
     liveTrendLoading = false;
   }
+}
+
+function liveHistoryParams(hours, sensorIds, maxPoints) {
+  const params = new URLSearchParams({
+    hours: String(hours),
+    limit: String(historyQueryLimit(hours)),
+    validated_only: "true",
+    max_points: String(maxPoints),
+    resolution: "auto",
+  });
+  [...new Set(sensorIds)].forEach((sensorId) => params.append("sensor_id", sensorId));
+  return params;
 }
 
 function trendBandsFromNotifications(config) {
@@ -1740,39 +1792,57 @@ function trendBandsFromNotifications(config) {
   return result;
 }
 
-function renderLiveTrendDashboard(series, windowInfo) {
-  const byId = {};
-  series.forEach((entry) => {
-    byId[entry.sensor_id] = entry;
-  });
+function renderLiveTrendDashboard(renderState) {
+  liveTrendRenderState = renderState;
+  const shortById = liveSeriesById(renderState.shortSeries);
+  const longById = liveSeriesById(renderState.longSeries);
+  const trendById = liveSeriesById(renderState.trendSeries);
   const fallbackEnd = historyReferenceNowMs();
-  const trendWindow = windowInfo || {
+  const trendWindow = renderState.trendWindow || {
     startMs: fallbackEnd - LIVE_TREND_HISTORY_HOURS * 3600 * 1000,
     endMs: fallbackEnd,
   };
-  const kpiWindow = {
-    startMs: Math.max(
-      trendWindow.startMs,
-      trendWindow.endMs - LIVE_KPI_HISTORY_HOURS * 3600 * 1000,
-    ),
-    endMs: trendWindow.endMs,
+  const shortWindow = renderState.shortWindow || {
+    startMs: fallbackEnd - LIVE_SHORT_KPI_HISTORY_HOURS * 3600 * 1000,
+    endMs: fallbackEnd,
+  };
+  const longWindow = renderState.longWindow || {
+    startMs: fallbackEnd - LIVE_LONG_KPI_HISTORY_HOURS * 3600 * 1000,
+    endMs: fallbackEnd,
   };
   const events = LIVE_EVENT_SENSOR_IDS.flatMap((sensorId) => {
-    const entry = byId[sensorId];
+    const entry = trendById[sensorId];
     return entry ? entry.points || [] : [];
   });
+  const chlorineDeliveryPoints = normalizedLivePoints(
+    (trendById[LIVE_CHLORINE_DELIVERY_SENSOR_ID] || { points: [] }).points,
+  );
+  const chlorineReserve = numberOrNull(
+    latestLivePayload && latestLivePayload.chlorine_supply
+      ? latestLivePayload.chlorine_supply.reserve_gal
+      : null,
+  ) || 0;
 
   liveTrendChartState = [];
   LIVE_KPI_DEFINITIONS.forEach((definition) => {
+    const usesLongHistory = definition.historyHours === LIVE_LONG_KPI_HISTORY_HOURS;
+    const byId = usesLongHistory ? longById : shortById;
+    const window = usesLongHistory ? longWindow : shortWindow;
     const entry = byId[definition.sensorId] || { points: [] };
-    const points = normalizedLivePoints(entry.points || []).filter(
-      (point) => point._time >= kpiWindow.startMs && point._time <= kpiWindow.endMs,
+    let points = normalizedLivePoints(entry.points || []).filter(
+      (point) => point._time >= window.startMs && point._time <= window.endMs,
     );
-    drawLiveSparkline(definition, points, kpiWindow);
-    renderLiveKpiTrend(definition, points);
+    if (definition.usableInventory) {
+      points = points.map((point) => ({
+        ...point,
+        _value: Math.max(0, point._value - chlorineReserve),
+      }));
+    }
+    drawLiveSparkline(definition, points, window);
+    renderLiveKpiSummary(definition, points, chlorineDeliveryPoints, window);
   });
   LIVE_TREND_DEFINITIONS.forEach((definition, index) => {
-    const entry = byId[definition.sensorId] || { points: [] };
+    const entry = trendById[definition.sensorId] || { points: [] };
     const points = normalizedLivePoints(entry.points || []);
     const latest = points[points.length - 1];
     setNodeText(
@@ -1789,6 +1859,14 @@ function renderLiveTrendDashboard(series, windowInfo) {
       index === LIVE_TREND_DEFINITIONS.length - 1,
     );
   });
+}
+
+function liveSeriesById(series) {
+  const byId = {};
+  (series || []).forEach((entry) => {
+    byId[entry.sensor_id] = entry;
+  });
+  return byId;
 }
 
 function normalizedLivePoints(points) {
@@ -1841,25 +1919,88 @@ function drawLiveSparkline(definition, points, window) {
   chart.appendChild(line);
 }
 
-function renderLiveKpiTrend(definition, points) {
+function renderLiveKpiSummary(definition, points, chlorineDeliveryPoints, historyWindow) {
   if (!definition.trendId) {
     return;
   }
-  if (points.length < 2) {
-    setNodeText(definition.trendId, points.length ? "Latest logged sample" : "24h trend unavailable");
+
+  if (definition.summaryType === "flow-total") {
+    const totalGallons = integratedFlowGallons(points, historyWindow);
+    setNodeText(
+      definition.trendId,
+      totalGallons === null
+        ? "24h total unavailable"
+        : `Estimated 24h total: ${Math.round(totalGallons).toLocaleString()} gal`,
+    );
     return;
   }
-  const change = points[points.length - 1]._value - points[0]._value;
+
+  if (definition.summaryType === "chlorine-dose-total") {
+    const totalOunces = cumulativeCounterIncrease(chlorineDeliveryPoints);
+    setNodeText(
+      definition.trendId,
+      totalOunces === null
+        ? "7-day dose unavailable"
+        : `Dosed last 7 days: ${totalOunces.toFixed(1)} fl oz`,
+    );
+    return;
+  }
+
+  const summaryHours = definition.summaryHours || 24;
+  const summaryStart = historyWindow.endMs - summaryHours * 3600 * 1000;
+  const summaryPoints = points.filter((point) => point._time >= summaryStart);
+  const periodLabel = summaryHours === 24 ? "24 hours" : `${summaryHours / 24} days`;
+  if (summaryPoints.length < 2) {
+    setNodeText(
+      definition.trendId,
+      summaryPoints.length ? "Latest logged sample" : `${periodLabel} trend unavailable`,
+    );
+    return;
+  }
+  const change = summaryPoints[summaryPoints.length - 1]._value - summaryPoints[0]._value;
   const threshold = 0.5 * 10 ** (-definition.deltaDecimals);
   if (Math.abs(change) < threshold) {
-    setNodeText(definition.trendId, "Steady over 24 hours");
+    setNodeText(definition.trendId, `Steady over ${periodLabel}`);
     return;
   }
   const direction = change > 0 ? "↑" : "↓";
   setNodeText(
     definition.trendId,
-    `${direction} ${Math.abs(change).toFixed(definition.deltaDecimals)}${definition.unit} over 24 hours`,
+    `${direction} ${Math.abs(change).toFixed(definition.deltaDecimals)}${definition.unit} over ${periodLabel}`,
   );
+}
+
+function integratedFlowGallons(points, window) {
+  if (!window || points.length < 2) {
+    return null;
+  }
+  let totalGallons = 0;
+  for (let index = 1; index < points.length; index += 1) {
+    const previous = points[index - 1];
+    const current = points[index];
+    const startMs = Math.max(window.startMs, previous._time);
+    const endMs = Math.min(window.endMs, current._time);
+    const elapsedMs = endMs - startMs;
+    if (elapsedMs <= 0 || elapsedMs > 5 * 60 * 1000) {
+      continue;
+    }
+    const averageGpm = (Math.max(0, previous._value) + Math.max(0, current._value)) / 2;
+    totalGallons += averageGpm * (elapsedMs / 60000);
+  }
+  return totalGallons;
+}
+
+function cumulativeCounterIncrease(points) {
+  if (!points.length) {
+    return null;
+  }
+  let total = Math.max(0, points[0]._value);
+  for (let index = 1; index < points.length; index += 1) {
+    const previous = Math.max(0, points[index - 1]._value);
+    const current = Math.max(0, points[index]._value);
+    total += current >= previous ? current - previous : current;
+  }
+  return total;
 }
 
 function liveValueDomain(definition, points) {
@@ -1888,8 +2029,10 @@ function drawLiveTrendStrip(definition, points, events, window, showTimeAxis) {
     return;
   }
   chart.replaceChildren();
-  const width = 720;
-  const height = 92;
+  const bounds = chart.getBoundingClientRect();
+  const width = Math.max(320, Math.round(bounds.width || 720));
+  const height = Math.max(72, Math.round(bounds.height || 92));
+  chart.setAttribute("viewBox", `0 0 ${width} ${height}`);
   const margin = { top: 8, right: 10, bottom: showTimeAxis ? 20 : 7, left: 40 };
   const plotWidth = width - margin.left - margin.right;
   const plotHeight = height - margin.top - margin.bottom;
@@ -2013,6 +2156,17 @@ function drawLiveTrendStrip(definition, points, events, window, showTimeAxis) {
     syncLiveTrendHover(window.startMs + ratio * (window.endMs - window.startMs));
   };
   chart.onpointerleave = clearLiveTrendHover;
+}
+
+function initializeLiveTrendResizeHandling() {
+  window.addEventListener("resize", () => {
+    window.clearTimeout(liveTrendResizeTimer);
+    liveTrendResizeTimer = window.setTimeout(() => {
+      if (liveTrendRenderState) {
+        renderLiveTrendDashboard(liveTrendRenderState);
+      }
+    }, 100);
+  });
 }
 
 function formatLiveTrendAxisLabel(timestamp, window) {
@@ -2141,11 +2295,11 @@ function renderTodaySchedule(schedule, observedAt) {
 }
 
 function resolvedScheduleDisplayState(window) {
-  if (window.allow_dosing) {
-    return { className: "dosing", label: "Dosing" };
-  }
   if (window.booster === "on") {
     return { className: "vacuum", label: "Vacuum" };
+  }
+  if (window.allow_dosing) {
+    return { className: "dosing", label: "Dosing" };
   }
   if (window.pump_speed === "high") {
     return { className: "pump-high", label: "High" };
@@ -3273,12 +3427,84 @@ function renderPumpTimerConfig(payload) {
   document.getElementById("timerLongitude").value = timerConfigDraft.site.longitude ?? "";
   renderTimerProfileSelectors();
   renderTimerProfileRows();
+  timerConfigDirty = false;
   loadSchedulePreview();
 }
 
-function timerRowElement(schedule = {}) {
+const TIMER_MODE_FIELDS = Object.freeze({
+  low: Object.freeze({ pump_speed: "low", booster: "off", allow_dosing: false }),
+  high: Object.freeze({ pump_speed: "high", booster: "off", allow_dosing: false }),
+  dosing: Object.freeze({ pump_speed: "low", booster: "off", allow_dosing: true }),
+  vacuum: Object.freeze({ pump_speed: "low", booster: "on", allow_dosing: false }),
+});
+
+function timerModeFields(mode) {
+  return TIMER_MODE_FIELDS[mode] || TIMER_MODE_FIELDS.low;
+}
+
+function timerModeForSchedule(schedule = {}) {
+  const pumpSpeed = String(schedule.pump_speed || "low").toLowerCase();
+  const booster = String(schedule.booster || "off").toLowerCase();
+  const allowDosing = schedule.allow_dosing === true;
+  let mode = "low";
+  if (booster === "on") {
+    mode = "vacuum";
+  } else if (allowDosing) {
+    mode = "dosing";
+  } else if (pumpSpeed === "high") {
+    mode = "high";
+  }
+  const expected = timerModeFields(mode);
+  return {
+    mode,
+    canonical: pumpSpeed === expected.pump_speed
+      && booster === expected.booster
+      && allowDosing === expected.allow_dosing,
+  };
+}
+
+function timerModeLabel(mode) {
+  return mode.charAt(0).toUpperCase() + mode.slice(1);
+}
+
+function timerModeEditor(schedule) {
+  const resolution = timerModeForSchedule(schedule);
+  const field = document.createElement("div");
+  field.className = "timer-mode-field";
+  const select = document.createElement("select");
+  select.dataset.field = "mode";
+  Object.keys(TIMER_MODE_FIELDS).forEach((mode) => {
+    const option = document.createElement("option");
+    option.value = mode;
+    option.textContent = timerModeLabel(mode);
+    select.appendChild(option);
+  });
+  select.value = resolution.mode;
+  field.appendChild(select);
+  if (!resolution.canonical) {
+    const warning = document.createElement("small");
+    warning.className = "timer-mode-warning";
+    warning.textContent = `Legacy combination will normalize to ${timerModeLabel(resolution.mode)} on save.`;
+    field.appendChild(warning);
+  }
+  select.addEventListener("change", () => {
+    field.querySelector(".timer-mode-warning")?.remove();
+    field.closest(".timer-row").dataset.modeChanged = "true";
+  });
+  return field;
+}
+
+function timerRowElement(schedule = {
+  pump_speed: "low",
+  booster: "off",
+  allow_dosing: false,
+}) {
   const row = document.createElement("div");
   row.className = "timer-row";
+  row.dataset.sourcePumpSpeed = String(schedule.pump_speed || "low").toLowerCase();
+  row.dataset.sourceBooster = String(schedule.booster || "off").toLowerCase();
+  row.dataset.sourceAllowDosing = schedule.allow_dosing === true ? "true" : "false";
+  row.dataset.modeChanged = "false";
 
   row.appendChild(timerInput("name", schedule.name || "", "text"));
   row.appendChild(timerCheckbox("enabled", schedule.enabled !== false));
@@ -3287,9 +3513,7 @@ function timerRowElement(schedule = {}) {
     start: schedule.start || "08:00",
     end: schedule.end || "12:00",
   }));
-  row.appendChild(timerSelect("pump_speed", ["low", "high"], schedule.pump_speed || "low"));
-  row.appendChild(timerSelect("booster", ["off", "on"], schedule.booster || "off"));
-  row.appendChild(timerCheckbox("allow_dosing", schedule.allow_dosing !== false));
+  row.appendChild(timerModeEditor(schedule));
 
   const removeButton = document.createElement("button");
   removeButton.type = "button";
@@ -3299,6 +3523,7 @@ function timerRowElement(schedule = {}) {
     if (!document.querySelectorAll(".timer-row").length) {
       document.getElementById("timerRows").appendChild(timerRowElement());
     }
+    markTimerConfigDirty();
   });
   row.appendChild(removeButton);
 
@@ -3416,9 +3641,14 @@ function collectTimerSchedules() {
   const schedules = rows.map((row, index) => {
     const name = row.querySelector('[data-field="name"]').value.trim();
     const enabled = row.querySelector('[data-field="enabled"]').checked;
-    const pumpSpeed = row.querySelector('[data-field="pump_speed"]').value;
-    const booster = row.querySelector('[data-field="booster"]').value;
-    const allowDosing = row.querySelector('[data-field="allow_dosing"]').checked;
+    const mode = row.querySelector('[data-field="mode"]').value;
+    const operatingFields = row.dataset.modeChanged === "true"
+      ? timerModeFields(mode)
+      : {
+        pump_speed: row.dataset.sourcePumpSpeed,
+        booster: row.dataset.sourceBooster,
+        allow_dosing: row.dataset.sourceAllowDosing === "true",
+      };
     const timingType = row.querySelector('[data-field="timing_type"]').value;
     let timing;
     if (timingType === "fixed") {
@@ -3453,13 +3683,21 @@ function collectTimerSchedules() {
       name: name || `schedule_${index + 1}`,
       enabled,
       timing,
-      pump_speed: pumpSpeed,
-      booster,
-      allow_dosing: allowDosing,
+      ...operatingFields,
     };
   });
 
   return schedules;
+}
+
+function normalizedTimerProfiles(profiles) {
+  return profiles.map((profile) => ({
+    ...profile,
+    schedules: (profile.schedules || []).map((schedule) => ({
+      ...schedule,
+      ...timerModeFields(timerModeForSchedule(schedule).mode),
+    })),
+  }));
 }
 
 function storeEditedTimerProfile() {
@@ -3520,7 +3758,7 @@ async function savePumpTimerConfig() {
           longitude: optionalNumberValue("timerLongitude"),
         },
         active_profile: document.getElementById("timerActiveProfile").value,
-        profiles: timerConfigDraft.profiles,
+        profiles: normalizedTimerProfiles(timerConfigDraft.profiles),
       }),
     });
     const payload = await parseApiResponse(response, "pump timer config save failed");
@@ -3536,6 +3774,22 @@ async function savePumpTimerConfig() {
 
 function setTimerStatus(message) {
   document.getElementById("timerSaveStatus").textContent = message;
+}
+
+function markTimerConfigDirty() {
+  if (timerConfigLoading || timerConfigSaving) {
+    return;
+  }
+  timerConfigDirty = true;
+  setTimerStatus("Unsaved schedule changes");
+}
+
+async function reloadSavedPumpTimerConfig() {
+  if (timerConfigDirty && !window.confirm("Discard unsaved schedule changes and reload the saved schedule?")) {
+    setTimerStatus("Reload canceled; unsaved schedule changes retained");
+    return;
+  }
+  await loadPumpTimerConfig();
 }
 
 function setTimerButtonsDisabled(disabled) {
@@ -3559,7 +3813,8 @@ async function loadSchedulePreview() {
     (payload.days || []).forEach((day) => {
       entries.push(`${day.local_date} · sunrise ${formatScheduleInstant(day.sunrise)} · sunset ${formatScheduleInstant(day.sunset)}`);
       (day.windows || []).forEach((window) => {
-        entries.push(`  ${window.name}: ${formatScheduleInstant(window.start)}–${formatScheduleInstant(window.end)} · ${window.pump_speed.toUpperCase()} · booster ${window.booster.toUpperCase()} · dosing ${window.allow_dosing ? "yes" : "no"}`);
+        const mode = timerModeForSchedule(window).mode;
+        entries.push(`  ${window.name}: ${formatScheduleInstant(window.start)}–${formatScheduleInstant(window.end)} · ${timerModeLabel(mode)}`);
       });
       (day.warnings || []).forEach((warning) => entries.push(`  Warning: ${warning}`));
     });
@@ -3575,11 +3830,20 @@ function formatScheduleInstant(value) {
 }
 
 function initializeTimerControls() {
+  const panel = document.getElementById("pumpTimerPanel");
+  ["input", "change"].forEach((eventName) => {
+    panel.addEventListener(eventName, (event) => {
+      if (event.target.id !== "timerEditProfile") {
+        markTimerConfigDirty();
+      }
+    });
+  });
   document.getElementById("timerAddRow").addEventListener("click", () => {
     document.getElementById("timerRows").appendChild(timerRowElement());
+    markTimerConfigDirty();
   });
   document.getElementById("timerSave").addEventListener("click", savePumpTimerConfig);
-  document.getElementById("timerReload").addEventListener("click", loadPumpTimerConfig);
+  document.getElementById("timerReload").addEventListener("click", reloadSavedPumpTimerConfig);
   document.getElementById("timerPreviewReload").addEventListener("click", loadSchedulePreview);
   document.getElementById("timerEditProfile").addEventListener("change", (event) => {
     storeEditedTimerProfile();
@@ -3601,6 +3865,7 @@ function initializeTimerControls() {
     timerEditProfileName = name;
     renderTimerProfileSelectors();
     renderTimerProfileRows();
+    markTimerConfigDirty();
   });
   document.getElementById("timerRemoveProfile").addEventListener("click", () => {
     if (!timerConfigDraft || timerConfigDraft.profiles.length <= 1) {
@@ -3618,6 +3883,7 @@ function initializeTimerControls() {
     timerEditProfileName = timerConfigDraft.profiles[0].name;
     renderTimerProfileSelectors();
     renderTimerProfileRows();
+    markTimerConfigDirty();
   });
   loadPumpTimerConfig();
 }
@@ -5698,7 +5964,6 @@ async function poll() {
       await refreshHealth(false);
     } else if (PAGE_MODE === "schedule") {
       await refreshTopStatus(false);
-      await loadPumpTimerConfig();
       await refreshHealth(false);
     } else if (PAGE_MODE === "config") {
       await refreshTopStatus(false);
@@ -5746,6 +6011,7 @@ function setActiveNavPage() {
 
 function initializeForPage() {
   if (PAGE_MODE === "live") {
+    initializeLiveTrendResizeHandling();
     initializeTimerOverrideControls();
     initializeScheduleProfileControls();
     initializeChlorinationQuickControls();
