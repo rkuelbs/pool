@@ -2,7 +2,7 @@
 
 `poolctl` is a Python pool automation controller being built for a Raspberry Pi 5.
 It is designed to be developed on Windows with simulated hardware and deployed
-to Raspberry Pi OS 64-bit Trixie with Modbus sensors and relays.
+to Raspberry Pi OS 64-bit Bookworm with Modbus sensors and relays.
 
 The project is intentionally layered:
 
@@ -65,11 +65,13 @@ tests/                    Unit and integration-style tests.
 
 ## Python Versions
 
-The project targets Python `>=3.13,<3.14`.
+The project supports Python `>=3.11,<3.14`.
 
+- The production Raspberry Pi 5 target is Raspberry Pi OS 64-bit Bookworm with
+  Python 3.11.2.
 - Windows development uses Python 3.13.
-- New Raspberry Pi 5 deployments target Raspberry Pi OS 64-bit Trixie with
-  Python 3.13.
+- Source syntax, standard-library use, linting, and type checking use Python
+  3.11 as the compatibility baseline.
 
 ## Windows Development Setup
 
@@ -136,6 +138,15 @@ Run Ruff:
 ```powershell
 python -m ruff check src tests
 ```
+
+Run strict type checking:
+
+```powershell
+python -m mypy src
+```
+
+GitHub Actions runs the full test, lint, and type-check suite on both Python
+3.11 and Python 3.13.
 
 Useful focused runs:
 
@@ -1060,8 +1071,8 @@ file out of Git.
 
 These commands assume:
 
-- OS: Raspberry Pi OS 64-bit Trixie
-- Python: 3.13
+- OS: Raspberry Pi OS 64-bit Bookworm
+- Python: 3.11.2
 - Pi username: `pool`
 - Project directory: `/home/pool/projects/pool`
 - Virtual environment: `/home/pool/projects/pool/venv`
@@ -1072,7 +1083,10 @@ Install OS packages:
 ```bash
 sudo apt update
 sudo apt install -y git python3-venv python3-pip sqlite3
+python3 --version
 ```
+
+The version check should report Python 3.11.2.
 
 Clone the repository:
 
@@ -1090,6 +1104,7 @@ python3 -m venv venv
 source venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -e ".[raspberrypi]"
+python -m pip check
 ```
 
 Install the services:

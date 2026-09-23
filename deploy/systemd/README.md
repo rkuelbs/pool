@@ -64,14 +64,16 @@ PUSHOVER_USER_KEY=your_user_key_here
 From the repo root on the Pi:
 
 ```bash
-# Raspberry Pi OS 64-bit Trixie with Python 3.13 is the intended target.
+# Raspberry Pi OS 64-bit Bookworm with Python 3.11.2 is the intended target.
 sudo apt update
 sudo apt install -y git python3-venv python3-pip sqlite3
+python3 --version
 
 python3 -m venv venv
 source venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -e ".[raspberrypi]"
+python -m pip check
 
 chmod +x deploy/systemd/install-pi-services.sh
 APP_USER=pool \
@@ -88,6 +90,8 @@ BACKUP_DIR=/var/backups/poolctl \
 BACKUP_KEEP_COUNT=720 \
 ./deploy/systemd/install-pi-services.sh
 ```
+
+The version check should report Python 3.11.2.
 
 `BACKUP_KEEP_COUNT=720` keeps about 30 days of hourly backups.
 

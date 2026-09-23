@@ -43,8 +43,9 @@ src/poolctl/
 tests/                    Unit and integration-style tests.
 ```
 
-Python support is `>=3.13,<3.14`. Current deployments target Raspberry Pi OS
-64-bit Trixie with Python 3.13.
+Python support is `>=3.11,<3.14`. Current deployments target Raspberry Pi OS
+64-bit Bookworm with Python 3.11.2, while Windows development may use Python
+3.13. Keep source syntax and standard-library use compatible with Python 3.11.
 
 ## Architectural Rules
 
@@ -195,7 +196,7 @@ Add tests for bug fixes. Prefer deterministic tests with `SimulatedClock`.
 - Read existing code before editing. Follow local patterns.
 - Keep changes scoped to the requested behavior.
 - Use structured parsers/config models rather than ad hoc string handling.
-- Maintain Python 3.11 compatibility.
+- Maintain Python 3.11 syntax and standard-library compatibility.
 - Use `rg`/fast search tools where available.
 - Use `apply_patch` for manual file edits.
 - Do not revert unrelated local changes.

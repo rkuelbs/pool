@@ -310,8 +310,8 @@ class AstralAstronomyProvider:
     def sunrise_sunset(self, *, day: date, site: SiteConfig) -> tuple[datetime, datetime]:
         if not site.has_location:
             raise ValueError("site coordinates are unavailable")
-        from astral import Observer  # type: ignore[import-untyped]
-        from astral.sun import sunrise, sunset  # type: ignore[import-untyped]
+        from astral import Observer
+        from astral.sun import sunrise, sunset
 
         assert site.latitude is not None
         assert site.longitude is not None
