@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
 import yaml  # type: ignore[import-untyped]
 
 from poolctl.app import build_app_from_mapping
@@ -224,6 +225,76 @@ def test_active_profile_update_applies_live_and_persists(tmp_path: Path) -> None
     assert app.pump_timer_config.active_profile == "away"
     saved = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert saved["pump_timer"]["active_profile"] == "away"
+
+
+def test_active_profile_update_persists_only_selection_to_local_override(
+    tmp_path: Path,
+) -> None:
+    config = {
+        **config_mapping(),
+        "site": {"timezone": "UTC"},
+        "pump_timer": {
+            "active_profile": "summer",
+            "profiles": [
+                {"name": "summer", "schedules": []},
+                {"name": "winter", "schedules": []},
+            ],
+        },
+    }
+    base_path = tmp_path / "pi-prod.yaml"
+    local_path = tmp_path / "pi-local.yaml"
+    base_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    base_before = base_path.read_text(encoding="utf-8")
+    app = build_app_from_mapping(config, clock=make_clock())
+
+    apply_active_schedule_profile_update(
+        app=app,
+        config_path=base_path,
+        local_config_path=local_path,
+        payload={"active_profile": "winter"},
+    )
+
+    assert base_path.read_text(encoding="utf-8") == base_before
+    assert yaml.safe_load(local_path.read_text(encoding="utf-8")) == {
+        "pump_timer": {"active_profile": "winter"}
+    }
+    effective = load_config_with_overrides(base_path, local_path=local_path)
+    assert effective["pump_timer"]["active_profile"] == "winter"
+    assert [profile["name"] for profile in effective["pump_timer"]["profiles"]] == [
+        "summer",
+        "winter",
+    ]
+
+
+def test_active_profile_update_rejects_unknown_profile_without_mutation(
+    tmp_path: Path,
+) -> None:
+    config = {
+        **config_mapping(),
+        "site": {"timezone": "UTC"},
+        "pump_timer": {
+            "active_profile": "summer",
+            "profiles": [
+                {"name": "summer", "schedules": []},
+                {"name": "winter", "schedules": []},
+            ],
+        },
+    }
+    path = tmp_path / "pool.yaml"
+    path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    before = path.read_text(encoding="utf-8")
+    app = build_app_from_mapping(config, clock=make_clock())
+
+    with pytest.raises(ValueError, match="schedule profile does not exist: spring"):
+        apply_active_schedule_profile_update(
+            app=app,
+            config_path=path,
+            local_config_path=None,
+            payload={"active_profile": "spring"},
+        )
+
+    assert app.pump_timer_config.active_profile == "summer"
+    assert path.read_text(encoding="utf-8") == before
 
 
 def test_chlorination_update_applies_live_and_persists(tmp_path: Path) -> None:

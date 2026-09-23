@@ -233,6 +233,10 @@ let chlorinationQuickSaving = false;
 let chlorinationPrimeBusy = false;
 let supplementalChlorineDoseBusy = false;
 let timerOverrideBusy = false;
+let scheduleProfileLoading = false;
+let scheduleProfileBusy = false;
+let scheduleProfileSelectionDirty = false;
+let activeScheduleProfile = null;
 let healthLoading = false;
 let lastHealthLoadedAt = 0;
 let topStatusLoading = false;
@@ -305,6 +309,107 @@ async function setTimerOverride(payload) {
   } finally {
     setControlsDisabled(false);
     timerOverrideBusy = false;
+  }
+}
+
+async function loadScheduleProfiles() {
+  if (scheduleProfileLoading || scheduleProfileBusy) {
+    return;
+  }
+  const select = document.getElementById("liveScheduleProfile");
+  if (!select) {
+    return;
+  }
+
+  scheduleProfileLoading = true;
+  setScheduleProfileControlsDisabled(true);
+  try {
+    const response = await fetch("/api/schedule/active_profile", { cache: "no-store" });
+    const payload = await parseApiResponse(response, "schedule profiles load failed");
+    renderScheduleProfileControl(payload);
+  } catch (error) {
+    setCommandStatus(error.message);
+  } finally {
+    scheduleProfileLoading = false;
+    updateScheduleProfileControlState();
+  }
+}
+
+function renderScheduleProfileControl(payload) {
+  const select = document.getElementById("liveScheduleProfile");
+  if (!select) {
+    return;
+  }
+  const profiles = Array.isArray(payload.profiles) ? payload.profiles : [];
+  activeScheduleProfile = String(payload.active_profile || "");
+  select.replaceChildren();
+  profiles.forEach((profileName) => {
+    const option = document.createElement("option");
+    option.value = String(profileName);
+    option.textContent = String(profileName);
+    select.appendChild(option);
+  });
+  if (profiles.includes(activeScheduleProfile)) {
+    select.value = activeScheduleProfile;
+  }
+  scheduleProfileSelectionDirty = false;
+}
+
+function setScheduleProfileControlsDisabled(disabled) {
+  const select = document.getElementById("liveScheduleProfile");
+  const button = document.getElementById("liveScheduleProfileActivate");
+  if (select) {
+    select.disabled = disabled;
+  }
+  if (button) {
+    button.disabled = disabled;
+  }
+}
+
+function updateScheduleProfileControlState() {
+  const select = document.getElementById("liveScheduleProfile");
+  const button = document.getElementById("liveScheduleProfileActivate");
+  if (!select || !button) {
+    return;
+  }
+  const unavailable = scheduleProfileLoading || scheduleProfileBusy || select.options.length === 0;
+  select.disabled = unavailable;
+  button.disabled = unavailable || select.value === activeScheduleProfile;
+}
+
+async function activateScheduleProfile() {
+  if (scheduleProfileBusy) {
+    return;
+  }
+  const select = document.getElementById("liveScheduleProfile");
+  if (!select || !select.value || select.value === activeScheduleProfile) {
+    updateScheduleProfileControlState();
+    return;
+  }
+
+  const profileName = select.value;
+  scheduleProfileBusy = true;
+  setScheduleProfileControlsDisabled(true);
+  setCommandStatus(`Activating schedule ${profileName}...`);
+  try {
+    const response = await fetch("/api/schedule/active_profile", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ active_profile: profileName }),
+    });
+    const payload = await parseApiResponse(response, "schedule profile update failed");
+    const config = payload.config || {};
+    renderScheduleProfileControl({
+      active_profile: payload.active_profile,
+      profiles: (config.profiles || []).map((profile) => profile.name),
+    });
+    setCommandStatus(`Active schedule set to ${payload.active_profile}`);
+  } catch (error) {
+    setCommandStatus(error.message);
+    scheduleProfileSelectionDirty = true;
+  } finally {
+    scheduleProfileBusy = false;
+    updateScheduleProfileControlState();
   }
 }
 
@@ -618,6 +723,15 @@ function renderScheduleStatus(schedule) {
     ? new Date(schedule.next_transition).toLocaleString()
     : "none";
   target.textContent = `Schedule: ${schedule.active_profile} · ${activeText} · next ${nextText}`;
+  if (
+    activeScheduleProfile !== null
+    && schedule.active_profile !== activeScheduleProfile
+    && !scheduleProfileLoading
+    && !scheduleProfileBusy
+    && !scheduleProfileSelectionDirty
+  ) {
+    void loadScheduleProfiles();
+  }
 }
 
 function setControlsDisabled(disabled) {
@@ -4580,6 +4694,20 @@ function initializeTimerOverrideControls() {
   });
 }
 
+function initializeScheduleProfileControls() {
+  const select = document.getElementById("liveScheduleProfile");
+  const button = document.getElementById("liveScheduleProfileActivate");
+  if (!select || !button) {
+    return;
+  }
+  select.addEventListener("change", () => {
+    scheduleProfileSelectionDirty = select.value !== activeScheduleProfile;
+    updateScheduleProfileControlState();
+  });
+  button.addEventListener("click", activateScheduleProfile);
+  void loadScheduleProfiles();
+}
+
 function initializeChlorinationQuickControls() {
   [
     ["liveChlorinationDoseSave", "liveChlorinationDoseInput"],
@@ -4684,6 +4812,7 @@ function setActiveNavPage() {
 function initializeForPage() {
   if (PAGE_MODE === "live") {
     initializeTimerOverrideControls();
+    initializeScheduleProfileControls();
     initializeChlorinationQuickControls();
     return;
   }

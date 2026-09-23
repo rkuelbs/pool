@@ -232,6 +232,42 @@ h2 {
   margin-top: 4px;
 }
 
+.schedule-profile-control {
+  align-items: center;
+  display: grid;
+  gap: 6px;
+  grid-template-columns: auto minmax(140px, 1fr) auto;
+  margin-top: 4px;
+}
+
+.schedule-profile-control label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.schedule-profile-control select,
+.schedule-profile-control button {
+  background: #ffffff;
+  border: 1px solid #b8c4cf;
+  border-radius: 6px;
+  color: var(--ink);
+  font-size: 12px;
+  min-height: 32px;
+  padding: 4px 8px;
+}
+
+.schedule-profile-control button {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.schedule-profile-control select:disabled,
+.schedule-profile-control button:disabled {
+  color: #9aa6b2;
+  cursor: not-allowed;
+}
+
 .live-card.status-off {
   background: #d4dae0;
   border-color: #6d7781;
@@ -818,6 +854,14 @@ h2 {
 
   .badge-row {
     justify-content: flex-start;
+  }
+
+  .schedule-profile-control {
+    grid-template-columns: 1fr auto;
+  }
+
+  .schedule-profile-control label {
+    grid-column: 1 / -1;
   }
 
   .history-header {

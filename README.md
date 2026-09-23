@@ -287,6 +287,20 @@ Any active booster window still excludes dosing for the overlapping segment.
 Set `allow_dosing: false` on night, vacuum, or skimming-only windows where the
 pump should run but chlorine should not be injected.
 
+Use named profiles for seasonal operating plans, such as daylight-oriented
+summer circulation/dosing, fall vacuum windows, and pre-sunrise winter
+filtration. The Schedule page creates and edits profiles. On the Live page,
+choose a profile under **Active schedule** and press **Activate** to persist it
+as `pump_timer.active_profile` and apply it on the next controller tick without
+a restart. Profile selection does not cancel a manual, chemistry-refresh,
+supplemental-dose, or diagnostic override; the selected profile takes control
+when that override ends or the operator resumes scheduled operation.
+
+Winter schedule overlap can reduce the *additional* runtime caused by freeze
+protection, but it does not replace or weaken freeze safety. Freeze protection
+continues to start or extend circulation independently whenever its configured
+temperature thresholds require it.
+
 ## Runtime Architecture
 
 The web server/API is the intended remote interface. There is no separate

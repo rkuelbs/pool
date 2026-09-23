@@ -39,7 +39,6 @@ from poolctl.drivers.simulated.actuators import build_default_simulated_actuator
 from poolctl.drivers.simulated.plant import SimulatedPlant
 from poolctl.services.clock import SimulatedClock
 from poolctl.services.notifications import NotificationProvider, NotificationResult
-from poolctl.services.pump_timer import PumpTimerConfig
 import poolctl.services.weather as weather_service_module
 
 
@@ -328,7 +327,7 @@ async def test_runtime_can_run_pump_timer_without_acquisition() -> None:
 
 
 @pytest.mark.asyncio
-async def test_timer_turns_chlorine_off_before_stopping_circulation(
+async def test_profile_switch_turns_chlorine_off_before_stopping_circulation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -344,7 +343,25 @@ async def test_timer_turns_chlorine_off_before_stopping_circulation(
             ],
             "enabled_sensor_groups": [],
         },
-        **active_pump_timer_config(),
+        "site": {"timezone": "UTC"},
+        "pump_timer": {
+            "active_profile": "summer",
+            "profiles": [
+                {
+                    "name": "summer",
+                    "schedules": [
+                        {
+                            "name": "all_day_filter",
+                            "start": "00:00",
+                            "end": "00:00",
+                            "pump_speed": "high",
+                            "booster": "off",
+                        }
+                    ],
+                },
+                {"name": "winter", "schedules": []},
+            ],
+        },
         "logging": {"database_path": str(tmp_path / "schedule_transition.sqlite3")},
     }
     app = build_app_from_mapping(config, clock=clock)
@@ -368,7 +385,10 @@ async def test_timer_turns_chlorine_off_before_stopping_circulation(
         return await original_route(command, **kwargs)
 
     monkeypatch.setattr(app.router, "route", record_route)
-    app.apply_pump_timer_config(PumpTimerConfig(timezone="UTC", schedules=()))
+    app.apply_pump_timer_config(
+        app.pump_timer_config.with_active_profile("winter"),
+        trigger="profile_change",
+    )
 
     await app._run_pump_timer()
 
@@ -377,6 +397,93 @@ async def test_timer_turns_chlorine_off_before_stopping_circulation(
         ActuatorId.PUMP_MOTOR,
     ]
     assert all(command.state == ActuatorState.OFF for command in routed_commands[:2])
+
+
+@pytest.mark.asyncio
+async def test_profile_switch_to_non_dosing_window_stops_active_dose(
+    tmp_path: Path,
+) -> None:
+    clock = make_clock()
+    config = {
+        "runtime": {
+            "driver_profile": "simulated",
+            "enabled_actuators": [
+                "pump_motor",
+                "pump_motor_speed",
+                "booster_pump",
+                "chlorine_dosing_pump",
+            ],
+            "enabled_sensor_groups": [],
+        },
+        "logging": {
+            "database_path": str(tmp_path / "profile_dosing_transition.sqlite3"),
+        },
+        "site": {"timezone": "UTC"},
+        "pump_timer": {
+            "active_profile": "summer",
+            "profiles": [
+                {
+                    "name": "summer",
+                    "schedules": [
+                        {
+                            "name": "midday_dosing",
+                            "start": "12:00",
+                            "end": "14:00",
+                            "pump_speed": "low",
+                            "booster": "off",
+                            "allow_dosing": True,
+                        }
+                    ],
+                },
+                {
+                    "name": "fall",
+                    "schedules": [
+                        {
+                            "name": "midday_vacuum",
+                            "start": "12:00",
+                            "end": "14:00",
+                            "pump_speed": "low",
+                            "booster": "off",
+                            "allow_dosing": False,
+                        }
+                    ],
+                },
+            ],
+        },
+        "chlorination": {
+            "enabled": True,
+            "daily_dose_oz": 4.0,
+            "pump_output_oz_per_min": 1.0,
+            "no_dose_first_minutes": 0.0,
+            "no_dose_last_minutes": 10.0,
+            "max_duty_cycle": 0.5,
+            "cycle_on_seconds": 60.0,
+        },
+    }
+    add_dosing_pressure_acquisition(config)
+    app = build_app_from_mapping(
+        config,
+        clock=clock,
+        sensor_drivers=[fixed_dosing_pressure_sensor(clock)],
+    )
+    seed_chlorine_tank_level(app, clock)
+    seed_dosing_pressure(app, clock)
+
+    first = await app.tick()
+    assert first.chlorination_status is not None
+    assert first.chlorination_status.active is True
+    assert app.router.actuator_states[ActuatorId.CHLORINE_DOSING_PUMP] == ActuatorState.ON
+
+    app.apply_pump_timer_config(
+        app.pump_timer_config.with_active_profile("fall"),
+        trigger="profile_change",
+    )
+    second = await app.tick()
+
+    assert app.router.actuator_states[ActuatorId.PUMP_MOTOR] == ActuatorState.ON
+    assert app.router.actuator_states[ActuatorId.CHLORINE_DOSING_PUMP] == ActuatorState.OFF
+    assert second.chlorination_status is not None
+    assert second.chlorination_status.active is False
 
 
 @pytest.mark.asyncio
