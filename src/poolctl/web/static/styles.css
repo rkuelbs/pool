@@ -1871,7 +1871,7 @@ body[data-page="live"] .page-nav a:focus-visible {
 }
 
 .timeline-segment.pump-low {
-  background: #49aebe;
+  background: #2f8fc0;
 }
 
 .timeline-segment.pump-high {
@@ -1879,9 +1879,7 @@ body[data-page="live"] .page-nav a:focus-visible {
 }
 
 .timeline-segment.dosing {
-  background: #3c9b67;
-  bottom: 7px;
-  top: 7px;
+  background: #2f9b54;
   z-index: 2;
 }
 

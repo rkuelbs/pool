@@ -704,9 +704,18 @@ def test_live_dashboard_preserves_control_hooks_and_product_sections() -> None:
     assert ".live-dashboard > .today-card" in styles
     assert ".live-dashboard > .kpi-grid" in styles
     assert ".timeline-segment.vacuum" in styles
-    assert ".timeline-segment.dosing" in styles
-    assert "bottom: 7px;" in styles
-    assert "top: 7px;" in styles
+    segment_rule = re.search(r"\.timeline-segment \{([^}]*)\}", styles)
+    low_rule = re.search(r"\.timeline-segment\.pump-low \{([^}]*)\}", styles)
+    dosing_rule = re.search(r"\.timeline-segment\.dosing \{([^}]*)\}", styles)
+    assert segment_rule is not None
+    assert low_rule is not None
+    assert dosing_rule is not None
+    assert "bottom: 4px;" in segment_rule.group(1)
+    assert "top: 4px;" in segment_rule.group(1)
+    assert "background: #2f8fc0;" in low_rule.group(1)
+    assert "background: #2f9b54;" in dosing_rule.group(1)
+    assert "bottom:" not in dosing_rule.group(1)
+    assert "top:" not in dosing_rule.group(1)
 
 
 def test_web_pages_use_poolscope_branding_and_live_logo() -> None:

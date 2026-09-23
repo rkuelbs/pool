@@ -473,10 +473,10 @@ timeline uses `schedule.today` from the live payload, including already-resolved
 windows and sunrise/sunset, rather than reimplementing schedule or astronomy
 calculations in JavaScript. The payload also includes the controller-resolved
 valid dosing intervals after the configured no-dose lead-in and final
-circulation periods. The timeline displays those intervals as inset green bars
-over the full light-blue low-speed windows, leaving the non-dosing circulation
-visible at each end. Booster/vacuum windows are purple, and high-speed
-circulation is dark blue.
+circulation periods. The timeline displays those intervals as full-height green
+bars over the blue low-speed windows, with their narrower horizontal span
+leaving the non-dosing circulation visible at each end. Booster/vacuum windows
+are purple, and high-speed circulation is dark blue.
 
 ## History and Rollups
 
