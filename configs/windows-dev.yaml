@@ -109,7 +109,7 @@ logging:
 notifications:
   enabled: false
   provider: pushover
-  default_title: poolctl
+  default_title: PoolScope
   pushover:
     app_token_env: PUSHOVER_APP_TOKEN
     user_key_env: PUSHOVER_USER_KEY

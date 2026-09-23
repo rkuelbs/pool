@@ -4570,8 +4570,8 @@ async function sendTestNotification() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        title: document.getElementById("notificationsDefaultTitle").value || "poolctl",
-        message: "poolctl test notification",
+        title: document.getElementById("notificationsDefaultTitle").value || "PoolScope",
+        message: "PoolScope test notification",
       }),
     });
     const payload = await parseApiResponse(response, "test notification failed");
@@ -4594,7 +4594,7 @@ function renderNotificationsConfig(payload) {
   const alerts = payload.alerts || {};
   document.getElementById("notificationsEnabled").checked = payload.enabled === true;
   document.getElementById("notificationsProvider").value = payload.provider || "pushover";
-  document.getElementById("notificationsDefaultTitle").value = payload.default_title || "poolctl";
+  document.getElementById("notificationsDefaultTitle").value = payload.default_title || "PoolScope";
   document.getElementById("pushoverAppToken").value = pushover.app_token || "";
   document.getElementById("pushoverUserKey").value = pushover.user_key || "";
   document.getElementById("pushoverAppTokenEnv").value = pushover.app_token_env || "PUSHOVER_APP_TOKEN";
@@ -4626,7 +4626,7 @@ function collectNotificationsConfig() {
   return {
     enabled: document.getElementById("notificationsEnabled").checked,
     provider: document.getElementById("notificationsProvider").value,
-    default_title: document.getElementById("notificationsDefaultTitle").value.trim() || "poolctl",
+    default_title: document.getElementById("notificationsDefaultTitle").value.trim() || "PoolScope",
     pushover,
     alerts: {
       chlorine_tank: collectSignalAlertConfig("notifyTank", { includeAbove: false }),

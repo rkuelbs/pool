@@ -360,6 +360,10 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             self._serve_file(STATIC_DIR / "styles.css", "text/css; charset=utf-8")
             return
 
+        if path == "/poolscope.png":
+            self._serve_file(STATIC_DIR / "poolscope.png", "image/png")
+            return
+
         if path == "/api/live":
             self._serve_live_snapshot()
             return
@@ -2884,7 +2888,7 @@ def send_test_notification(
     payload: dict[str, Any],
 ) -> dict[str, Any]:
     title = payload.get("title", app.notifications_config.default_title)
-    message = payload.get("message", "poolctl test notification")
+    message = payload.get("message", "PoolScope test notification")
     priority = payload.get("priority")
     if not isinstance(title, str) or not title.strip():
         raise ValueError("title must be a non-empty string")

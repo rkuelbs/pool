@@ -24,6 +24,7 @@ def test_notifications_config_defaults_to_disabled_pushover() -> None:
 
     assert config.enabled is False
     assert config.provider.value == "pushover"
+    assert config.default_title == "PoolScope"
     assert config.pushover.app_token_env == "PUSHOVER_APP_TOKEN"
     assert config.pushover.user_key_env == "PUSHOVER_USER_KEY"
     assert config.alerts.chlorine_tank.caution_below == 7.0

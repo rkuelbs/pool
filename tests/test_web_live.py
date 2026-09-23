@@ -658,6 +658,35 @@ def test_live_dashboard_preserves_control_hooks_and_product_sections() -> None:
     assert ".timeline-segment.vacuum" in styles
 
 
+def test_web_pages_use_poolscope_branding_and_live_logo() -> None:
+    static_dir = Path(__file__).parents[1] / "src" / "poolctl" / "web" / "static"
+    page_titles = {
+        "live.html": "PoolScope Live",
+        "history.html": "PoolScope History",
+        "schedule.html": "PoolScope Schedule",
+        "config.html": "PoolScope Config",
+    }
+
+    for page_name, title in page_titles.items():
+        markup = (static_dir / page_name).read_text(encoding="utf-8")
+        assert f"<title>{title}</title>" in markup
+        assert "<h1>PoolScope</h1>" in markup
+        assert "<h1>poolctl</h1>" not in markup
+        assert '<link rel="icon" type="image/png" href="/poolscope.png">' in markup
+        assert '<link rel="apple-touch-icon" href="/poolscope.png">' in markup
+
+    live_markup = (static_dir / "live.html").read_text(encoding="utf-8")
+    styles = (static_dir / "styles.css").read_text(encoding="utf-8")
+    script = (static_dir / "app.js").read_text(encoding="utf-8")
+    logo = static_dir / "poolscope.png"
+
+    assert '<img class="brand-mark" src="/poolscope.png" alt="">' in live_markup
+    assert ".brand-mark::before" not in styles
+    assert logo.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+    assert 'message: "PoolScope test notification"' in script
+    assert 'payload.default_title || "PoolScope"' in script
+
+
 def test_schedule_editor_uses_operating_modes_and_preserves_drafts() -> None:
     static_dir = Path(__file__).parents[1] / "src" / "poolctl" / "web" / "static"
     script = (static_dir / "app.js").read_text(encoding="utf-8")

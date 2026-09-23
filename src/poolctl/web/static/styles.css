@@ -962,40 +962,12 @@ body[data-page="live"] .live-product-header {
 }
 
 .brand-mark {
-  background: linear-gradient(150deg, #0e8293, #21b8be);
   border-radius: 15px;
   box-shadow: 0 10px 24px rgba(7, 139, 155, 0.2);
-  display: grid;
+  display: block;
   height: 48px;
-  overflow: hidden;
-  place-items: center;
-  position: relative;
+  object-fit: cover;
   width: 48px;
-}
-
-.brand-mark::before,
-.brand-mark::after,
-.brand-mark span {
-  border: 2px solid rgba(255, 255, 255, 0.92);
-  border-left-color: transparent;
-  border-radius: 50%;
-  content: "";
-  height: 18px;
-  position: absolute;
-  transform: rotate(-12deg);
-  width: 35px;
-}
-
-.brand-mark::before {
-  top: 9px;
-}
-
-.brand-mark span {
-  top: 16px;
-}
-
-.brand-mark::after {
-  top: 23px;
 }
 
 .eyebrow {

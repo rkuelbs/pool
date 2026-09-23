@@ -425,6 +425,9 @@ notification service can repeat a throttled Pushover warning for this condition.
 
 ## Dashboard Pages
 
+The web dashboard is branded **PoolScope**. Internal Python packages, console
+commands, configuration keys, and systemd services retain the `poolctl` name.
+
 - Live: responsive consumer-style operating dashboard with controller/safety,
   active-profile, and pump-mode status in the header; the controller-resolved
   Schedule timeline above six primary KPI cards for water temperature, pH, ORP,
@@ -1022,7 +1025,7 @@ but the Config page can save direct keys to the active writable config:
 notifications:
   enabled: true
   provider: pushover
-  default_title: poolctl
+  default_title: PoolScope
   pushover:
     app_token: null
     user_key: null

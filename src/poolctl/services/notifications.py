@@ -281,7 +281,7 @@ class NotificationAlertConfig:
 class NotificationsConfig:
     enabled: bool = False
     provider: NotificationProvider = NotificationProvider.PUSHOVER
-    default_title: str = "poolctl"
+    default_title: str = "PoolScope"
     pushover: PushoverConfig = field(default_factory=PushoverConfig)
     alerts: NotificationAlertConfig = field(default_factory=NotificationAlertConfig)
 

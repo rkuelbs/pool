@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import yaml  # type: ignore[import-untyped]
@@ -17,6 +18,7 @@ from poolctl.app import build_app_from_mapping
 from poolctl.config_files import load_config_with_overrides
 from poolctl.services.clock import SimulatedClock
 from poolctl.web.server import (
+    PoolCtlWebHandler,
     add_chemical_addition,
     add_chlorine_tank_refill,
     add_lab_test,
@@ -864,16 +866,43 @@ def test_notifications_update_round_trips_direct_credentials_and_allows_clearing
     assert "user_key" not in saved["notifications"]["pushover"]
 
 
-def test_send_test_notification_reports_disabled_when_not_enabled() -> None:
+def test_send_test_notification_uses_poolscope_defaults_when_not_enabled() -> None:
     app = build_app_from_mapping(config_mapping(), clock=make_clock())
+    send_notification = type(app).send_notification
 
-    result = send_test_notification(
-        app=app,
-        payload={"title": "poolctl", "message": "test"},
+    with patch.object(
+        type(app),
+        "send_notification",
+        autospec=True,
+        side_effect=send_notification,
+    ) as send_mock:
+        result = send_test_notification(app=app, payload={})
+
+    send_mock.assert_called_once_with(
+        app,
+        title="PoolScope",
+        message="PoolScope test notification",
+        priority=None,
     )
-
     assert result["notification"]["sent"] is False
     assert result["notification"]["error"] == "notifications disabled"
+
+
+def test_web_handler_serves_poolscope_logo(monkeypatch: pytest.MonkeyPatch) -> None:
+    handler = object.__new__(PoolCtlWebHandler)
+    handler.path = "/poolscope.png"
+    served: list[tuple[Path, str]] = []
+    monkeypatch.setattr(
+        handler,
+        "_serve_file",
+        lambda path, content_type: served.append((path, content_type)),
+    )
+
+    handler.do_GET()
+
+    assert len(served) == 1
+    assert served[0][0].name == "poolscope.png"
+    assert served[0][1] == "image/png"
 
 
 def test_timer_override_update_sets_and_clears_runtime_override() -> None:
