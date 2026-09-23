@@ -1880,6 +1880,9 @@ body[data-page="live"] .page-nav a:focus-visible {
 
 .timeline-segment.dosing {
   background: #3c9b67;
+  bottom: 7px;
+  top: 7px;
+  z-index: 2;
 }
 
 .timeline-segment.vacuum {

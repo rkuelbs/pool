@@ -2271,6 +2271,10 @@ function renderTodaySchedule(schedule, observedAt) {
     const state = resolvedScheduleDisplayState(window);
     appendScheduleSegment(scheduleTrack, window, state.className, state.label, today.local_date);
   });
+  const dosingWindows = Array.isArray(today.dosing_windows) ? today.dosing_windows : [];
+  dosingWindows.forEach((window) => {
+    appendScheduleSegment(scheduleTrack, window, "dosing", "Dosing", today.local_date);
+  });
 
   const clock = zonedClockParts(observedAt, today.timezone);
   if (clock && clock.localDate === today.local_date) {
@@ -2297,9 +2301,6 @@ function renderTodaySchedule(schedule, observedAt) {
 function resolvedScheduleDisplayState(window) {
   if (window.booster === "on") {
     return { className: "vacuum", label: "Vacuum" };
-  }
-  if (window.allow_dosing) {
-    return { className: "dosing", label: "Dosing" };
   }
   if (window.pump_speed === "high") {
     return { className: "pump-high", label: "High" };
@@ -2332,7 +2333,8 @@ function appendScheduleSegment(track, window, className, stateLabel, localDate) 
   segment.className = `timeline-segment ${className}`;
   segment.style.left = `${(clampedStart / 1440) * 100}%`;
   segment.style.width = `${((clampedEnd - clampedStart) / 1440) * 100}%`;
-  segment.title = `${stateLabel} · ${window.name}: ${formatWallClock(window.start)}–${formatWallClock(window.end)}`;
+  const name = window.name ? `${window.name}: ` : "";
+  segment.title = `${stateLabel} · ${name}${formatWallClock(window.start)}–${formatWallClock(window.end)}`;
   track.appendChild(segment);
 }
 

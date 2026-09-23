@@ -166,6 +166,53 @@ async def test_build_live_snapshot_includes_runtime_sensors_and_actuators() -> N
 
 
 @pytest.mark.asyncio
+async def test_live_schedule_includes_trimmed_dosing_windows() -> None:
+    config = control_config()
+    config["site"] = {"timezone": "UTC"}
+    config["pump_timer"] = {
+        "active_profile": "normal",
+        "profiles": [
+            {
+                "name": "normal",
+                "schedules": [
+                    {
+                        "name": "daytime_dosing",
+                        "timing": {
+                            "type": "fixed",
+                            "start": "08:00",
+                            "end": "12:00",
+                        },
+                        "pump_speed": "low",
+                        "booster": "off",
+                        "allow_dosing": True,
+                    }
+                ],
+            }
+        ],
+    }
+    config["chlorination"] = {
+        "no_dose_first_minutes": 10.0,
+        "no_dose_last_minutes": 10.0,
+    }
+    app = build_app_from_mapping(config, clock=make_clock())
+
+    snapshot = await build_live_snapshot(app)
+
+    assert snapshot["schedule"]["today"]["windows"][0]["start"] == (
+        "2026-05-21T08:00:00+00:00"
+    )
+    assert snapshot["schedule"]["today"]["windows"][0]["end"] == (
+        "2026-05-21T12:00:00+00:00"
+    )
+    assert snapshot["schedule"]["today"]["dosing_windows"] == [
+        {
+            "start": "2026-05-21T08:10:00+00:00",
+            "end": "2026-05-21T11:50:00+00:00",
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_build_live_snapshot_reuses_latest_measurements_when_group_not_due() -> None:
     app = build_app_from_mapping(live_config(), clock=make_clock())
 
@@ -651,11 +698,15 @@ def test_live_dashboard_preserves_control_hooks_and_product_sections() -> None:
     assert "integratedFlowGallons(points, historyWindow)" in script
     assert "cumulativeCounterIncrease(chlorineDeliveryPoints)" in script
     assert 'chart.getBoundingClientRect()' in script
-    assert 'return { className: "dosing", label: "Dosing" };' in script
+    assert "const dosingWindows = Array.isArray(today.dosing_windows)" in script
+    assert 'appendScheduleSegment(scheduleTrack, window, "dosing", "Dosing"' in script
     assert 'return { className: "vacuum", label: "Vacuum" };' in script
     assert ".live-dashboard > .today-card" in styles
     assert ".live-dashboard > .kpi-grid" in styles
     assert ".timeline-segment.vacuum" in styles
+    assert ".timeline-segment.dosing" in styles
+    assert "bottom: 7px;" in styles
+    assert "top: 7px;" in styles
 
 
 def test_web_pages_use_poolscope_branding_and_live_logo() -> None:

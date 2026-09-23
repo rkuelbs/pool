@@ -471,9 +471,12 @@ strips, and configured pH/ORP alert ranges from
 `GET /api/config/notifications` provide subtle chart bands. The Schedule
 timeline uses `schedule.today` from the live payload, including already-resolved
 windows and sunrise/sunset, rather than reimplementing schedule or astronomy
-calculations in JavaScript. It displays dosing-eligible windows as a distinct
-green state, booster/vacuum windows in purple, and low/high circulation in light
-and dark blue respectively.
+calculations in JavaScript. The payload also includes the controller-resolved
+valid dosing intervals after the configured no-dose lead-in and final
+circulation periods. The timeline displays those intervals as inset green bars
+over the full light-blue low-speed windows, leaving the non-dosing circulation
+visible at each end. Booster/vacuum windows are purple, and high-speed
+circulation is dark blue.
 
 ## History and Rollups
 

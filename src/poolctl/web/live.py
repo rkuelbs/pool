@@ -22,6 +22,7 @@ from poolctl.app import (
 )
 from poolctl.config import LiveViewConfig
 from poolctl.domain.models import ActuatorId, ChemicalType, Measurement, Quality, SensorId
+from poolctl.services.chlorination import valid_dosing_windows_for_day
 
 
 SENSOR_LABELS = {
@@ -205,6 +206,24 @@ async def build_live_snapshot(app: PoolControllerApp) -> dict[str, Any]:
             ZoneInfo(app.pump_timer_config.timezone)
         )
         resolution = app.pump_timer.service.day(local_now.date())
+        today_payload = resolution.as_payload()
+        today_payload["dosing_windows"] = [
+            {
+                "start": window.start.isoformat(),
+                "end": window.end.isoformat(),
+            }
+            for window in valid_dosing_windows_for_day(
+                app.pump_timer_config,
+                local_now.date(),
+                no_dose_first_minutes=(
+                    app.chlorination_config.no_dose_first_minutes
+                ),
+                no_dose_last_minutes=(
+                    app.chlorination_config.no_dose_last_minutes
+                ),
+                schedule_service=app.pump_timer.service,
+            )
+        ]
         schedule_payload = {
             "active_profile": app.pump_timer_config.active_profile,
             "active_windows": [
@@ -216,7 +235,7 @@ async def build_live_snapshot(app: PoolControllerApp) -> dict[str, Any]:
                 if (transition := app.next_pump_timer_transition()) is not None
                 else None
             ),
-            "today": resolution.as_payload(),
+            "today": today_payload,
         }
     return {
         "observed_at": tick.observed_at.isoformat(),
