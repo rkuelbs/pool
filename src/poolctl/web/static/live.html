@@ -7,23 +7,36 @@
     <link rel="stylesheet" href="/styles.css">
   </head>
   <body data-page="live">
-    <main class="shell">
-      <header class="topbar">
-        <div>
-          <h1>poolctl</h1>
-          <p id="runtimeLine">Live view</p>
-        </div>
-        <div class="status-strip">
-          <div class="badge-row">
-            <span id="safetyBadge" class="badge">Starting</span>
-            <span id="chlorineSupplyBadge" class="badge unknown">Usable chlorine remaining -- gallons, -- days</span>
-            <span id="cpuTempBadge" class="badge hidden">CPU Temp: --</span>
+    <main class="shell live-shell">
+      <header class="topbar live-product-header">
+        <div class="brand-lockup">
+          <span class="brand-mark" aria-hidden="true">
+            <span></span>
+          </span>
+          <div>
+            <span class="eyebrow">Pool automation</span>
+            <h1>poolctl</h1>
+            <p id="runtimeLine">Connecting to controller</p>
           </div>
-          <span id="cpuLoadLine" class="timestamp hidden">CPU Load: --</span>
-          <span id="cpuFanLine" class="timestamp hidden">CPU Fan: --</span>
-          <span id="loopTimingLine" class="timestamp">Loop: --</span>
-          <span id="updatedAt" class="timestamp">--</span>
-          <span id="healthLine" class="timestamp">--</span>
+        </div>
+        <div class="header-status" aria-label="Controller summary">
+          <div class="header-status-pills">
+            <span id="controllerBadge" class="status-pill is-offline">
+              <span class="status-dot" aria-hidden="true"></span>
+              <span id="controllerStatusText">Controller offline</span>
+            </span>
+            <span id="safetyBadge" class="status-pill is-neutral">Safety starting</span>
+          </div>
+          <dl class="header-facts">
+            <div>
+              <dt>Schedule</dt>
+              <dd id="headerProfile">--</dd>
+            </div>
+            <div>
+              <dt>Pump</dt>
+              <dd id="headerPumpMode">--</dd>
+            </div>
+          </dl>
         </div>
       </header>
       <nav class="page-nav" aria-label="Dashboard pages">
@@ -33,80 +46,264 @@
         <a href="/config" data-nav-page="config">Config</a>
       </nav>
 
-      <section class="layout live-layout" data-view-section="live">
-        <section class="live-card-panel" id="liveCardPanel" aria-label="Live overview">
-          <div class="live-card" id="liveControlsCard">
-            <h3>Quick Controls</h3>
-            <div class="quick-control-grid">
-              <button type="button" data-command="pump_motor:on">Pump On</button>
-              <button type="button" data-command="pump_motor:off">Pump Off</button>
-              <button type="button" data-command="pump_motor_speed:low">Low</button>
-              <button type="button" data-command="pump_motor_speed:high">High</button>
-              <button type="button" data-command="booster_pump:on">Booster On</button>
-              <button type="button" data-command="booster_pump:off">Booster Off</button>
+      <section class="live-dashboard" data-view-section="live">
+        <section class="live-card-panel kpi-grid" id="liveCardPanel" aria-label="Current pool condition">
+          <article class="kpi-card" id="liveChemCard">
+            <div class="kpi-heading">
+              <h2>Water temperature</h2>
+              <span class="kpi-icon" aria-hidden="true">°</span>
             </div>
-            <div class="quick-timer-actions">
-              <button id="liveOverridePumpOnHour" type="button">Pump ON 1h</button>
-              <button id="liveOverridePumpOffManual" type="button">Pump OFF</button>
-              <button id="liveOverrideResumeSchedule" type="button">Resume</button>
+            <div class="kpi-reading"><strong id="liveTempValue">--</strong><span id="liveTempUnit">°F</span></div>
+            <p id="liveTempLine" class="kpi-status">Waiting for a reading</p>
+            <svg id="liveSparkWaterTemp" class="kpi-sparkline" viewBox="0 0 180 44" aria-label="Water temperature, last 24 hours"></svg>
+            <p id="liveTempTrend" class="kpi-trend">24h trend unavailable</p>
+          </article>
+
+          <article class="kpi-card" id="livePhCard">
+            <div class="kpi-heading">
+              <h2>pH</h2>
+              <span class="kpi-icon" aria-hidden="true">pH</span>
             </div>
-            <div class="schedule-profile-control">
-              <label for="liveScheduleProfile">Active schedule</label>
-              <select id="liveScheduleProfile" aria-label="Active schedule profile" disabled></select>
-              <button id="liveScheduleProfileActivate" type="button" disabled>Activate</button>
+            <div class="kpi-reading"><strong id="livePhValue">--</strong><span id="livePhUnit">pH</span></div>
+            <p id="livePhLine" class="kpi-status">Waiting for a reading</p>
+            <svg id="liveSparkPh" class="kpi-sparkline" viewBox="0 0 180 44" aria-label="pH, last 24 hours"></svg>
+            <p id="livePhTrend" class="kpi-trend">24h trend unavailable</p>
+          </article>
+
+          <article class="kpi-card" id="liveOrpCard">
+            <div class="kpi-heading">
+              <h2>ORP</h2>
+              <span class="kpi-icon" aria-hidden="true">mV</span>
             </div>
-            <div id="liveTimerOverrideStatus" class="history-status">Schedule mode</div>
-            <div id="liveScheduleStatus" class="history-status">Schedule: --</div>
-            <div id="liveFreezeStatus" class="history-status">Freeze protection: --</div>
-            <div class="dose-control">
+            <div class="kpi-reading"><strong id="liveOrpValue">--</strong><span id="liveOrpUnit">mV</span></div>
+            <p id="liveOrpLine" class="kpi-status">Waiting for a reading</p>
+            <svg id="liveSparkOrp" class="kpi-sparkline" viewBox="0 0 180 44" aria-label="ORP, last 24 hours"></svg>
+            <p id="liveOrpTrend" class="kpi-trend">24h trend unavailable</p>
+          </article>
+
+          <article class="kpi-card" id="livePumpCard">
+            <div class="kpi-heading">
+              <h2>Flow</h2>
+              <span class="kpi-icon" aria-hidden="true">GPM</span>
+            </div>
+            <div class="kpi-reading"><strong id="livePumpFlow">--</strong><span id="liveFlowUnit">gpm</span></div>
+            <p id="livePumpState" class="kpi-status">Pump state unavailable</p>
+            <svg id="liveSparkFlow" class="kpi-sparkline" viewBox="0 0 180 44" aria-label="Estimated flow, last 24 hours"></svg>
+            <p id="liveFlowTrend" class="kpi-trend">24h trend unavailable</p>
+          </article>
+
+          <article class="kpi-card" id="liveFilterCard">
+            <div class="kpi-heading">
+              <h2>Filter loss</h2>
+              <span class="kpi-icon" aria-hidden="true">%</span>
+            </div>
+            <div class="kpi-reading"><strong id="liveFilterFlowLoss">--</strong><span id="liveFilterUnit">%</span></div>
+            <p id="liveFilterStatus" class="kpi-status">Awaiting a standardized test</p>
+            <svg id="liveSparkFilter" class="kpi-sparkline" viewBox="0 0 180 44" aria-label="Filter flow loss, last 24 hours"></svg>
+            <p id="liveFilterTrend" class="kpi-trend">24h trend unavailable</p>
+          </article>
+
+          <article class="kpi-card" id="liveTankCard">
+            <div class="kpi-heading">
+              <h2>Chlorine supply</h2>
+              <span class="kpi-icon" aria-hidden="true">Cl</span>
+            </div>
+            <div class="kpi-reading"><strong id="liveTankDaysLine">--</strong><span id="liveTankUnit">days</span></div>
+            <p id="liveTankLevelLine" class="kpi-status">Tank estimate unavailable</p>
+            <svg id="liveSparkTank" class="kpi-sparkline" viewBox="0 0 180 44" aria-label="Chlorine tank inventory, last 24 hours"></svg>
+            <p id="liveTankTrend" class="kpi-trend">24h trend unavailable</p>
+          </article>
+        </section>
+
+        <div class="dashboard-main-grid">
+          <section class="dashboard-card trends-card" aria-labelledby="liveTrendsHeading">
+            <div class="section-heading">
               <div>
-                <strong id="liveChlorinationDoseDisplay">Dose: -- oz/day</strong>
-                <small id="liveChlorinationDutyStatus">Duty: --</small>
+                <span class="eyebrow">Last 24 hours</span>
+                <h2 id="liveTrendsHeading">Pool trends</h2>
               </div>
-              <div class="dose-entry">
-                <input id="liveChlorinationDoseInput" type="number" step="0.1" min="0" placeholder="oz/day">
-                <button id="liveChlorinationDoseSave" type="button">Set Dose</button>
+              <div class="trend-time-summary">
+                <span id="liveTrendsHoverTime">Shared time range</span>
+                <a href="/history">Open history</a>
               </div>
-              <div class="dose-entry">
-                <input id="liveSupplementalChlorineDoseInput" type="number" step="0.1" min="0" placeholder="extra oz">
-                <button id="liveSupplementalChlorineDoseStart" type="button">Add Chlorine</button>
-              </div>
-              <div class="timer-actions">
-                <button id="liveSupplementalChlorineDoseStop" type="button">Stop Extra Dose</button>
-              </div>
-              <div id="liveChlorinationStatus" class="history-status">Chlorination: --</div>
-              <div id="liveFcDemandStatus" class="history-status">FC demand: --</div>
             </div>
-            <div id="liveCommandStatus" class="command-status">--</div>
+            <div id="liveTrendCharts" class="trend-strips">
+              <div class="trend-strip" data-live-trend="water_temp">
+                <div class="trend-strip-label"><span>Water temperature</span><strong id="liveTrendWaterValue">--</strong></div>
+                <svg id="liveTrendWater" viewBox="0 0 720 92" role="img" aria-label="Water temperature trend"></svg>
+              </div>
+              <div class="trend-strip" data-live-trend="raw_ph">
+                <div class="trend-strip-label"><span>pH</span><strong id="liveTrendPhValue">--</strong></div>
+                <svg id="liveTrendPh" viewBox="0 0 720 92" role="img" aria-label="pH trend"></svg>
+              </div>
+              <div class="trend-strip" data-live-trend="raw_orp">
+                <div class="trend-strip-label"><span>ORP</span><strong id="liveTrendOrpValue">--</strong></div>
+                <svg id="liveTrendOrp" viewBox="0 0 720 92" role="img" aria-label="ORP trend"></svg>
+              </div>
+              <div class="trend-strip" data-live-trend="pump_flow_gpm">
+                <div class="trend-strip-label"><span>Estimated flow</span><strong id="liveTrendFlowValue">--</strong></div>
+                <svg id="liveTrendFlow" viewBox="0 0 720 92" role="img" aria-label="Estimated flow trend"></svg>
+              </div>
+            </div>
+            <p id="liveTrendsStatus" class="section-note">Loading validated history…</p>
+          </section>
+
+          <aside class="dashboard-card quick-actions-card" id="liveControlsCard" aria-labelledby="quickActionsHeading">
+            <div class="section-heading compact">
+              <div>
+                <span class="eyebrow">Control</span>
+                <h2 id="quickActionsHeading">Quick actions</h2>
+              </div>
+              <span id="liveTimerModeBadge" class="mode-badge">Automatic</span>
+            </div>
+
+            <div class="control-section">
+              <div class="control-section-heading">
+                <h3>Main pump</h3>
+                <span>Manual commands yield to safety</span>
+              </div>
+              <div class="quick-control-grid pump-controls" role="group" aria-label="Main pump controls">
+                <button type="button" data-command="pump_motor:off">Pump Off</button>
+                <button type="button" data-command="pump_motor:on">Pump On</button>
+                <button type="button" data-command="pump_motor_speed:low">Pump Low</button>
+                <button type="button" data-command="pump_motor_speed:high">Pump High</button>
+              </div>
+              <div class="quick-timer-actions">
+                <button id="liveOverridePumpOnHour" type="button">Run high for 1 hour</button>
+                <button id="liveOverridePumpOffManual" type="button">Hold pump off</button>
+                <button id="liveOverrideResumeSchedule" class="button-primary" type="button">Resume schedule</button>
+              </div>
+              <p id="liveTimerOverrideStatus" class="control-status">Schedule mode</p>
+            </div>
+
+            <div class="control-section">
+              <div class="control-section-heading">
+                <h3>Booster</h3>
+                <span>Current state is highlighted</span>
+              </div>
+              <div class="quick-control-grid" role="group" aria-label="Booster controls">
+                <button type="button" data-command="booster_pump:off">Booster Off</button>
+                <button type="button" data-command="booster_pump:on">Booster On</button>
+              </div>
+            </div>
+
+            <div class="control-section">
+              <div class="control-section-heading">
+                <h3>Active schedule</h3>
+                <span>Applies on the next controller tick</span>
+              </div>
+              <div class="schedule-profile-control">
+                <label class="sr-only" for="liveScheduleProfile">Active schedule</label>
+                <select id="liveScheduleProfile" aria-label="Active schedule profile" disabled></select>
+                <button id="liveScheduleProfileActivate" type="button" disabled>Activate</button>
+              </div>
+            </div>
+
+            <div class="control-section dose-control">
+              <div class="control-section-heading">
+                <h3>Chlorination</h3>
+                <span id="liveChlorinationDoseDisplay">Dose: -- oz/day</span>
+              </div>
+              <small id="liveChlorinationDutyStatus">Duty: --</small>
+              <div class="dose-entry">
+                <label class="sr-only" for="liveChlorinationDoseInput">Daily dose in ounces</label>
+                <input id="liveChlorinationDoseInput" type="number" step="0.1" min="0" inputmode="decimal" placeholder="Daily oz">
+                <button id="liveChlorinationDoseSave" type="button">Set dose</button>
+              </div>
+              <div class="dose-entry supplemental-entry">
+                <label class="sr-only" for="liveSupplementalChlorineDoseInput">Supplemental dose in ounces</label>
+                <input id="liveSupplementalChlorineDoseInput" type="number" step="0.1" min="0" inputmode="decimal" placeholder="Extra oz">
+                <button id="liveSupplementalChlorineDoseStart" class="button-caution" type="button">Review extra dose</button>
+              </div>
+              <button id="liveSupplementalChlorineDoseStop" class="button-danger-secondary" type="button">Stop extra dose</button>
+            </div>
+
+            <p id="liveCommandStatus" class="command-status" role="status">Ready</p>
+
+            <dialog id="liveSupplementalConfirm" class="confirmation-dialog" aria-labelledby="supplementalConfirmTitle">
+              <form method="dialog">
+                <span class="dialog-icon" aria-hidden="true">Cl</span>
+                <h2 id="supplementalConfirmTitle">Confirm supplemental chlorine</h2>
+                <p id="liveSupplementalConfirmText">Review the amount before starting.</p>
+                <p class="dialog-safety-note">The controller will force low-speed circulation and will still enforce every dosing safety interlock.</p>
+                <div class="dialog-actions">
+                  <button value="cancel" type="submit">Cancel</button>
+                  <button id="liveSupplementalConfirmStart" class="button-caution" value="default" type="button">Start dose</button>
+                </div>
+              </form>
+            </dialog>
+          </aside>
+        </div>
+
+        <section class="dashboard-card today-card" aria-labelledby="todayHeading">
+          <div class="section-heading">
+            <div>
+              <span class="eyebrow">Resolved by the controller</span>
+              <h2 id="todayHeading">Today</h2>
+            </div>
+            <p id="liveScheduleStatus" class="schedule-next">Schedule: --</p>
           </div>
-          <div class="live-card" id="livePumpCard">
-            <h3>Pump</h3>
-            <p id="livePumpState">--</p>
-            <p id="livePumpPsi">--</p>
-            <p id="livePumpFlow">--</p>
+          <div class="schedule-legend" aria-label="Schedule timeline legend">
+            <span><i class="legend-swatch pump-low"></i>Low</span>
+            <span><i class="legend-swatch pump-high"></i>High</span>
+            <span><i class="legend-swatch dosing"></i>Dosing permitted</span>
+            <span><i class="legend-line now"></i>Now</span>
           </div>
-          <div class="live-card" id="liveFilterCard">
-            <h3>Filter</h3>
-            <p id="liveFilterStatus">--</p>
-            <p id="liveFilterFlowLoss">--</p>
-            <p id="liveFilterEstimatedFlow">--</p>
-            <p id="liveFilterCleanFlow">--</p>
-            <p id="liveFilterReferencePsi">--</p>
-            <p id="liveFilterLastTest">--</p>
+          <div id="todayTimeline" class="today-timeline" aria-label="Today's resolved pump and dosing schedule">
+            <div class="timeline-empty">Waiting for the resolved schedule…</div>
           </div>
-          <div class="live-card" id="liveChemCard">
-            <h3>Chemistry</h3>
-            <p id="liveTempLine">--</p>
-            <p id="livePhLine">--</p>
-            <p id="liveOrpLine">--</p>
-            <p id="liveCsiLine">--</p>
+          <div id="todaySolar" class="solar-summary">Sunrise and sunset unavailable</div>
+        </section>
+
+        <section class="dashboard-card attention-card" aria-labelledby="attentionHeading">
+          <div class="section-heading compact">
+            <div>
+              <span class="eyebrow">Exceptions first</span>
+              <h2 id="attentionHeading">Needs attention</h2>
+            </div>
+            <span id="attentionCount" class="attention-count">0</span>
           </div>
-          <div class="live-card" id="liveTankCard">
-            <h3>Chem Tank</h3>
-            <p id="liveTankLevelLine">--</p>
-            <p id="liveTankDaysLine">--</p>
+          <div id="attentionList" class="attention-list" role="status">
+            <div class="attention-empty">Checking controller status…</div>
           </div>
         </section>
+
+        <details class="dashboard-card engineering-panel">
+          <summary>
+            <span>
+              <span class="eyebrow">Secondary detail</span>
+              <strong>Engineering &amp; controller status</strong>
+            </span>
+            <span>Expand</span>
+          </summary>
+          <div class="engineering-grid">
+            <section>
+              <h3>Hydraulics</h3>
+              <p id="livePumpPsi">Pump output: --</p>
+              <p id="liveFilterEstimatedFlow">Estimated reference flow: --</p>
+              <p id="liveFilterCleanFlow">Clean reference flow: --</p>
+              <p id="liveFilterReferencePsi">Reference pressure: --</p>
+              <p id="liveFilterLastTest">Last filter test: --</p>
+            </section>
+            <section>
+              <h3>Chemistry control</h3>
+              <p id="liveCsiLine">CSI: --</p>
+              <p id="liveChlorinationStatus">Chlorination: --</p>
+              <p id="liveFcDemandStatus">FC demand: --</p>
+              <span id="chlorineSupplyBadge" class="badge unknown">Usable chlorine remaining -- gallons, -- days</span>
+            </section>
+            <section>
+              <h3>Safety &amp; runtime</h3>
+              <p id="liveFreezeStatus">Freeze protection: --</p>
+              <span id="cpuTempBadge" class="badge hidden">CPU Temp: --</span>
+              <p id="cpuLoadLine" class="timestamp hidden">CPU Load: --</p>
+              <p id="cpuFanLine" class="timestamp hidden">CPU Fan: --</p>
+              <p id="loopTimingLine" class="timestamp">Loop: --</p>
+              <p id="updatedAt" class="timestamp">Updated: --</p>
+              <p id="healthLine" class="timestamp">Health: --</p>
+            </section>
+          </div>
+        </details>
       </section>
 
       <section class="history-panel" aria-label="Measurement history" data-view-section="history">

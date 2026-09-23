@@ -7,6 +7,7 @@ values, colors, status flags, history data, and live controls.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -579,6 +580,38 @@ def test_measurement_status_uses_configured_display_bands() -> None:
         )
         == "invalid"
     )
+
+
+def test_live_dashboard_preserves_control_hooks_and_product_sections() -> None:
+    static_dir = Path(__file__).parents[1] / "src" / "poolctl" / "web" / "static"
+    markup = (static_dir / "live.html").read_text(encoding="utf-8")
+    script = (static_dir / "app.js").read_text(encoding="utf-8")
+    element_ids = re.findall(r'\bid="([^"]+)"', markup)
+
+    assert len(element_ids) == len(set(element_ids))
+    assert {
+        "controllerBadge",
+        "liveCardPanel",
+        "liveControlsCard",
+        "liveTrendCharts",
+        "todayTimeline",
+        "attentionList",
+        "liveScheduleProfile",
+        "liveOverrideResumeSchedule",
+        "liveSupplementalChlorineDoseStart",
+        "liveSupplementalConfirm",
+        "liveSupplementalConfirmStart",
+    }.issubset(element_ids)
+    assert markup.count('class="kpi-card"') == 6
+    assert 'data-command="pump_motor:on"' in markup
+    assert 'data-command="pump_motor:off"' in markup
+    assert 'data-command="pump_motor_speed:low"' in markup
+    assert 'data-command="pump_motor_speed:high"' in markup
+    assert 'data-command="booster_pump:on"' in markup
+    assert 'data-command="booster_pump:off"' in markup
+    assert "openSupplementalChlorineConfirmation(inputId)" in script
+    assert 'fetch("/api/live"' in script
+    assert "fetch(`/api/history?${params.toString()}`" in script
 
 
 def test_history_payload_can_filter_to_validated_measurements(tmp_path: Path) -> None:

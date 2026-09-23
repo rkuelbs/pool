@@ -408,12 +408,16 @@ notification service can repeat a throttled Pushover warning for this condition.
 
 ## Dashboard Pages
 
-- Live: responsive card view with current sensor/actuator state, active profile,
-  resolved schedule/next transition, quick pump
-  controls, pump-output pressure, filter loading, chlorination dose target,
-  supplemental chlorine dose action, FC-demand status, safety status, estimated
-  true chlorine tank level plus usable chlorine gallons/days remaining, CPU
-  temperature/load/fan status on Pi, and runtime loop timing.
+- Live: responsive consumer-style operating dashboard with controller/safety,
+  active-profile, and pump-mode status in the header; six primary KPI cards for
+  water temperature, pH, ORP, estimated flow, filter flow loss, and usable
+  chlorine inventory; aligned 24-hour trend strips; quick pump, booster,
+  profile, dose-target, and supplemental-dose controls; an exception-first
+  attention list; and a visual timeline built from the controller's resolved
+  schedule day. Supplemental chlorine requires a review/confirmation step before
+  the existing command is sent. Detailed hydraulics, chlorination/FC-demand,
+  CPU, health, and runtime-loop information remains available in the collapsed
+  engineering status section.
 - History: measurement/weather/test-result/chemical-addition charts with
   selectable series, hover readouts, automatic rollup resolution, past-window
   navigation, calendar/time jump, CSV export, water-test and chemical-addition
@@ -428,6 +432,16 @@ notification service can repeat a throttled Pushover warning for this condition.
 
 Some config changes apply live. Others write YAML and require restart because
 drivers or long-lived services must be rebuilt.
+
+The Live page continues to poll `GET /api/live` for current state and commands
+the existing timer, actuator, profile, chlorination-config, and supplemental-dose
+endpoints; the browser does not bypass controller safety routing. Its KPI
+sparklines and aligned strip charts refresh from the existing `GET /api/history`
+API using validated 24-hour data, with chemical-addition event markers when
+available. Configured pH/ORP alert ranges from `GET /api/config/notifications`
+provide subtle chart bands. The Today timeline uses `schedule.today` from the
+live payload, including already-resolved windows and sunrise/sunset, rather than
+reimplementing schedule or astronomy calculations in JavaScript.
 
 ## History and Rollups
 

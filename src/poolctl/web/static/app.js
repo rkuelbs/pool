@@ -208,6 +208,73 @@ const HISTORY_SERIES_COLORS = [
 const HISTORY_AXIS_SPAN_RATIO_THRESHOLD = 5.0;
 const HISTORY_AXIS_CENTER_SPREAD_FACTOR = 2.0;
 const HISTORY_AXIS_EPSILON = 1e-6;
+const LIVE_HISTORY_HOURS = 24;
+const LIVE_EVENT_SENSOR_IDS = ["chemical_sodium_hypochlorite", "chemical_muriatic_acid"];
+const LIVE_TREND_DEFINITIONS = [
+  {
+    sensorId: "water_temp",
+    svgId: "liveTrendWater",
+    valueId: "liveTrendWaterValue",
+    sparkId: "liveSparkWaterTemp",
+    trendId: "liveTempTrend",
+    decimals: 1,
+    deltaDecimals: 1,
+    unit: "°F",
+  },
+  {
+    sensorId: "raw_ph",
+    svgId: "liveTrendPh",
+    valueId: "liveTrendPhValue",
+    sparkId: "liveSparkPh",
+    trendId: "livePhTrend",
+    decimals: 2,
+    deltaDecimals: 2,
+    unit: "",
+  },
+  {
+    sensorId: "raw_orp",
+    svgId: "liveTrendOrp",
+    valueId: "liveTrendOrpValue",
+    sparkId: "liveSparkOrp",
+    trendId: "liveOrpTrend",
+    decimals: 0,
+    deltaDecimals: 0,
+    unit: " mV",
+  },
+  {
+    sensorId: "pump_flow_gpm",
+    svgId: "liveTrendFlow",
+    valueId: "liveTrendFlowValue",
+    sparkId: "liveSparkFlow",
+    trendId: "liveFlowTrend",
+    decimals: 1,
+    deltaDecimals: 1,
+    unit: " gpm",
+    includeZero: true,
+  },
+  {
+    sensorId: "filter_flow_loss_percent",
+    svgId: null,
+    valueId: null,
+    sparkId: "liveSparkFilter",
+    trendId: "liveFilterTrend",
+    decimals: 1,
+    deltaDecimals: 1,
+    unit: "%",
+    includeZero: true,
+  },
+  {
+    sensorId: "chlorine_tank_level_gal",
+    svgId: null,
+    valueId: null,
+    sparkId: "liveSparkTank",
+    trendId: "liveTankTrend",
+    decimals: 2,
+    deltaDecimals: 2,
+    unit: " gal",
+    includeZero: true,
+  },
+];
 
 let historyLoading = false;
 let lastHistoryLoadedAt = 0;
@@ -251,12 +318,21 @@ let pumpPrimeThresholds = {
   primeMinPsi: 1.0,
 };
 let loadedRuntimeConfig = null;
+let liveTrendLoading = false;
+let lastLiveTrendLoadedAt = 0;
+let liveTrendBandsLoaded = false;
+let liveTrendBands = {};
+let liveTrendChartState = [];
 
 async function loadLive() {
   const response = await fetch("/api/live", { cache: "no-store" });
   const payload = await parseApiResponse(response, "live API failed");
   latestLivePayload = payload;
+  setControllerConnectionState(true);
   render(payload);
+  if (PAGE_MODE === "live") {
+    void refreshLiveTrends(false);
+  }
 }
 
 async function sendCommand(actuatorId, state) {
@@ -538,18 +614,53 @@ async function stopChlorinationDiagnostic() {
   }
 }
 
-async function startSupplementalChlorineDose(inputId) {
-  if (supplementalChlorineDoseBusy) {
-    return;
-  }
+function supplementalChlorineDoseAmount(inputId) {
   const input = document.getElementById(inputId);
   if (!input) {
-    return;
+    return null;
   }
   const doseOz = Number(input.value);
   if (!Number.isFinite(doseOz) || doseOz <= 0) {
     setChlorinationQuickStatus("Extra dose must be greater than 0 oz");
+    input.focus();
+    return null;
+  }
+  return doseOz;
+}
+
+function openSupplementalChlorineConfirmation(inputId) {
+  if (supplementalChlorineDoseBusy) {
     return;
+  }
+  const doseOz = supplementalChlorineDoseAmount(inputId);
+  const dialog = document.getElementById("liveSupplementalConfirm");
+  if (doseOz === null || !dialog) {
+    return;
+  }
+  setNodeText(
+    "liveSupplementalConfirmText",
+    `Start a one-time ${doseOz.toFixed(1)} oz supplemental chlorine dose?`,
+  );
+  dialog.dataset.doseInputId = inputId;
+  if (typeof dialog.showModal === "function") {
+    dialog.showModal();
+  } else {
+    dialog.setAttribute("open", "");
+  }
+}
+
+async function startSupplementalChlorineDose(inputId) {
+  if (supplementalChlorineDoseBusy) {
+    return;
+  }
+  const doseOz = supplementalChlorineDoseAmount(inputId);
+  if (doseOz === null) {
+    return;
+  }
+
+  const dialog = document.getElementById("liveSupplementalConfirm");
+  if (dialog && dialog.open) {
+    dialog.close();
   }
 
   supplementalChlorineDoseBusy = true;
@@ -720,9 +831,9 @@ function renderScheduleStatus(schedule) {
   const active = (schedule.active_windows || []).map((window) => window.name);
   const activeText = active.length ? active.join(", ") : "idle";
   const nextText = schedule.next_transition
-    ? new Date(schedule.next_transition).toLocaleString()
+    ? new Date(schedule.next_transition).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
     : "none";
-  target.textContent = `Schedule: ${schedule.active_profile} · ${activeText} · next ${nextText}`;
+  target.textContent = `${activeText} · next transition ${nextText}`;
   if (
     activeScheduleProfile !== null
     && schedule.active_profile !== activeScheduleProfile
@@ -754,12 +865,22 @@ function render(payload) {
     return;
   }
   renderLiveCards(payload.sensors || {}, payload.actuators || {}, payload.flows || {}, payload.chlorine_supply);
+  renderControlButtonStates(payload.actuators || {});
+  renderTodaySchedule(payload.schedule, payload.observed_at);
+  renderAttention(payload);
 }
 
 function renderTopStatus(payload) {
-  document.getElementById("runtimeLine").textContent =
-    payload.runtime ? payload.runtime.driver_profile : "--";
-  document.getElementById("updatedAt").textContent = new Date(payload.observed_at).toLocaleString();
+  const runtimeLine = document.getElementById("runtimeLine");
+  if (runtimeLine) {
+    const profile = payload.runtime ? String(payload.runtime.driver_profile || "controller") : "controller";
+    runtimeLine.textContent = `${profile.replaceAll("_", " ")} controller`;
+  }
+  const updatedAt = document.getElementById("updatedAt");
+  if (updatedAt) {
+    updatedAt.textContent = `Updated: ${new Date(payload.observed_at).toLocaleString()}`;
+  }
+  renderHeaderFacts(payload);
   const restartButton = document.getElementById("configRestartService");
   if (restartButton) {
     const isPi = payload.runtime && payload.runtime.driver_profile === "raspberry_pi";
@@ -798,6 +919,9 @@ async function refreshTopStatus(force) {
     renderScheduleStatus(payload.schedule);
     lastTopStatusLoadedAt = now;
   } catch (error) {
+    if (PAGE_MODE === "live") {
+      setControllerConnectionState(false);
+    }
     const badge = document.getElementById("safetyBadge");
     if (badge) {
       badge.classList.remove("ok");
@@ -811,7 +935,10 @@ async function refreshTopStatus(force) {
 
 function renderSafetyBadge(safety) {
   const badge = document.getElementById("safetyBadge");
-  badge.classList.remove("ok", "fault");
+  if (!badge) {
+    return;
+  }
+  badge.classList.remove("ok", "fault", "is-neutral");
 
   if (safety.locked_out) {
     badge.classList.add("fault");
@@ -825,6 +952,32 @@ function renderSafetyBadge(safety) {
     return;
   }
   badge.textContent = "Safety OK";
+}
+
+function setControllerConnectionState(online) {
+  const badge = document.getElementById("controllerBadge");
+  if (!badge) {
+    return;
+  }
+  badge.classList.toggle("is-online", online);
+  badge.classList.toggle("is-offline", !online);
+  setNodeText("controllerStatusText", online ? "Controller online" : "Controller offline");
+}
+
+function renderHeaderFacts(payload) {
+  const schedule = payload.schedule || {};
+  setNodeText("headerProfile", schedule.active_profile || "No profile");
+
+  const actuators = payload.actuators || {};
+  const pump = actuatorState(actuators, "pump_motor", "off");
+  const speed = pumpSpeedState(actuators);
+  const booster = actuatorState(actuators, "booster_pump", "off");
+  let mode = pump === "on" ? speed.toUpperCase() : "OFF";
+  if (pump === "on" && booster === "on") {
+    mode += " + booster";
+  }
+  mode += payload.timer_override && payload.timer_override.active ? " · manual" : " · auto";
+  setNodeText("headerPumpMode", mode);
 }
 
 function renderChlorineSupplyBadge(chlorineSupply) {
@@ -976,6 +1129,7 @@ function formatDurationShort(seconds) {
 
 function renderTimerOverride(override) {
   const statusNodes = [document.getElementById("liveTimerOverrideStatus")].filter(Boolean);
+  const modeBadge = document.getElementById("liveTimerModeBadge");
   if (!statusNodes.length) {
     return;
   }
@@ -988,10 +1142,18 @@ function renderTimerOverride(override) {
 
   if (!override || !override.active) {
     applyText("Schedule mode");
+    if (modeBadge) {
+      modeBadge.textContent = "Automatic";
+      modeBadge.classList.remove("is-manual");
+    }
     return;
   }
 
   const until = override.until ? new Date(override.until).toLocaleString() : "manual clear";
+  if (modeBadge) {
+    modeBadge.textContent = "Manual override";
+    modeBadge.classList.add("is-manual");
+  }
   applyText(
     `Override ${override.pump_motor.toUpperCase()} ` +
     `(${override.pump_speed.toUpperCase()}, booster ${override.booster.toUpperCase()}) ` +
@@ -1285,13 +1447,19 @@ function renderLivePumpCard(sensors, actuators, flows) {
     stateText = "ON";
   }
 
+  const flow = flows.pump_flow_gpm || {};
   setLiveCardStatus("livePumpCard", cardStatus);
-  setNodeText("livePumpState", `State: ${stateText}`);
+  setNumericReading("livePumpFlow", flow.value, 1);
+  setNodeText("liveFlowUnit", flow.unit || "gpm");
+  setNodeText(
+    "livePumpState",
+    `${stateText} · output ${sensorDisplay(sensors, "pump_output_psi")}`,
+  );
+  setNodeText("liveTrendFlowValue", flow.display || "--");
   setNodeText(
     "livePumpPsi",
-    `Output: ${sensorDisplay(sensors, "pump_output_psi")} | Head: ${flowDisplay(flows, "pump_dynamic_head_psi")}`,
+    `Pump output: ${sensorDisplay(sensors, "pump_output_psi")} | Dynamic head: ${flowDisplay(flows, "pump_dynamic_head_psi")}`,
   );
-  setNodeText("livePumpFlow", `Flow: ${flowDisplay(flows, "pump_flow_gpm")}`);
 }
 
 function renderLiveFilterCard(sensors, flows) {
@@ -1317,33 +1485,45 @@ function renderLiveFilterCard(sensors, flows) {
     ? `${completedAt.toLocaleString()} / ${ageText}`
     : "--";
 
-  setNodeText("liveFilterStatus", `Status: ${statusText}`);
-  setNodeText("liveFilterFlowLoss", `Flow loss: ${flowDisplay(flows, "filter_flow_loss_percent")}`);
-  setNodeText("liveFilterEstimatedFlow", `Estimated flow: ${flowDisplay(flows, "filter_reference_flow_gpm")}`);
+  const flowLoss = flows.filter_flow_loss_percent || {};
+  setNumericReading("liveFilterFlowLoss", flowLoss.value, 1);
+  setNodeText("liveFilterUnit", "%");
+  const filterStatusLabels = {
+    green: "Within clean-flow target",
+    yellow: "Cleaning should be planned",
+    red: "Filter needs attention",
+    uncalibrated: "Awaiting a calibrated filter test",
+  };
+  setNodeText("liveFilterStatus", filterStatusLabels[status] || statusText);
+  setNodeText("liveFilterEstimatedFlow", `Estimated reference flow: ${flowDisplay(flows, "filter_reference_flow_gpm")}`);
   setNodeText(
     "liveFilterCleanFlow",
-    `Clean flow: ${filterLoading ? filterLoading.clean_flow_display || "--" : "--"}`,
+    `Clean reference flow: ${filterLoading ? filterLoading.clean_flow_display || "--" : "--"}`,
   );
   setNodeText("liveFilterReferencePsi", `Reference pressure: ${flowDisplay(flows, "filter_reference_psi")}`);
-  setNodeText("liveFilterLastTest", `Last test: ${completedText}`);
+  setNodeText("liveFilterLastTest", `Last standardized test: ${completedText}`);
 }
 
 function renderLiveChemCard(sensors) {
-  const tempStatus = sensorStatus(sensors, "water_temp");
-  const phStatus = sensorStatus(sensors, "raw_ph");
-  const orpStatus = sensorStatus(sensors, "raw_orp");
-  const csiStatus = sensorStatus(sensors, "calcium_saturation_index");
-  setLiveCardStatus("liveChemCard", worstSensorCardStatus([tempStatus, phStatus, orpStatus, csiStatus]));
+  const water = sensors.water_temp || null;
+  const ph = sensors.raw_ph || null;
+  const orp = sensors.raw_orp || null;
+  setLiveCardStatus("liveChemCard", sensorCardStatus(sensorStatus(sensors, "water_temp")));
+  setLiveCardStatus("livePhCard", sensorCardStatus(sensorStatus(sensors, "raw_ph")));
+  setLiveCardStatus("liveOrpCard", sensorCardStatus(sensorStatus(sensors, "raw_orp")));
 
-  setNodeText("liveTempLine", `Temp: ${sensorDisplay(sensors, "water_temp")}`);
-  setNodeText(
-    "livePhLine",
-    `pH: ${sensorDisplay(sensors, "raw_ph")} | Temp: ${sensorDisplay(sensors, "ph_temp")}`,
-  );
-  setNodeText(
-    "liveOrpLine",
-    `ORP: ${sensorDisplay(sensors, "raw_orp")} | Temp: ${sensorDisplay(sensors, "orp_temp")}`,
-  );
+  setNumericReading("liveTempValue", water && water.value, 1);
+  setNodeText("liveTempUnit", temperatureUnit(water && water.unit));
+  setNodeText("liveTempLine", sensorSummary(water, "Water temperature unavailable"));
+  setNodeText("liveTrendWaterValue", water && water.display ? water.display : "--");
+
+  setNumericReading("livePhValue", ph && ph.value, 2);
+  setNodeText("livePhLine", sensorSummary(ph, `Probe temp ${sensorDisplay(sensors, "ph_temp")}`));
+  setNodeText("liveTrendPhValue", ph && ph.display ? ph.display : "--");
+
+  setNumericReading("liveOrpValue", orp && orp.value, 0);
+  setNodeText("liveOrpLine", sensorSummary(orp, `Probe temp ${sensorDisplay(sensors, "orp_temp")}`));
+  setNodeText("liveTrendOrpValue", orp && orp.display ? orp.display : "--");
   setNodeText("liveCsiLine", `CSI: ${sensorDisplay(sensors, "calcium_saturation_index")}`);
 }
 
@@ -1354,13 +1534,40 @@ function renderLiveTankCard(sensors, chlorineSupply) {
     chlorineSupply && chlorineSupply.remaining_gal_display
       ? chlorineSupply.remaining_gal_display
       : sensorDisplay(sensors, sensorId);
-  const days =
-    chlorineSupply && chlorineSupply.days_remaining_display
-      ? chlorineSupply.days_remaining_display
-      : "-- days";
   setLiveCardStatus("liveTankCard", sensorCardStatus(supplyStatus));
-  setNodeText("liveTankLevelLine", `Usable: ${remaining}`);
-  setNodeText("liveTankDaysLine", `Days: ${days}`);
+  setNumericReading(
+    "liveTankDaysLine",
+    chlorineSupply && chlorineSupply.days_remaining,
+    1,
+  );
+  setNodeText("liveTankUnit", "days");
+  setNodeText("liveTankLevelLine", `Usable inventory ${remaining}`);
+}
+
+function setNumericReading(id, value, decimals) {
+  const parsed = value === null || value === undefined ? Number.NaN : Number(value);
+  setNodeText(id, Number.isFinite(parsed) ? parsed.toFixed(decimals) : "--");
+}
+
+function temperatureUnit(unit) {
+  if (unit === "degC") {
+    return "°C";
+  }
+  return "°F";
+}
+
+function sensorSummary(sensor, fallback) {
+  if (!sensor) {
+    return fallback;
+  }
+  const labels = {
+    normal: "In expected range",
+    caution: "Outside the preferred range",
+    alarm: "Needs attention",
+    invalid: "Reading unavailable",
+    unknown: "Status unavailable",
+  };
+  return labels[String(sensor.status || "unknown")] || fallback;
 }
 
 function setNodeText(id, value) {
@@ -1427,6 +1634,653 @@ function setLiveCardStatus(cardId, statusClass) {
   }
   card.classList.remove("status-off", "status-on", "status-low", "status-high", "status-caution", "status-alarm", "status-invalid");
   card.classList.add(statusClass);
+}
+
+async function refreshLiveTrends(force) {
+  const status = document.getElementById("liveTrendsStatus");
+  if (!status || liveTrendLoading) {
+    return;
+  }
+  const now = Date.now();
+  if (!force && now - lastLiveTrendLoadedAt < 60000) {
+    return;
+  }
+
+  liveTrendLoading = true;
+  if (!lastLiveTrendLoadedAt) {
+    status.textContent = "Loading validated history…";
+  }
+  try {
+    const params = new URLSearchParams({
+      hours: String(LIVE_HISTORY_HOURS),
+      limit: String(historyQueryLimit(LIVE_HISTORY_HOURS)),
+      validated_only: "true",
+      max_points: "360",
+      resolution: "auto",
+    });
+    [...LIVE_TREND_DEFINITIONS.map((definition) => definition.sensorId), ...LIVE_EVENT_SENSOR_IDS]
+      .forEach((sensorId) => params.append("sensor_id", sensorId));
+    const requests = [fetch(`/api/history?${params.toString()}`, { cache: "no-store" })];
+    if (!liveTrendBandsLoaded) {
+      requests.push(fetch("/api/config/notifications", { cache: "no-store" }));
+    }
+    const responses = await Promise.all(requests);
+    const history = await parseApiResponse(responses[0], "live trend history failed");
+    if (responses[1]) {
+      try {
+        const config = await parseApiResponse(responses[1], "trend limits load failed");
+        liveTrendBands = trendBandsFromNotifications(config);
+      } catch (_error) {
+        liveTrendBands = {};
+      }
+      liveTrendBandsLoaded = true;
+    }
+    renderLiveTrendDashboard(normalizeHistorySeries(history), historyWindowFromPayload(history));
+    lastLiveTrendLoadedAt = now;
+    const totalPoints = normalizeHistorySeries(history).reduce(
+      (sum, series) => sum + (series.points || []).length,
+      0,
+    );
+    status.textContent = totalPoints
+      ? `${totalPoints} validated samples · aligned 24-hour window · hover any strip to compare`
+      : "No validated history is available yet; current values will continue to update.";
+  } catch (error) {
+    status.textContent = `Trend history unavailable: ${error.message}`;
+  } finally {
+    liveTrendLoading = false;
+  }
+}
+
+function trendBandsFromNotifications(config) {
+  const alerts = config && config.alerts ? config.alerts : {};
+  const result = {};
+  [
+    ["raw_ph", alerts.ph],
+    ["raw_orp", alerts.orp],
+  ].forEach(([sensorId, rule]) => {
+    if (!rule || rule.enabled === false) {
+      return;
+    }
+    const minimum = numberOrNull(rule.caution_below);
+    const maximum = numberOrNull(rule.caution_above);
+    if (minimum !== null && maximum !== null && maximum > minimum) {
+      result[sensorId] = { minimum, maximum };
+    }
+  });
+  return result;
+}
+
+function renderLiveTrendDashboard(series, windowInfo) {
+  const byId = {};
+  series.forEach((entry) => {
+    byId[entry.sensor_id] = entry;
+  });
+  const fallbackEnd = historyReferenceNowMs();
+  const window = windowInfo || {
+    startMs: fallbackEnd - LIVE_HISTORY_HOURS * 3600 * 1000,
+    endMs: fallbackEnd,
+  };
+  const events = LIVE_EVENT_SENSOR_IDS.flatMap((sensorId) => {
+    const entry = byId[sensorId];
+    return entry ? entry.points || [] : [];
+  });
+
+  liveTrendChartState = [];
+  const visibleDefinitions = LIVE_TREND_DEFINITIONS.filter((definition) => definition.svgId);
+  LIVE_TREND_DEFINITIONS.forEach((definition) => {
+    const entry = byId[definition.sensorId] || { points: [] };
+    const points = normalizedLivePoints(entry.points || []);
+    drawLiveSparkline(definition, points, window);
+    renderLiveKpiTrend(definition, points);
+    if (definition.svgId) {
+      drawLiveTrendStrip(
+        definition,
+        points,
+        events,
+        window,
+        visibleDefinitions.indexOf(definition) === visibleDefinitions.length - 1,
+      );
+    }
+  });
+}
+
+function normalizedLivePoints(points) {
+  return points
+    .map((point) => {
+      const value = Number(point.value);
+      const time = new Date(point.observed_at).getTime();
+      if (!Number.isFinite(value) || !Number.isFinite(time)) {
+        return null;
+      }
+      return { ...point, _value: value, _time: time };
+    })
+    .filter((point) => point !== null)
+    .sort((left, right) => left._time - right._time);
+}
+
+function drawLiveSparkline(definition, points, window) {
+  const chart = document.getElementById(definition.sparkId);
+  if (!chart) {
+    return;
+  }
+  chart.replaceChildren();
+  const width = 180;
+  const height = 44;
+  const padding = 3;
+  if (!points.length) {
+    chart.appendChild(svgLine(padding, height / 2, width - padding, height / 2, "sparkline-empty"));
+    return;
+  }
+  const domain = liveValueDomain(definition, points);
+  const coordinates = points.map((point) => ({
+    x: padding + ((point._time - window.startMs) / (window.endMs - window.startMs)) * (width - padding * 2),
+    y: padding + (1 - (point._value - domain.minimum) / (domain.maximum - domain.minimum)) * (height - padding * 2),
+  }));
+  const area = document.createElementNS(SVG_NS, "polygon");
+  area.setAttribute("class", "sparkline-area");
+  area.setAttribute(
+    "points",
+    `${coordinates[0].x.toFixed(1)},${height - padding} ` +
+      coordinates.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ") +
+      ` ${coordinates[coordinates.length - 1].x.toFixed(1)},${height - padding}`,
+  );
+  chart.appendChild(area);
+  const line = document.createElementNS(SVG_NS, "polyline");
+  line.setAttribute("class", "sparkline-line");
+  line.setAttribute(
+    "points",
+    coordinates.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" "),
+  );
+  chart.appendChild(line);
+}
+
+function renderLiveKpiTrend(definition, points) {
+  if (!definition.trendId) {
+    return;
+  }
+  if (points.length < 2) {
+    setNodeText(definition.trendId, points.length ? "Latest logged sample" : "24h trend unavailable");
+    return;
+  }
+  const change = points[points.length - 1]._value - points[0]._value;
+  const threshold = 0.5 * 10 ** (-definition.deltaDecimals);
+  if (Math.abs(change) < threshold) {
+    setNodeText(definition.trendId, "Steady over 24 hours");
+    return;
+  }
+  const direction = change > 0 ? "↑" : "↓";
+  setNodeText(
+    definition.trendId,
+    `${direction} ${Math.abs(change).toFixed(definition.deltaDecimals)}${definition.unit} over 24 hours`,
+  );
+}
+
+function liveValueDomain(definition, points) {
+  const values = points.map((point) => point._value);
+  const band = liveTrendBands[definition.sensorId];
+  if (band) {
+    values.push(band.minimum, band.maximum);
+  }
+  if (definition.includeZero) {
+    values.push(0);
+  }
+  let minimum = Math.min(...values);
+  let maximum = Math.max(...values);
+  if (minimum === maximum) {
+    const spread = Math.max(Math.abs(minimum) * 0.05, 1);
+    minimum -= spread;
+    maximum += spread;
+  }
+  const padding = (maximum - minimum) * 0.08;
+  return { minimum: minimum - padding, maximum: maximum + padding };
+}
+
+function drawLiveTrendStrip(definition, points, events, window, showTimeAxis) {
+  const chart = document.getElementById(definition.svgId);
+  if (!chart) {
+    return;
+  }
+  chart.replaceChildren();
+  const width = 720;
+  const height = 92;
+  const margin = { top: 8, right: 10, bottom: showTimeAxis ? 20 : 7, left: 40 };
+  const plotWidth = width - margin.left - margin.right;
+  const plotHeight = height - margin.top - margin.bottom;
+  const domain = points.length
+    ? liveValueDomain(definition, points)
+    : { minimum: 0, maximum: 1 };
+  const xForTime = (time) => margin.left + ((time - window.startMs) / (window.endMs - window.startMs)) * plotWidth;
+  const yForValue = (value) =>
+    margin.top + plotHeight - ((value - domain.minimum) / (domain.maximum - domain.minimum)) * plotHeight;
+
+  for (let index = 0; index <= 2; index += 1) {
+    const y = margin.top + (plotHeight * index) / 2;
+    chart.appendChild(svgLine(margin.left, y, width - margin.right, y, "live-trend-grid"));
+  }
+
+  const band = liveTrendBands[definition.sensorId];
+  if (band) {
+    const top = yForValue(Math.min(domain.maximum, band.maximum));
+    const bottom = yForValue(Math.max(domain.minimum, band.minimum));
+    const rectangle = document.createElementNS(SVG_NS, "rect");
+    rectangle.setAttribute("class", "live-trend-band");
+    rectangle.setAttribute("x", String(margin.left));
+    rectangle.setAttribute("y", String(top));
+    rectangle.setAttribute("width", String(plotWidth));
+    rectangle.setAttribute("height", String(Math.max(0, bottom - top)));
+    chart.appendChild(rectangle);
+  }
+
+  chart.appendChild(
+    svgText(formatAxisTick(domain.maximum, domain.maximum - domain.minimum), margin.left - 6, margin.top + 4, "live-trend-axis", "end"),
+  );
+  chart.appendChild(
+    svgText(formatAxisTick(domain.minimum, domain.maximum - domain.minimum), margin.left - 6, margin.top + plotHeight, "live-trend-axis", "end"),
+  );
+
+  if (points.length) {
+    const coordinates = points.map((point) => ({
+      x: xForTime(point._time),
+      y: yForValue(point._value),
+    }));
+    const area = document.createElementNS(SVG_NS, "polygon");
+    area.setAttribute("class", "live-trend-area");
+    area.setAttribute(
+      "points",
+      `${coordinates[0].x.toFixed(1)},${margin.top + plotHeight} ` +
+        coordinates.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ") +
+        ` ${coordinates[coordinates.length - 1].x.toFixed(1)},${margin.top + plotHeight}`,
+    );
+    chart.appendChild(area);
+    const line = document.createElementNS(SVG_NS, "polyline");
+    line.setAttribute("class", "live-trend-line");
+    line.setAttribute(
+      "points",
+      coordinates.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" "),
+    );
+    chart.appendChild(line);
+  } else {
+    chart.appendChild(svgText("No logged data", margin.left + plotWidth / 2, margin.top + plotHeight / 2, "live-trend-empty"));
+  }
+
+  normalizedLivePoints(events).forEach((event) => {
+    if (event._time < window.startMs || event._time > window.endMs) {
+      return;
+    }
+    const marker = svgLine(
+      xForTime(event._time),
+      margin.top,
+      xForTime(event._time),
+      margin.top + plotHeight,
+      "live-trend-event",
+    );
+    const title = document.createElementNS(SVG_NS, "title");
+    title.textContent = `Chemical event · ${event.display || event.value} · ${new Date(event._time).toLocaleString()}`;
+    marker.appendChild(title);
+    chart.appendChild(marker);
+  });
+
+  if (showTimeAxis) {
+    [0, 0.5, 1].forEach((ratio) => {
+      const timestamp = window.startMs + (window.endMs - window.startMs) * ratio;
+      const anchor = ratio === 0 ? "start" : ratio === 1 ? "end" : "middle";
+      chart.appendChild(
+        svgText(
+          new Date(timestamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+          margin.left + plotWidth * ratio,
+          height - 4,
+          "live-trend-axis",
+          anchor,
+        ),
+      );
+    });
+  }
+
+  const hoverLine = svgLine(margin.left, margin.top, margin.left, margin.top + plotHeight, "live-trend-hover");
+  hoverLine.style.display = "none";
+  chart.appendChild(hoverLine);
+  const hoverDot = document.createElementNS(SVG_NS, "circle");
+  hoverDot.setAttribute("class", "live-trend-hover-dot");
+  hoverDot.setAttribute("r", "3.5");
+  hoverDot.style.display = "none";
+  chart.appendChild(hoverDot);
+
+  const state = {
+    chart,
+    definition,
+    points,
+    window,
+    margin,
+    plotWidth,
+    plotHeight,
+    domain,
+    hoverLine,
+    hoverDot,
+  };
+  liveTrendChartState.push(state);
+  chart.onpointermove = (event) => {
+    const rectangle = chart.getBoundingClientRect();
+    const chartX = ((event.clientX - rectangle.left) / rectangle.width) * width;
+    const clampedX = Math.max(margin.left, Math.min(margin.left + plotWidth, chartX));
+    const ratio = (clampedX - margin.left) / plotWidth;
+    syncLiveTrendHover(window.startMs + ratio * (window.endMs - window.startMs));
+  };
+  chart.onpointerleave = clearLiveTrendHover;
+}
+
+function syncLiveTrendHover(timestamp) {
+  setNodeText("liveTrendsHoverTime", new Date(timestamp).toLocaleString());
+  liveTrendChartState.forEach((state) => {
+    const x = state.margin.left + ((timestamp - state.window.startMs) / (state.window.endMs - state.window.startMs)) * state.plotWidth;
+    state.hoverLine.style.display = "block";
+    state.hoverLine.setAttribute("x1", String(x));
+    state.hoverLine.setAttribute("x2", String(x));
+    const nearest = nearestLivePoint(state.points, timestamp);
+    if (!nearest) {
+      state.hoverDot.style.display = "none";
+      setNodeText(state.definition.valueId, "--");
+      return;
+    }
+    const y =
+      state.margin.top +
+      state.plotHeight -
+      ((nearest._value - state.domain.minimum) / (state.domain.maximum - state.domain.minimum)) * state.plotHeight;
+    state.hoverDot.style.display = "block";
+    state.hoverDot.setAttribute("cx", String(x));
+    state.hoverDot.setAttribute("cy", String(y));
+    setNodeText(
+      state.definition.valueId,
+      nearest.display || `${nearest._value.toFixed(state.definition.decimals)}${state.definition.unit}`,
+    );
+  });
+}
+
+function clearLiveTrendHover() {
+  setNodeText("liveTrendsHoverTime", "Shared time range");
+  liveTrendChartState.forEach((state) => {
+    state.hoverLine.style.display = "none";
+    state.hoverDot.style.display = "none";
+    const latest = state.points[state.points.length - 1];
+    setNodeText(
+      state.definition.valueId,
+      latest
+        ? latest.display || `${latest._value.toFixed(state.definition.decimals)}${state.definition.unit}`
+        : "--",
+    );
+  });
+}
+
+function nearestLivePoint(points, timestamp) {
+  if (!points.length) {
+    return null;
+  }
+  let nearest = points[0];
+  let distance = Math.abs(nearest._time - timestamp);
+  for (let index = 1; index < points.length; index += 1) {
+    const candidateDistance = Math.abs(points[index]._time - timestamp);
+    if (candidateDistance < distance) {
+      nearest = points[index];
+      distance = candidateDistance;
+    }
+  }
+  return nearest;
+}
+
+function renderTodaySchedule(schedule, observedAt) {
+  const container = document.getElementById("todayTimeline");
+  if (!container) {
+    return;
+  }
+  container.replaceChildren();
+  const today = schedule && schedule.today;
+  if (!today) {
+    const empty = document.createElement("div");
+    empty.className = "timeline-empty";
+    empty.textContent = "The resolved schedule is unavailable.";
+    container.appendChild(empty);
+    setNodeText("todaySolar", "Sunrise and sunset unavailable");
+    return;
+  }
+
+  const scale = document.createElement("div");
+  scale.className = "timeline-scale";
+  const scaleSpacer = document.createElement("span");
+  const scaleLabels = document.createElement("div");
+  scaleLabels.className = "timeline-scale-labels";
+  ["12a", "6a", "12p", "6p", "12a"].forEach((labelText) => {
+    const label = document.createElement("span");
+    label.textContent = labelText;
+    scaleLabels.appendChild(label);
+  });
+  scale.append(scaleSpacer, scaleLabels);
+  container.appendChild(scale);
+
+  const pumpTrack = appendScheduleTimelineRow(container, "Pump");
+  const dosingTrack = appendScheduleTimelineRow(container, "Dosing");
+  const windows = Array.isArray(today.windows) ? today.windows : [];
+  windows.forEach((window) => {
+    appendScheduleSegment(pumpTrack, window, window.pump_speed === "high" ? "pump-high" : "pump-low", today.local_date);
+    if (window.allow_dosing && window.booster !== "on") {
+      appendScheduleSegment(dosingTrack, window, "dosing", today.local_date);
+    }
+  });
+
+  const clock = zonedClockParts(observedAt, today.timezone);
+  if (clock && clock.localDate === today.local_date) {
+    [pumpTrack, dosingTrack].forEach((track) => {
+      const marker = document.createElement("span");
+      marker.className = "timeline-now";
+      marker.style.left = `${Math.max(0, Math.min(100, (clock.minute / 1440) * 100))}%`;
+      marker.title = `Current time ${clock.label}`;
+      track.appendChild(marker);
+    });
+  }
+
+  [today.sunrise, today.sunset].forEach((timestamp) => {
+    const minute = wallClockMinute(timestamp, today.local_date);
+    if (minute === null || minute < 0 || minute > 1440) {
+      return;
+    }
+    const marker = document.createElement("span");
+    marker.className = "timeline-solar-marker";
+    marker.style.left = `${(minute / 1440) * 100}%`;
+    marker.title = `${timestamp === today.sunrise ? "Sunrise" : "Sunset"} ${formatWallClock(timestamp)}`;
+    pumpTrack.appendChild(marker);
+  });
+
+  const list = document.createElement("div");
+  list.className = "schedule-window-list";
+  if (windows.length) {
+    windows.forEach((window) => {
+      const chip = document.createElement("span");
+      chip.className = "schedule-window-chip";
+      const dosing = window.allow_dosing && window.booster !== "on" ? " · dose eligible" : "";
+      chip.textContent = `${window.name} · ${formatWallClock(window.start)}–${formatWallClock(window.end)} · ${String(window.pump_speed).toUpperCase()}${dosing}`;
+      list.appendChild(chip);
+    });
+  } else {
+    const chip = document.createElement("span");
+    chip.className = "schedule-window-chip";
+    chip.textContent = "No pump windows today";
+    list.appendChild(chip);
+  }
+  container.appendChild(list);
+
+  const sunrise = today.sunrise ? formatWallClock(today.sunrise) : "--";
+  const sunset = today.sunset ? formatWallClock(today.sunset) : "--";
+  setNodeText(
+    "todaySolar",
+    `Sunrise ${sunrise} · sunset ${sunset} · ${today.timezone || "controller local time"} · dosing bars show schedule permission; controller buffers and safety still apply`,
+  );
+}
+
+function appendScheduleTimelineRow(container, labelText) {
+  const row = document.createElement("div");
+  row.className = "timeline-row";
+  const label = document.createElement("span");
+  label.className = "timeline-row-label";
+  label.textContent = labelText;
+  const track = document.createElement("div");
+  track.className = "timeline-track";
+  row.append(label, track);
+  container.appendChild(row);
+  return track;
+}
+
+function appendScheduleSegment(track, window, className, localDate) {
+  const start = wallClockMinute(window.start, localDate);
+  const end = wallClockMinute(window.end, localDate);
+  if (start === null || end === null || end <= 0 || start >= 1440) {
+    return;
+  }
+  const clampedStart = Math.max(0, start);
+  const clampedEnd = Math.min(1440, end);
+  const segment = document.createElement("span");
+  segment.className = `timeline-segment ${className}`;
+  segment.style.left = `${(clampedStart / 1440) * 100}%`;
+  segment.style.width = `${((clampedEnd - clampedStart) / 1440) * 100}%`;
+  segment.title = `${window.name}: ${formatWallClock(window.start)}–${formatWallClock(window.end)}`;
+  track.appendChild(segment);
+}
+
+function wallClockMinute(timestamp, localDate) {
+  if (!timestamp) {
+    return null;
+  }
+  const match = String(timestamp).match(/^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})/);
+  if (!match) {
+    return null;
+  }
+  const offsetDays = calendarDayOffset(localDate, match[1]);
+  return offsetDays * 1440 + Number(match[2]) * 60 + Number(match[3]);
+}
+
+function calendarDayOffset(baseDate, otherDate) {
+  const base = String(baseDate).split("-").map(Number);
+  const other = String(otherDate).split("-").map(Number);
+  if (base.length !== 3 || other.length !== 3 || [...base, ...other].some((value) => !Number.isFinite(value))) {
+    return 0;
+  }
+  return Math.round(
+    (Date.UTC(other[0], other[1] - 1, other[2]) - Date.UTC(base[0], base[1] - 1, base[2])) / 86400000,
+  );
+}
+
+function formatWallClock(timestamp) {
+  const match = String(timestamp || "").match(/T(\d{2}):(\d{2})/);
+  if (!match) {
+    return "--";
+  }
+  const hour = Number(match[1]);
+  const minute = match[2];
+  const suffix = hour >= 12 ? "PM" : "AM";
+  const displayHour = hour % 12 || 12;
+  return `${displayHour}:${minute} ${suffix}`;
+}
+
+function zonedClockParts(timestamp, timezone) {
+  if (!timestamp || !timezone) {
+    return null;
+  }
+  try {
+    const formatter = new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    });
+    const parts = Object.fromEntries(
+      formatter.formatToParts(new Date(timestamp)).map((part) => [part.type, part.value]),
+    );
+    return {
+      localDate: `${parts.year}-${parts.month}-${parts.day}`,
+      minute: Number(parts.hour) * 60 + Number(parts.minute),
+      label: `${parts.hour}:${parts.minute}`,
+    };
+  } catch (_error) {
+    return null;
+  }
+}
+
+function renderAttention(payload) {
+  const container = document.getElementById("attentionList");
+  const count = document.getElementById("attentionCount");
+  if (!container || !count) {
+    return;
+  }
+  const items = [];
+  const add = (level, text) => {
+    if (text && !items.some((item) => item.text === text)) {
+      items.push({ level, text });
+    }
+  };
+  const safety = payload.safety || {};
+  if (safety.locked_out) {
+    add("alarm", `Safety lockout: ${safety.fault ? safety.fault.code : "controller output locked"}`);
+  }
+  const freeze = safety.freeze_protection || {};
+  if (freeze.fail_safe) {
+    add("alarm", "Freeze protection is in fail-safe mode because water temperature is unavailable.");
+  }
+  ["water_temp", "raw_ph", "raw_orp"].forEach((sensorId) => {
+    const sensor = payload.sensors && payload.sensors[sensorId];
+    if (!sensor || sensor.status === "normal" || sensor.status === "unknown") {
+      return;
+    }
+    const level = sensor.status === "alarm" ? "alarm" : "warning";
+    add(level, `${SENSOR_LABELS[sensorId] || sensorId}: ${sensor.display || "reading unavailable"}.`);
+  });
+  const filter = payload.flows && payload.flows.filter_loading;
+  if (filter && filter.status === "red") {
+    add("alarm", `Filter flow loss is ${filter.flow_loss_display || "above the alarm limit"}.`);
+  } else if (filter && filter.status === "yellow") {
+    add("warning", `Filter flow loss is ${filter.flow_loss_display || "above the planning limit"}; plan cleaning.`);
+  } else if (filter && filter.status === "uncalibrated") {
+    add("warning", "Filter loading is not calibrated; enter the clean reference flow after a standardized test.");
+  }
+  const supply = payload.chlorine_supply || {};
+  if (supply.status === "alarm") {
+    add("alarm", supply.display || "Chlorine supply is critically low.");
+  } else if (supply.status === "caution") {
+    add("warning", supply.display || "Chlorine supply is running low.");
+  } else if (supply.status === "unknown" && supply.reason) {
+    add("warning", `Chlorine supply estimate unavailable: ${supply.reason}.`);
+  }
+  const chlorination = payload.chlorination || {};
+  if (chlorination.warning) {
+    add("warning", `Chlorination: ${chlorination.warning}`);
+  }
+  const failures = payload.tick && Array.isArray(payload.tick.acquisition_failures)
+    ? payload.tick.acquisition_failures
+    : [];
+  failures.slice(0, 3).forEach((failure) => {
+    add("warning", `${failure.sensor_id || failure.driver || "Sensor"}: ${failure.error}`);
+  });
+  const warnings = payload.schedule && payload.schedule.today && Array.isArray(payload.schedule.today.warnings)
+    ? payload.schedule.today.warnings
+    : [];
+  warnings.forEach((warning) => add("warning", `Schedule: ${warning}`));
+
+  container.replaceChildren();
+  count.textContent = String(items.length);
+  count.classList.toggle("has-attention", items.length > 0);
+  if (!items.length) {
+    const empty = document.createElement("div");
+    empty.className = "attention-empty";
+    empty.textContent = "No active safety, water-quality, supply, filter, or acquisition alerts.";
+    container.appendChild(empty);
+    return;
+  }
+  items.forEach((item) => {
+    const node = document.createElement("div");
+    node.className = "attention-item";
+    node.dataset.level = item.level;
+    node.textContent = item.text;
+    container.appendChild(node);
+  });
 }
 
 function renderControlButtonStates(actuators) {
@@ -4733,13 +5587,23 @@ function initializeChlorinationQuickControls() {
     if (!button || !input) {
       return;
     }
-    button.addEventListener("click", () => startSupplementalChlorineDose(inputId));
+    button.addEventListener("click", () => openSupplementalChlorineConfirmation(inputId));
     input.addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
-        startSupplementalChlorineDose(inputId);
+        event.preventDefault();
+        openSupplementalChlorineConfirmation(inputId);
       }
     });
   });
+
+  const confirmButton = document.getElementById("liveSupplementalConfirmStart");
+  const dialog = document.getElementById("liveSupplementalConfirm");
+  if (confirmButton && dialog) {
+    confirmButton.addEventListener("click", () => {
+      const inputId = dialog.dataset.doseInputId || "liveSupplementalChlorineDoseInput";
+      void startSupplementalChlorineDose(inputId);
+    });
+  }
 
   [
     "liveSupplementalChlorineDoseStop",
@@ -4776,6 +5640,9 @@ async function poll() {
       await refreshHealth(false);
     }
   } catch (error) {
+    if (PAGE_MODE === "live") {
+      setControllerConnectionState(false);
+    }
     const badge = document.getElementById("safetyBadge");
     if (badge) {
       badge.classList.remove("ok");
