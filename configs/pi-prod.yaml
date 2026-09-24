@@ -10,8 +10,11 @@ runtime:
   - chemistry_loop
 site:
   timezone: America/Chicago
-  latitude: null
-  longitude: null
+  latitude: 45.0
+  longitude: -90.0
+pool:
+  name: Home Pool
+  volume_gal: 16000.0
 pump_timer:
   active_profile: normal
   profiles:
@@ -114,8 +117,6 @@ flow_estimation:
 filter_loading:
   enabled: true
   clean_flow_gpm: null
-  yellow_flow_loss_percent: 10.0
-  red_flow_loss_percent: 15.0
   stabilization_seconds: 60
   averaging_seconds: 120
   max_pressure_age_seconds: 10
@@ -123,6 +124,7 @@ chlorination:
   enabled: true
   daily_dose_oz: 0
   pump_output_oz_per_min: 1.72
+  chlorine_strength_percent: 12.0
   no_dose_first_minutes: 1.0
   no_dose_last_minutes: 10.0
   max_duty_cycle: 0.5
@@ -132,9 +134,7 @@ chlorination:
 fc_demand:
   enabled: true
   mode: observe_only
-  pool_volume_gal: 16000.0
   target_fc_ppm: 4.5
-  chlorine_strength_percent: 12.0
   minimum_test_interval_hours: 12.0
   max_observation_interval_days: 7.0
   preferred_test_start_hour: 18
@@ -192,36 +192,37 @@ notifications:
     timeout_s: 5.0
     priority: 0
     sound: null
-  alerts:
-    chlorine_tank:
+  rules:
+    chlorine_tank_days_remaining:
       enabled: false
-      caution_below: 7.0
-      warning_below: 3.0
+      notify_caution: true
+      notify_alarm: true
       caution_repeat_minutes: 1440.0
-      warning_repeat_minutes: 240.0
-    ph:
+      alarm_repeat_minutes: 240.0
+    raw_ph:
       enabled: false
-      caution_below: 7.2
-      caution_above: 7.8
-      warning_below: 6.8
-      warning_above: 8.2
+      notify_caution: true
+      notify_alarm: true
       caution_repeat_minutes: 1440.0
-      warning_repeat_minutes: 240.0
-    orp:
+      alarm_repeat_minutes: 240.0
+    raw_orp:
       enabled: false
-      caution_below: 600.0
-      caution_above: 800.0
-      warning_below: 400.0
-      warning_above: 900.0
+      notify_caution: true
+      notify_alarm: true
       caution_repeat_minutes: 1440.0
-      warning_repeat_minutes: 240.0
-    filter_flow_loss:
+      alarm_repeat_minutes: 240.0
+    filter_flow_loss_percent:
       enabled: false
-      warning_above: 15.0
-      warning_repeat_minutes: 1440.0
+      notify_caution: false
+      notify_alarm: true
+      caution_repeat_minutes: 1440.0
+      alarm_repeat_minutes: 1440.0
     freeze_temperature_unavailable:
       enabled: true
-      warning_repeat_minutes: 240.0
+      notify_caution: false
+      notify_alarm: true
+      caution_repeat_minutes: 1440.0
+      alarm_repeat_minutes: 240.0
 acquisition:
   groups:
     pressures:
@@ -269,48 +270,54 @@ acquisition:
     max_pump_off_s: 3000
     run_duration_s: 600
     pump_speed: low
-live_view:
-  sensor_limits:
+monitoring:
+  limits:
     pump_output_psi:
-      caution_min: 0.0
-      normal_min: 0.0
-      normal_max: 25.0
-      caution_max: 30.0
+      alarm_below: 0.0
+      caution_below: 0.0
+      caution_above: 25.0
+      alarm_above: 30.0
     raw_orp:
-      caution_min: 400.0
-      normal_min: 600.0
-      normal_max: 800.0
-      caution_max: 900.0
+      alarm_below: 400.0
+      caution_below: 600.0
+      caution_above: 800.0
+      alarm_above: 900.0
     orp_temp:
-      caution_min: 35.0
-      normal_min: 65.0
-      normal_max: 90.0
-      caution_max: 100.0
+      alarm_below: 35.0
+      caution_below: 65.0
+      caution_above: 90.0
+      alarm_above: 100.0
     raw_ph:
-      caution_min: 6.8
-      normal_min: 7.2
-      normal_max: 7.8
-      caution_max: 8.2
+      alarm_below: 6.8
+      caution_below: 7.2
+      caution_above: 7.8
+      alarm_above: 8.2
     ph_temp:
-      caution_min: 35.0
-      normal_min: 65.0
-      normal_max: 90.0
-      caution_max: 100.0
+      alarm_below: 35.0
+      caution_below: 65.0
+      caution_above: 90.0
+      alarm_above: 100.0
     cpu_temp:
-      caution_min: 0.0
-      normal_min: 0.0
-      normal_max: 70.0
-      caution_max: 80.0
+      alarm_below: 0.0
+      caution_below: 0.0
+      caution_above: 70.0
+      alarm_above: 80.0
     cpu_load_percent:
-      caution_min: 0.0
-      normal_min: 0.0
-      normal_max: 75.0
-      caution_max: 90.0
+      alarm_below: 0.0
+      caution_below: 0.0
+      caution_above: 75.0
+      alarm_above: 90.0
     calcium_saturation_index:
-      caution_min: -0.6
-      normal_min: -0.3
-      normal_max: 0.3
-      caution_max: 0.6
+      alarm_below: -0.6
+      caution_below: -0.3
+      caution_above: 0.3
+      alarm_above: 0.6
+    filter_flow_loss_percent:
+      caution_above: 10.0
+      alarm_above: 15.0
+    chlorine_tank_days_remaining:
+      alarm_below: 3.0
+      caution_below: 7.0
 calcium_saturation_index:
   enabled: true
   temp_sensor_id: water_temp

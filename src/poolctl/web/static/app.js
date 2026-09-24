@@ -365,6 +365,7 @@ let liveTrendBandsLoaded = false;
 let liveTrendBands = {};
 let liveTrendChartState = [];
 let liveTrendRenderState = null;
+let canonicalChlorineStrengthPercent = null;
 let liveTrendResizeTimer = null;
 
 async function loadLive() {
@@ -1722,7 +1723,7 @@ async function refreshLiveTrends(force) {
       fetch(`/api/history?${trendParams.toString()}`, { cache: "no-store" }),
     ];
     if (!liveTrendBandsLoaded) {
-      requests.push(fetch("/api/config/notifications", { cache: "no-store" }));
+      requests.push(fetch("/api/config/monitoring", { cache: "no-store" }));
     }
     const responses = await Promise.all(requests);
     const [shortHistory, longHistory, trendHistory] = await Promise.all([
@@ -1733,7 +1734,7 @@ async function refreshLiveTrends(force) {
     if (responses[3]) {
       try {
         const config = await parseApiResponse(responses[3], "trend limits load failed");
-        liveTrendBands = trendBandsFromNotifications(config);
+        liveTrendBands = trendBandsFromMonitoring(config);
       } catch (_error) {
         liveTrendBands = {};
       }
@@ -1773,14 +1774,14 @@ function liveHistoryParams(hours, sensorIds, maxPoints) {
   return params;
 }
 
-function trendBandsFromNotifications(config) {
-  const alerts = config && config.alerts ? config.alerts : {};
+function trendBandsFromMonitoring(config) {
+  const limits = config && config.limits ? config.limits : {};
   const result = {};
   [
-    ["raw_ph", alerts.ph],
-    ["raw_orp", alerts.orp],
+    ["raw_ph", limits.raw_ph],
+    ["raw_orp", limits.raw_orp],
   ].forEach(([sensorId, rule]) => {
-    if (!rule || rule.enabled === false) {
+    if (!rule) {
       return;
     }
     const minimum = numberOrNull(rule.caution_below);
@@ -4075,248 +4076,6 @@ function updateConfigRefreshControls() {
   status.textContent = "Config refresh active";
 }
 
-async function loadAllConfigSections() {
-  await Promise.all([
-    loadRuntimeConfig(),
-    loadSiteConfig(),
-    loadSafetyConfig(),
-    loadAcquisitionConfig(),
-    loadLoggingConfig(),
-    loadNotificationsConfig(),
-    loadAnalogConfig(),
-    loadPhSensorConfig(),
-    loadChlorinationConfig(),
-    loadFcDemandConfig(),
-  ]);
-}
-
-async function revertConfigDraft() {
-  const status = document.getElementById("configSyncStatus");
-  if (status) {
-    status.textContent = "Reloading config from disk...";
-  }
-  await loadAllConfigSections();
-  clearConfigDraftState(true);
-}
-
-async function toggleConfigRefresh() {
-  if (!configAutoRefreshPaused) {
-    configAutoRefreshPaused = true;
-    updateConfigRefreshControls();
-    return;
-  }
-  if (configDraftDirty) {
-    await revertConfigDraft();
-    return;
-  }
-  configAutoRefreshPaused = false;
-  updateConfigRefreshControls();
-}
-
-async function requestServiceRestart() {
-  const status = document.getElementById("configSyncStatus");
-  try {
-    if (status) {
-      status.textContent = "Restart requested...";
-    }
-    const response = await fetch("/api/system/restart", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: "{}",
-    });
-    const payload = await parseApiResponse(response, "restart request failed");
-    if (status) {
-      status.textContent = payload.message || "Restart requested";
-    }
-  } catch (error) {
-    if (status) {
-      status.textContent = `Restart failed: ${error.message}`;
-    }
-  }
-}
-
-function initializeConfigEditorControls() {
-  const toggle = document.getElementById("configRefreshToggle");
-  const revert = document.getElementById("configRevert");
-  const restart = document.getElementById("configRestartService");
-  if (!toggle || !revert || !restart) {
-    return;
-  }
-
-  toggle.addEventListener("click", () => {
-    toggleConfigRefresh().catch((error) => {
-      const status = document.getElementById("configSyncStatus");
-      if (status) {
-        status.textContent = error.message;
-      }
-    });
-  });
-  revert.addEventListener("click", () => {
-    revertConfigDraft().catch((error) => {
-      const status = document.getElementById("configSyncStatus");
-      if (status) {
-        status.textContent = error.message;
-      }
-    });
-  });
-  restart.addEventListener("click", requestServiceRestart);
-
-  document.addEventListener("input", (event) => {
-    const target = event.target;
-    if (!(target instanceof HTMLElement)) {
-      return;
-    }
-    if (!target.closest('[data-view-section="config"]')) {
-      return;
-    }
-    markConfigDraftDirty();
-  });
-
-  document.addEventListener("change", (event) => {
-    const target = event.target;
-    if (!(target instanceof HTMLElement)) {
-      return;
-    }
-    if (!target.closest('[data-view-section="config"]')) {
-      return;
-    }
-    markConfigDraftDirty();
-  });
-
-  updateConfigRefreshControls();
-}
-
-async function loadRuntimeConfig() {
-  if (runtimeConfigLoading) {
-    return;
-  }
-  runtimeConfigLoading = true;
-  try {
-    const response = await fetch("/api/config/runtime", { cache: "no-store" });
-    const payload = await parseApiResponse(response, "runtime config load failed");
-    loadedRuntimeConfig = payload;
-    document.getElementById("runtimeDriverProfile").value = payload.driver_profile;
-    setRuntimeStatus("Runtime config loaded");
-  } catch (error) {
-    setRuntimeStatus(error.message);
-  } finally {
-    runtimeConfigLoading = false;
-  }
-}
-
-async function saveRuntimeConfig() {
-  setRuntimeStatus("Saving runtime config...");
-  const current = loadedRuntimeConfig || {};
-  try {
-    const response = await fetch("/api/config/runtime", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        driver_profile: document.getElementById("runtimeDriverProfile").value,
-        enabled_actuators: current.enabled_actuators || ACTUATOR_ORDER,
-        enabled_sensor_groups: current.enabled_sensor_groups || ["pressures", "chemistry_loop"],
-      }),
-    });
-    const payload = await parseApiResponse(response, "runtime config save failed");
-    setRuntimeStatus(payload.message || "Runtime config saved");
-    clearConfigDraftState(true);
-  } catch (error) {
-    setRuntimeStatus(error.message);
-  }
-}
-
-function setRuntimeStatus(message) {
-  document.getElementById("runtimeStatus").textContent = message;
-}
-
-function initializeRuntimeControls() {
-  document.getElementById("runtimeReload").addEventListener("click", loadRuntimeConfig);
-  document.getElementById("runtimeSave").addEventListener("click", saveRuntimeConfig);
-  loadRuntimeConfig();
-}
-
-function renderSiteConfig(payload) {
-  document.getElementById("siteTimezone").value = payload.timezone || "UTC";
-  document.getElementById("siteLatitude").value = payload.latitude ?? "";
-  document.getElementById("siteLongitude").value = payload.longitude ?? "";
-}
-
-async function loadSiteConfig() {
-  if (siteConfigLoading) {
-    return;
-  }
-  siteConfigLoading = true;
-  setSiteControlsDisabled(true);
-  setSiteStatus("Loading site config...");
-  try {
-    const response = await fetch("/api/config/site", { cache: "no-store" });
-    const payload = await parseApiResponse(response, "site config load failed");
-    renderSiteConfig(payload);
-    setSiteStatus("Site config loaded");
-  } catch (error) {
-    setSiteStatus(error.message);
-  } finally {
-    siteConfigLoading = false;
-    setSiteControlsDisabled(false);
-  }
-}
-
-function optionalSiteNumberValue(id) {
-  const rawValue = document.getElementById(id).value.trim();
-  if (!rawValue) {
-    return null;
-  }
-  const value = Number(rawValue);
-  if (!Number.isFinite(value)) {
-    throw new Error(`Invalid number for ${id}`);
-  }
-  return value;
-}
-
-async function saveSiteConfig() {
-  if (siteConfigLoading) {
-    return;
-  }
-  siteConfigLoading = true;
-  setSiteControlsDisabled(true);
-  setSiteStatus("Saving site config...");
-  try {
-    const response = await fetch("/api/config/site", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        timezone: document.getElementById("siteTimezone").value.trim() || "UTC",
-        latitude: optionalSiteNumberValue("siteLatitude"),
-        longitude: optionalSiteNumberValue("siteLongitude"),
-      }),
-    });
-    const payload = await parseApiResponse(response, "site config save failed");
-    renderSiteConfig(payload);
-    setSiteStatus("Site config saved");
-    clearConfigDraftState(true);
-  } catch (error) {
-    setSiteStatus(error.message);
-  } finally {
-    siteConfigLoading = false;
-    setSiteControlsDisabled(false);
-  }
-}
-
-function setSiteControlsDisabled(disabled) {
-  document.getElementById("siteReload").disabled = disabled;
-  document.getElementById("siteSave").disabled = disabled;
-}
-
-function setSiteStatus(message) {
-  document.getElementById("siteStatus").textContent = message;
-}
-
-function initializeSiteControls() {
-  document.getElementById("siteReload").addEventListener("click", loadSiteConfig);
-  document.getElementById("siteSave").addEventListener("click", saveSiteConfig);
-  loadSiteConfig();
-}
-
 async function loadSafetyConfig() {
   if (safetyConfigLoading) {
     return;
@@ -4359,6 +4118,9 @@ async function loadSafetyConfig() {
     document.getElementById("safetyChlorineTankWarningGal").value = String(tank.low_warning_gal ?? 2.0);
     document.getElementById("safetyChlorineTankInhibitGal").value = String(tank.inhibit_below_gal ?? 1.5);
     document.getElementById("safetyChlorineTankReenableGal").value = String(tank.reenable_at_gal ?? 2.0);
+    document.getElementById("safetyChlorineTankForecastReserveGal").value = String(
+      tank.forecast_reserve_gal ?? 0.0,
+    );
     document.getElementById("safetyPrimeMin").value = payload.thresholds.pump_prime_min_output_psi;
     document.getElementById("safetyOverpressure").value = payload.thresholds.pump_output_overpressure_psi;
     document.getElementById("safetyPumpOutputMaxAge").value = String(payload.timeouts.pump_output_max_age_seconds ?? 10.0);
@@ -4401,6 +4163,9 @@ async function saveSafetyConfig() {
           low_warning_gal: Number(document.getElementById("safetyChlorineTankWarningGal").value),
           inhibit_below_gal: Number(document.getElementById("safetyChlorineTankInhibitGal").value),
           reenable_at_gal: Number(document.getElementById("safetyChlorineTankReenableGal").value),
+          forecast_reserve_gal: Number(
+            document.getElementById("safetyChlorineTankForecastReserveGal").value,
+          ),
         },
         thresholds: {
           chlorine_min_pump_output_psi: Number(document.getElementById("safetyChlorineMinPump").value),
@@ -4756,528 +4521,6 @@ function initializeLoggingControls() {
   loadLoggingConfig();
 }
 
-async function loadNotificationsConfig() {
-  if (notificationsConfigLoading) {
-    return;
-  }
-  notificationsConfigLoading = true;
-  try {
-    const response = await fetch("/api/config/notifications", { cache: "no-store" });
-    const payload = await parseApiResponse(response, "notifications config load failed");
-    renderNotificationsConfig(payload);
-    setNotificationsStatus(
-      payload.enabled
-        ? payload.pushover && payload.pushover.configured
-          ? "Notifications config loaded"
-          : "Notifications loaded; Pushover credentials not visible to service"
-        : "Notifications config loaded; disabled",
-    );
-  } catch (error) {
-    setNotificationsStatus(error.message);
-  } finally {
-    notificationsConfigLoading = false;
-  }
-}
-
-async function saveNotificationsConfig() {
-  setNotificationsStatus("Saving notifications config...");
-  try {
-    const response = await fetch("/api/config/notifications", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(collectNotificationsConfig()),
-    });
-    const payload = await parseApiResponse(response, "notifications config save failed");
-    renderNotificationsConfig(payload);
-    setNotificationsStatus(
-      payload.applied_live ? "Notifications config saved and applied live" : "Notifications config saved",
-    );
-    clearConfigDraftState(true);
-  } catch (error) {
-    setNotificationsStatus(error.message);
-  }
-}
-
-async function sendTestNotification() {
-  setNotificationsStatus("Sending test notification...");
-  try {
-    const response = await fetch("/api/notifications/test", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        title: document.getElementById("notificationsDefaultTitle").value || "PoolScope",
-        message: "PoolScope test notification",
-      }),
-    });
-    const payload = await parseApiResponse(response, "test notification failed");
-    if (payload.notification && payload.notification.sent) {
-      setNotificationsStatus("Test notification sent");
-      return;
-    }
-    setNotificationsStatus(
-      payload.notification && payload.notification.error
-        ? payload.notification.error
-        : "Test notification was not sent",
-    );
-  } catch (error) {
-    setNotificationsStatus(error.message);
-  }
-}
-
-function renderNotificationsConfig(payload) {
-  const pushover = payload.pushover || {};
-  const alerts = payload.alerts || {};
-  document.getElementById("notificationsEnabled").checked = payload.enabled === true;
-  document.getElementById("notificationsProvider").value = payload.provider || "pushover";
-  document.getElementById("notificationsDefaultTitle").value = payload.default_title || "PoolScope";
-  document.getElementById("pushoverAppToken").value = pushover.app_token || "";
-  document.getElementById("pushoverUserKey").value = pushover.user_key || "";
-  document.getElementById("pushoverAppTokenEnv").value = pushover.app_token_env || "PUSHOVER_APP_TOKEN";
-  document.getElementById("pushoverUserKeyEnv").value = pushover.user_key_env || "PUSHOVER_USER_KEY";
-  document.getElementById("pushoverApiUrl").value = pushover.api_url || "https://api.pushover.net/1/messages.json";
-  document.getElementById("pushoverTimeout").value = String(pushover.timeout_s ?? 5.0);
-  document.getElementById("pushoverPriority").value = String(pushover.priority ?? 0);
-  document.getElementById("pushoverSound").value = pushover.sound || "";
-  renderSignalAlertConfig("notifyTank", alerts.chlorine_tank || {});
-  renderSignalAlertConfig("notifyPh", alerts.ph || {});
-  renderSignalAlertConfig("notifyOrp", alerts.orp || {});
-  renderFilterAlertConfig(alerts.filter_flow_loss || {});
-  renderFreezeTemperatureAlertConfig(alerts.freeze_temperature_unavailable || {});
-}
-
-function collectNotificationsConfig() {
-  const appToken = document.getElementById("pushoverAppToken").value.trim();
-  const userKey = document.getElementById("pushoverUserKey").value.trim();
-  const pushover = {
-    app_token: stringOrNull(appToken),
-    user_key: stringOrNull(userKey),
-    app_token_env: document.getElementById("pushoverAppTokenEnv").value.trim() || "PUSHOVER_APP_TOKEN",
-    user_key_env: document.getElementById("pushoverUserKeyEnv").value.trim() || "PUSHOVER_USER_KEY",
-    api_url: document.getElementById("pushoverApiUrl").value.trim() || "https://api.pushover.net/1/messages.json",
-    timeout_s: Number(document.getElementById("pushoverTimeout").value),
-    priority: Number(document.getElementById("pushoverPriority").value),
-    sound: stringOrNull(document.getElementById("pushoverSound").value),
-  };
-  return {
-    enabled: document.getElementById("notificationsEnabled").checked,
-    provider: document.getElementById("notificationsProvider").value,
-    default_title: document.getElementById("notificationsDefaultTitle").value.trim() || "PoolScope",
-    pushover,
-    alerts: {
-      chlorine_tank: collectSignalAlertConfig("notifyTank", { includeAbove: false }),
-      ph: collectSignalAlertConfig("notifyPh", { includeAbove: true }),
-      orp: collectSignalAlertConfig("notifyOrp", { includeAbove: true }),
-      filter_flow_loss: collectFilterAlertConfig(),
-      freeze_temperature_unavailable: collectFreezeTemperatureAlertConfig(),
-    },
-  };
-}
-
-function renderFilterAlertConfig(config) {
-  const enabled = document.getElementById("notifyFilterAlertEnabled");
-  if (!enabled) {
-    return;
-  }
-  enabled.checked = config.enabled === true;
-  setOptionalNumberInput("notifyFilterWarningAbove", config.warning_above ?? 15.0);
-  setOptionalNumberInput("notifyFilterWarningRepeat", config.warning_repeat_minutes ?? 1440.0);
-}
-
-function collectFilterAlertConfig() {
-  return {
-    enabled: document.getElementById("notifyFilterAlertEnabled").checked,
-    warning_above: numberOrNull(document.getElementById("notifyFilterWarningAbove").value),
-    warning_repeat_minutes: Number(document.getElementById("notifyFilterWarningRepeat").value),
-  };
-}
-
-function renderFreezeTemperatureAlertConfig(config) {
-  const enabled = document.getElementById("notifyFreezeTempAlertEnabled");
-  if (!enabled) {
-    return;
-  }
-  enabled.checked = config.enabled !== false;
-  setOptionalNumberInput(
-    "notifyFreezeTempWarningRepeat",
-    config.warning_repeat_minutes ?? 240.0,
-  );
-}
-
-function collectFreezeTemperatureAlertConfig() {
-  return {
-    enabled: document.getElementById("notifyFreezeTempAlertEnabled").checked,
-    warning_repeat_minutes: Number(
-      document.getElementById("notifyFreezeTempWarningRepeat").value,
-    ),
-  };
-}
-
-function renderSignalAlertConfig(prefix, config) {
-  const enabled = document.getElementById(`${prefix}AlertEnabled`);
-  if (!enabled) {
-    return;
-  }
-  enabled.checked = config.enabled === true;
-  setOptionalNumberInput(`${prefix}CautionBelow`, config.caution_below);
-  setOptionalNumberInput(`${prefix}CautionAbove`, config.caution_above);
-  setOptionalNumberInput(`${prefix}WarningBelow`, config.warning_below);
-  setOptionalNumberInput(`${prefix}WarningAbove`, config.warning_above);
-  setOptionalNumberInput(`${prefix}CautionRepeat`, config.caution_repeat_minutes ?? 1440.0);
-  setOptionalNumberInput(`${prefix}WarningRepeat`, config.warning_repeat_minutes ?? 240.0);
-}
-
-function collectSignalAlertConfig(prefix, options) {
-  const includeAbove = options && options.includeAbove === true;
-  const payload = {
-    enabled: document.getElementById(`${prefix}AlertEnabled`).checked,
-    caution_below: numberOrNull(document.getElementById(`${prefix}CautionBelow`).value),
-    warning_below: numberOrNull(document.getElementById(`${prefix}WarningBelow`).value),
-    caution_repeat_minutes: Number(document.getElementById(`${prefix}CautionRepeat`).value),
-    warning_repeat_minutes: Number(document.getElementById(`${prefix}WarningRepeat`).value),
-  };
-  if (includeAbove) {
-    payload.caution_above = numberOrNull(document.getElementById(`${prefix}CautionAbove`).value);
-    payload.warning_above = numberOrNull(document.getElementById(`${prefix}WarningAbove`).value);
-  }
-  return payload;
-}
-
-function setOptionalNumberInput(id, value) {
-  const input = document.getElementById(id);
-  if (!input) {
-    return;
-  }
-  input.value = value === null || value === undefined ? "" : String(value);
-}
-
-function setNotificationsStatus(message) {
-  const status = document.getElementById("notificationsStatus");
-  if (status) {
-    status.textContent = message;
-  }
-}
-
-function initializeNotificationsControls() {
-  const reload = document.getElementById("notificationsReload");
-  const save = document.getElementById("notificationsSave");
-  const test = document.getElementById("notificationsTest");
-  if (!reload || !save || !test) {
-    return;
-  }
-  reload.addEventListener("click", loadNotificationsConfig);
-  save.addEventListener("click", saveNotificationsConfig);
-  test.addEventListener("click", sendTestNotification);
-  loadNotificationsConfig();
-}
-
-async function loadChlorinationConfig() {
-  if (chlorinationConfigLoading) {
-    return;
-  }
-  chlorinationConfigLoading = true;
-  try {
-    const response = await fetch("/api/config/chlorination", { cache: "no-store" });
-    const payload = await parseApiResponse(response, "chlorination config load failed");
-    renderChlorinationConfig(payload);
-    setChlorinationConfigStatus("Chlorination config loaded");
-  } catch (error) {
-    setChlorinationConfigStatus(error.message);
-  } finally {
-    chlorinationConfigLoading = false;
-  }
-}
-
-async function saveChlorinationConfig() {
-  setChlorinationConfigStatus("Saving chlorination config...");
-  try {
-    const response = await fetch("/api/config/chlorination", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(collectChlorinationConfig()),
-    });
-    const payload = await parseApiResponse(response, "chlorination config save failed");
-    renderChlorinationConfig(payload);
-    setChlorinationConfigStatus(
-      payload.applied_live ? "Chlorination config saved and applied live" : "Chlorination config saved",
-    );
-    clearConfigDraftState(true);
-  } catch (error) {
-    setChlorinationConfigStatus(error.message);
-  }
-}
-
-function renderChlorinationConfig(payload) {
-  document.getElementById("chlorinationEnabled").checked = payload.enabled !== false;
-  document.getElementById("chlorinationDailyDoseOz").value = String(payload.daily_dose_oz ?? 0.0);
-  document.getElementById("chlorinationPumpOutputOzPerMin").value = String(
-    payload.pump_output_oz_per_min ?? 1.0,
-  );
-  document.getElementById("chlorinationNoDoseFirstMinutes").value = String(
-    payload.no_dose_first_minutes ?? 1.0,
-  );
-  document.getElementById("chlorinationNoDoseLastMinutes").value = String(
-    payload.no_dose_last_minutes ?? 10.0,
-  );
-  document.getElementById("chlorinationMaxDutyCycle").value = String(payload.max_duty_cycle ?? 0.5);
-  document.getElementById("chlorinationCycleOnSeconds").value = String(payload.cycle_on_seconds ?? 60.0);
-  document.getElementById("chlorinationMaxCyclePeriodSeconds").value = String(
-    payload.max_cycle_period_seconds ?? 1800.0,
-  );
-  document.getElementById("chlorinationMinCycleOnSeconds").value = String(
-    payload.min_cycle_on_seconds ?? 5.0,
-  );
-}
-
-function collectChlorinationConfig() {
-  return {
-    enabled: document.getElementById("chlorinationEnabled").checked,
-    daily_dose_oz: Number(document.getElementById("chlorinationDailyDoseOz").value),
-    pump_output_oz_per_min: Number(document.getElementById("chlorinationPumpOutputOzPerMin").value),
-    no_dose_first_minutes: Number(document.getElementById("chlorinationNoDoseFirstMinutes").value),
-    no_dose_last_minutes: Number(document.getElementById("chlorinationNoDoseLastMinutes").value),
-    max_duty_cycle: Number(document.getElementById("chlorinationMaxDutyCycle").value),
-    cycle_on_seconds: Number(document.getElementById("chlorinationCycleOnSeconds").value),
-    max_cycle_period_seconds: Number(document.getElementById("chlorinationMaxCyclePeriodSeconds").value),
-    min_cycle_on_seconds: Number(document.getElementById("chlorinationMinCycleOnSeconds").value),
-  };
-}
-
-function setChlorinationConfigStatus(message) {
-  const status = document.getElementById("chlorinationConfigStatus");
-  if (status) {
-    status.textContent = message;
-  }
-}
-
-function initializeChlorinationControls() {
-  document.getElementById("chlorinationReload").addEventListener("click", loadChlorinationConfig);
-  document.getElementById("chlorinationSave").addEventListener("click", saveChlorinationConfig);
-  const primeButton = document.getElementById("chlorinationPrimeConfigButton");
-  if (primeButton) {
-    primeButton.addEventListener("click", primeChlorinationPump);
-  }
-  const calibrationButton = document.getElementById("chlorinationCalibrationConfigButton");
-  if (calibrationButton) {
-    calibrationButton.addEventListener("click", startChlorinationCalibration);
-  }
-  const stopButton = document.getElementById("chlorinationDiagnosticStopButton");
-  if (stopButton) {
-    stopButton.addEventListener("click", stopChlorinationDiagnostic);
-  }
-  loadChlorinationConfig();
-}
-
-async function loadFilterLoadingConfig() {
-  if (filterLoadingConfigLoading) {
-    return;
-  }
-  filterLoadingConfigLoading = true;
-  try {
-    const response = await fetch("/api/config/filter_loading", { cache: "no-store" });
-    const payload = await parseApiResponse(response, "filter loading config load failed");
-    renderFilterLoadingConfig(payload);
-    setFilterLoadingConfigStatus("Filter loading config loaded");
-  } catch (error) {
-    setFilterLoadingConfigStatus(error.message);
-  } finally {
-    filterLoadingConfigLoading = false;
-  }
-}
-
-async function saveFilterLoadingConfig() {
-  setFilterLoadingConfigStatus("Saving filter loading config...");
-  try {
-    const response = await fetch("/api/config/filter_loading", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(collectFilterLoadingConfig()),
-    });
-    const payload = await parseApiResponse(response, "filter loading config save failed");
-    renderFilterLoadingConfig(payload);
-    setFilterLoadingConfigStatus(
-      payload.applied_live ? "Filter loading config saved and applied live" : "Filter loading config saved",
-    );
-    clearConfigDraftState(true);
-  } catch (error) {
-    setFilterLoadingConfigStatus(error.message);
-  }
-}
-
-function renderFilterLoadingConfig(payload) {
-  document.getElementById("filterLoadingEnabled").checked = payload.enabled !== false;
-  setOptionalNumberInput("filterLoadingCleanFlowGpm", payload.clean_flow_gpm);
-  document.getElementById("filterLoadingYellowFlowLossPercent").value = String(payload.yellow_flow_loss_percent ?? 10.0);
-  document.getElementById("filterLoadingRedFlowLossPercent").value = String(payload.red_flow_loss_percent ?? 15.0);
-  document.getElementById("filterLoadingStabilizationSeconds").value = String(payload.stabilization_seconds ?? 60.0);
-  document.getElementById("filterLoadingAveragingSeconds").value = String(payload.averaging_seconds ?? 120.0);
-  document.getElementById("filterLoadingMaxPressureAgeSeconds").value = String(payload.max_pressure_age_seconds ?? 10.0);
-}
-
-function collectFilterLoadingConfig() {
-  return {
-    enabled: document.getElementById("filterLoadingEnabled").checked,
-    clean_flow_gpm: numberOrNull(document.getElementById("filterLoadingCleanFlowGpm").value),
-    yellow_flow_loss_percent: Number(document.getElementById("filterLoadingYellowFlowLossPercent").value),
-    red_flow_loss_percent: Number(document.getElementById("filterLoadingRedFlowLossPercent").value),
-    stabilization_seconds: Number(document.getElementById("filterLoadingStabilizationSeconds").value),
-    averaging_seconds: Number(document.getElementById("filterLoadingAveragingSeconds").value),
-    max_pressure_age_seconds: Number(document.getElementById("filterLoadingMaxPressureAgeSeconds").value),
-  };
-}
-
-function setFilterLoadingConfigStatus(message) {
-  const status = document.getElementById("filterLoadingConfigStatus");
-  if (status) {
-    status.textContent = message;
-  }
-}
-
-function initializeFilterLoadingControls() {
-  const reload = document.getElementById("filterLoadingReload");
-  const save = document.getElementById("filterLoadingSave");
-  if (!reload || !save) {
-    return;
-  }
-  reload.addEventListener("click", loadFilterLoadingConfig);
-  save.addEventListener("click", saveFilterLoadingConfig);
-  loadFilterLoadingConfig();
-}
-
-async function loadFcDemandConfig() {
-  if (fcDemandConfigLoading) {
-    return;
-  }
-  fcDemandConfigLoading = true;
-  try {
-    const response = await fetch("/api/config/fc_demand", { cache: "no-store" });
-    const payload = await parseApiResponse(response, "FC demand config load failed");
-    renderFcDemandConfig(payload);
-    setFcDemandConfigStatus("FC demand config loaded");
-  } catch (error) {
-    setFcDemandConfigStatus(error.message);
-  } finally {
-    fcDemandConfigLoading = false;
-  }
-}
-
-async function saveFcDemandConfig() {
-  setFcDemandConfigStatus("Saving FC demand config...");
-  try {
-    const response = await fetch("/api/config/fc_demand", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(collectFcDemandConfig()),
-    });
-    const payload = await parseApiResponse(response, "FC demand config save failed");
-    renderFcDemandConfig(payload);
-    setFcDemandConfigStatus(
-      payload.applied_live ? "FC demand config saved and applied live" : "FC demand config saved",
-    );
-    clearConfigDraftState(true);
-  } catch (error) {
-    setFcDemandConfigStatus(error.message);
-  }
-}
-
-function renderFcDemandConfig(payload) {
-  const enabled = document.getElementById("fcDemandEnabled");
-  const mode = document.getElementById("fcDemandMode");
-  const poolVolume = document.getElementById("fcDemandPoolVolumeGal");
-  const target = document.getElementById("fcDemandTargetFcPpm");
-  const strength = document.getElementById("fcDemandChlorineStrengthPercent");
-  const minInterval = document.getElementById("fcDemandMinimumTestIntervalHours");
-  const maxObservationInterval = document.getElementById("fcDemandMaxObservationIntervalDays");
-  const preferredStart = document.getElementById("fcDemandPreferredTestStartHour");
-  const preferredEnd = document.getElementById("fcDemandPreferredTestEndHour");
-  const negativeDemandNoise = document.getElementById("fcDemandNegativeDemandNoiseTolerance");
-  const recentCount = document.getElementById("fcDemandRecentObservationCount");
-  const weights = document.getElementById("fcDemandObservationWeights");
-  const feedbackGain = document.getElementById("fcDemandFeedbackGain");
-  const maxMaintenanceChange = document.getElementById("fcDemandMaxMaintenanceChangePercent");
-  const maxDose = document.getElementById("fcDemandMaxDailyDoseOz");
-  if (
-    !enabled ||
-    !mode ||
-    !poolVolume ||
-    !target ||
-    !strength ||
-    !minInterval ||
-    !maxObservationInterval ||
-    !preferredStart ||
-    !preferredEnd ||
-    !negativeDemandNoise ||
-    !recentCount ||
-    !weights ||
-    !feedbackGain ||
-    !maxMaintenanceChange ||
-    !maxDose
-  ) {
-    return;
-  }
-  enabled.checked = payload.enabled === true;
-  mode.value = payload.mode || "observe_only";
-  poolVolume.value = String(payload.pool_volume_gal ?? 10000.0);
-  target.value = String(payload.target_fc_ppm ?? 4.0);
-  strength.value = String(payload.chlorine_strength_percent ?? 12.0);
-  minInterval.value = String(payload.minimum_test_interval_hours ?? 12.0);
-  maxObservationInterval.value = String(payload.max_observation_interval_days ?? 7.0);
-  preferredStart.value = String(payload.preferred_test_start_hour ?? 18);
-  preferredEnd.value = String(payload.preferred_test_end_hour ?? 24);
-  negativeDemandNoise.value = String(
-    payload.negative_demand_noise_tolerance_ppm_per_day ?? 0.05
-  );
-  recentCount.value = String(payload.recent_observation_count ?? 5);
-  weights.value = Array.isArray(payload.observation_weights)
-    ? payload.observation_weights.join(", ")
-    : "0.35, 0.25, 0.18, 0.13, 0.09";
-  feedbackGain.value = String(payload.fc_feedback_gain ?? 0.6);
-  maxMaintenanceChange.value = String(payload.max_maintenance_change_percent ?? 15.0);
-  maxDose.value = String(payload.max_daily_dose_oz ?? 256.0);
-}
-
-function collectFcDemandConfig() {
-  const weights = String(document.getElementById("fcDemandObservationWeights").value)
-    .split(",")
-    .map((value) => Number(value.trim()))
-    .filter((value) => Number.isFinite(value));
-  return {
-    enabled: document.getElementById("fcDemandEnabled").checked,
-    mode: document.getElementById("fcDemandMode").value,
-    pool_volume_gal: Number(document.getElementById("fcDemandPoolVolumeGal").value),
-    target_fc_ppm: Number(document.getElementById("fcDemandTargetFcPpm").value),
-    chlorine_strength_percent: Number(document.getElementById("fcDemandChlorineStrengthPercent").value),
-    minimum_test_interval_hours: Number(document.getElementById("fcDemandMinimumTestIntervalHours").value),
-    max_observation_interval_days: Number(document.getElementById("fcDemandMaxObservationIntervalDays").value),
-    preferred_test_start_hour: Number(document.getElementById("fcDemandPreferredTestStartHour").value),
-    preferred_test_end_hour: Number(document.getElementById("fcDemandPreferredTestEndHour").value),
-    negative_demand_noise_tolerance_ppm_per_day: Number(
-      document.getElementById("fcDemandNegativeDemandNoiseTolerance").value
-    ),
-    recent_observation_count: Number(document.getElementById("fcDemandRecentObservationCount").value),
-    observation_weights: weights,
-    fc_feedback_gain: Number(document.getElementById("fcDemandFeedbackGain").value),
-    max_maintenance_change_percent: Number(document.getElementById("fcDemandMaxMaintenanceChangePercent").value),
-    max_daily_dose_oz: Number(document.getElementById("fcDemandMaxDailyDoseOz").value),
-  };
-}
-
-function setFcDemandConfigStatus(message) {
-  const status = document.getElementById("fcDemandConfigStatus");
-  if (status) {
-    status.textContent = message;
-  }
-}
-
-function initializeFcDemandControls() {
-  const reload = document.getElementById("fcDemandReload");
-  const save = document.getElementById("fcDemandSave");
-  if (!reload || !save) {
-    return;
-  }
-  reload.addEventListener("click", loadFcDemandConfig);
-  save.addEventListener("click", saveFcDemandConfig);
-  loadFcDemandConfig();
-}
 
 async function loadAnalogConfig() {
   if (analogConfigLoading) {
@@ -5872,7 +5115,7 @@ function chemicalDefaultStrengthPercent(chemical) {
   if (chemical === "muriatic_acid") {
     return 31.45;
   }
-  return 12.0;
+  return canonicalChlorineStrengthPercent;
 }
 
 async function loadChemicalAdditions() {
@@ -5999,7 +5242,20 @@ function updateChemicalStrengthDefault() {
   if (!chemical || !strength) {
     return;
   }
-  strength.value = String(chemicalDefaultStrengthPercent(chemical.value));
+  const defaultStrength = chemicalDefaultStrengthPercent(chemical.value);
+  strength.value = defaultStrength === null ? "" : String(defaultStrength);
+}
+
+async function loadCanonicalChlorineStrength() {
+  try {
+    const response = await fetch("/api/config/chlorination", { cache: "no-store" });
+    const payload = await parseApiResponse(response, "chlorination config load failed");
+    const strength = Number(payload.chlorine_strength_percent);
+    canonicalChlorineStrengthPercent = Number.isFinite(strength) ? strength : null;
+    updateChemicalStrengthDefault();
+  } catch (_error) {
+    canonicalChlorineStrengthPercent = null;
+  }
 }
 
 function initializeChemicalAdditionControls() {
@@ -6017,6 +5273,7 @@ function initializeChemicalAdditionControls() {
     save.addEventListener("click", saveChemicalAddition);
   }
   updateChemicalStrengthDefault();
+  void loadCanonicalChlorineStrength();
   if (document.getElementById("chemicalAdditionList")) {
     loadChemicalAdditions();
   }
@@ -6200,10 +5457,10 @@ async function poll() {
     } else if (PAGE_MODE === "schedule") {
       await refreshTopStatus(false);
       await refreshHealth(false);
-    } else if (PAGE_MODE === "config") {
+    } else if (PAGE_MODE === "settings") {
       await refreshTopStatus(false);
-      if (!configAutoRefreshPaused) {
-        await loadAllConfigSections();
+      if (typeof refreshSettingsMeta === "function") {
+        await refreshSettingsMeta(false);
       }
       await refreshHealth(false);
     }
@@ -6266,19 +5523,8 @@ function initializeForPage() {
     initializeTimerControls();
     return;
   }
-  if (PAGE_MODE === "config") {
-    initializeConfigEditorControls();
-    initializeRuntimeControls();
-    initializeSiteControls();
-    initializeSafetyControls();
-    initializeAcquisitionControls();
-    initializeLoggingControls();
-    initializeNotificationsControls();
-    initializeAnalogControls();
-    initializePhSensorControls();
-    initializeChlorinationControls();
-    initializeFilterLoadingControls();
-    initializeFcDemandControls();
+  if (PAGE_MODE === "settings") {
+    initializeSettingsPage();
     return;
   }
 }

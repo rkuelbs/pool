@@ -20,9 +20,10 @@ from poolctl.app import (
     chlorine_supply_daily_dose_oz,
     usable_chlorine_gallons,
 )
-from poolctl.config import LiveViewConfig
+from poolctl.config import MonitoringConfig
 from poolctl.domain.models import ActuatorId, ChemicalType, Measurement, Quality, SensorId
 from poolctl.services.chlorination import valid_dosing_windows_for_day
+from poolctl.services.monitoring import classify_measurement, classify_value
 
 
 SENSOR_LABELS = {
@@ -73,6 +74,7 @@ SENSOR_LABELS = {
     SensorId.CPU_FAN_RPM: "CPU fan",
     SensorId.TANK_LEVEL: "Tank level",
     SensorId.CHLORINE_TANK_LEVEL_GAL: "Chlorine tank level",
+    SensorId.CHLORINE_TANK_DAYS_REMAINING: "Chlorine remaining",
 }
 
 LAB_HISTORY_SERIES: dict[str, dict[str, Any]] = {
@@ -246,7 +248,7 @@ async def build_live_snapshot(app: PoolControllerApp) -> dict[str, Any]:
             sensor_id.value: measurement_payload(
                 sensor_id,
                 measurement,
-                app.live_view_config,
+                app.monitoring_config,
             )
             for sensor_id, measurement in snapshot_measurements.items()
         },
@@ -257,7 +259,9 @@ async def build_live_snapshot(app: PoolControllerApp) -> dict[str, Any]:
             }
             for actuator_id, state in app.router.actuator_states.items()
         },
-        "flows": tick.flow_estimates.as_payload(),
+        "flows": tick.flow_estimates.as_payload(
+            monitoring_config=app.monitoring_config
+        ),
         "chlorination": (
             tick.chlorination_status.as_payload()
             if tick.chlorination_status is not None
@@ -268,6 +272,7 @@ async def build_live_snapshot(app: PoolControllerApp) -> dict[str, Any]:
             safety_status=app.router.safety_gate.chlorine_tank_status(),
             tank_measurement=chlorine_tank_measurement,
             daily_dose_oz=daily_dose_oz,
+            monitoring_config=app.monitoring_config,
         ),
         "fc_demand": (
             tick.fc_demand_status.as_payload()
@@ -366,6 +371,7 @@ def chlorine_supply_payload(
     daily_dose_oz: float,
     reserve_gal: float = DEFAULT_CHLORINE_TANK_FORECAST_RESERVE_GAL,
     safety_status: dict[str, Any] | None = None,
+    monitoring_config: MonitoringConfig,
 ) -> dict[str, Any]:
     tank_level_gal = None
     remaining_gal = None
@@ -392,7 +398,10 @@ def chlorine_supply_payload(
     elif remaining_gal is not None:
         days_remaining = remaining_gal * 128.0 / dose
 
-    status = chlorine_supply_status(days_remaining)
+    status = classify_value(
+        days_remaining,
+        monitoring_config.limit_for(SensorId.CHLORINE_TANK_DAYS_REMAINING),
+    ).level.value
     remaining_display = (
         f"{remaining_gal:.2f} gallons"
         if remaining_gal is not None
@@ -431,16 +440,6 @@ def chlorine_supply_payload(
         "display": f"Usable chlorine remaining {remaining_display}, {days_display}",
         "reason": reason,
     }
-
-
-def chlorine_supply_status(days_remaining: float | None) -> str:
-    if days_remaining is None or not math.isfinite(days_remaining):
-        return "unknown"
-    if days_remaining > 7.0:
-        return "normal"
-    if days_remaining > 3.0:
-        return "caution"
-    return "alarm"
 
 
 def build_history_payload(
@@ -495,7 +494,7 @@ def build_history_payload(
             measurement_payload(
                 record.sensor_id,
                 record.to_measurement(),
-                app.live_view_config,
+                app.monitoring_config,
             )
             for record in records
         ],
@@ -571,7 +570,7 @@ def build_history_series_payload(
                         measurement_payload(
                             record.sensor_id,
                             record.to_measurement(),
-                            app.live_view_config,
+                            app.monitoring_config,
                         )
                         for record in records
                     ],
@@ -596,7 +595,7 @@ def build_history_series_payload(
                     value=value,
                     unit=str(lab_spec["unit"]),
                     decimals=int(lab_spec["decimals"]),
-                    live_view_config=app.live_view_config,
+                    monitoring_config=app.monitoring_config,
                     status_sensor_id=lab_spec.get("status_sensor_id"),
                 )
                 for observed_at, value in lab_points
@@ -717,9 +716,9 @@ def history_bucket_seconds(
 def measurement_payload(
     sensor_id: SensorId,
     measurement: Measurement,
-    live_view_config: LiveViewConfig,
+    monitoring_config: MonitoringConfig,
 ) -> dict[str, Any]:
-    status = measurement_status(sensor_id, measurement, live_view_config)
+    status = measurement_status(sensor_id, measurement, monitoring_config)
 
     return {
         "sensor_id": sensor_id.value,
@@ -730,7 +729,7 @@ def measurement_payload(
         "quality": measurement.quality.value,
         "status": status,
         "status_label": SENSOR_STATUS_LABELS[status],
-        "limits": sensor_limits_payload(sensor_id, live_view_config),
+        "limits": sensor_limits_payload(sensor_id, monitoring_config),
         "kind": measurement.kind.value,
         "observed_at": measurement.observed_at.isoformat(),
         "metadata": measurement.metadata,
@@ -742,45 +741,29 @@ SENSOR_STATUS_LABELS = {
     "caution": "Caution",
     "alarm": "Alarm",
     "invalid": "Invalid",
-    "unknown": "No limits",
+    "unknown": "Unknown",
 }
 
 
 def measurement_status(
     sensor_id: SensorId,
     measurement: Measurement,
-    live_view_config: LiveViewConfig,
+    monitoring_config: MonitoringConfig,
 ) -> str:
-    if measurement.quality != Quality.GOOD:
-        return "invalid"
-
-    limits = live_view_config.sensor_limits.get(sensor_id)
-    if limits is None:
-        return "unknown"
-
-    if measurement.value < limits.caution_min or measurement.value > limits.caution_max:
-        return "alarm"
-
-    if measurement.value < limits.normal_min or measurement.value > limits.normal_max:
-        return "caution"
-
-    return "normal"
+    return classify_measurement(
+        measurement,
+        monitoring_config.limit_for(sensor_id),
+    ).level.value
 
 
 def sensor_limits_payload(
     sensor_id: SensorId,
-    live_view_config: LiveViewConfig,
-) -> dict[str, float] | None:
-    limits = live_view_config.sensor_limits.get(sensor_id)
+    monitoring_config: MonitoringConfig,
+) -> dict[str, float | None] | None:
+    limits = monitoring_config.limit_for(sensor_id)
     if limits is None:
         return None
-
-    return {
-        "caution_min": limits.caution_min,
-        "normal_min": limits.normal_min,
-        "normal_max": limits.normal_max,
-        "caution_max": limits.caution_max,
-    }
+    return limits.as_mapping(include_missing=True)
 
 
 def format_measurement(measurement: Measurement) -> str:
@@ -836,7 +819,7 @@ def _lab_history_point_payload(
     value: float,
     unit: str,
     decimals: int,
-    live_view_config: LiveViewConfig,
+    monitoring_config: MonitoringConfig,
     status_sensor_id: SensorId | None = None,
 ) -> dict[str, Any]:
     display = f"{value:.{decimals}f} {unit}" if unit != "pH" else f"{value:.{decimals}f}"
@@ -851,9 +834,9 @@ def _lab_history_point_payload(
             unit=unit,
             quality=Quality.GOOD,
         )
-        status = measurement_status(status_sensor_id, proxy, live_view_config)
+        status = measurement_status(status_sensor_id, proxy, monitoring_config)
         status_label = SENSOR_STATUS_LABELS[status]
-        limits = sensor_limits_payload(status_sensor_id, live_view_config)
+        limits = sensor_limits_payload(status_sensor_id, monitoring_config)
     return {
         "sensor_id": sensor_id,
         "label": label,

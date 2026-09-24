@@ -7,8 +7,12 @@
 #
 # site:
 #   timezone: America/Chicago
-#   latitude: <site latitude required by solar schedules>
-#   longitude: <site longitude required by solar schedules>
+#   latitude: <replace tracked 45.0 demo latitude with the real site>
+#   longitude: <replace tracked -90.0 demo longitude with the real site>
+#
+# pool:
+#   name: Home Pool
+#   volume_gal: <measured pool volume>
 #
 # pump_timer:
 #   active_profile: normal
@@ -32,16 +36,27 @@
 #
 # chlorination:
 #   pump_output_oz_per_min: <measured calibration>
+#   chlorine_strength_percent: <sodium hypochlorite concentration>
 #   daily_dose_oz: <site value, if manually controlled>
 #
 # fc_demand:
-#   pool_volume_gal: <measured pool volume>
 #   target_fc_ppm: <site target>
 #   mode: observe_only  # use automatic only after validation
 #   max_daily_dose_oz: <site safety cap>
 #
 # filter_loading:
 #   clean_flow_gpm: <Qclean measured just after filter cleaning>
+#
+# monitoring:
+#   limits:
+#     raw_ph:
+#       alarm_below: 6.8
+#       caution_below: 7.2
+#       caution_above: 7.8
+#       alarm_above: 8.2
+#     filter_flow_loss_percent:
+#       caution_above: 10
+#       alarm_above: 15
 #
 # weather:
 #   enabled: true  # coordinates come from the shared site block
@@ -53,7 +68,8 @@
 # protected secret source. Local YAML may enable notifications and choose the
 # environment-variable names, but should not contain Pushover token/key values.
 #
-# Do not copy retired keys from an older pi-local.yaml wholesale. Re-enter only
-# current documented keys after comparing this template and pi-prod.yaml.
+# Older ownership keys remain readable and are normalized safely, but new edits
+# should use only the canonical locations documented above. Saving through
+# Settings writes canonical keys and removes migrated duplicates.
 
 {}

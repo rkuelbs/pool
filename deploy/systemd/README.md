@@ -97,18 +97,22 @@ The version check should report Python 3.11.2.
 
 `LOCAL_CONFIG_PATH` defaults to `configs/pi-local.yaml`. The file is optional
 and may be missing on first boot. When present, it is merged on top of
-`CONFIG_PATH`; dashboard config edits are saved there so `git pull` can update
+`CONFIG_PATH`; Settings edits are saved there so `git pull` can update
 the tracked base config without conflicting with schedule or dose changes.
 The tracked `pi-local.example.yaml` is deliberately an empty override with
 commented examples. A local schedules list replaces the complete base list.
+The tracked profiles use `45.0, -90.0` only as a generic solar-scheduling
+demonstration location. Set the pool's real latitude and longitude in
+`pi-local.yaml` before enabling solar-relative schedules or weather.
 
-For the current config migration, back up an existing `pi-local.yaml` outside
-the repository, update the repo, copy a fresh minimal example, and manually
-re-enter only current values. Restore the real schedule/`allow_dosing` flags,
-chlorine pump oz/min, FC pool volume and target, FC-demand mode, site maximum
-dose, filter `clean_flow_gpm`, weather location, non-default hardware paths or
-slave IDs, and notification settings/secrets. Do not copy retired keys
-wholesale from the old file.
+Back up an existing `pi-local.yaml` before updating, as with any production
+configuration change. PoolScope reads legacy pool volume, chlorine strength,
+live-view limits, notification thresholds, and filter status thresholds when
+their new canonical values are absent, then normalizes them to `pool`,
+`chlorination`, `monitoring.limits`, and threshold-free
+`notifications.rules`. Numeric values are preserved, canonical keys take
+precedence within a layer, and Settings saves only canonical ownership. Review
+the effective Settings values before restarting the controller.
 
 ## Reinstall or Update Services
 

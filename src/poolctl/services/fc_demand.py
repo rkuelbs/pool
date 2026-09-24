@@ -47,9 +47,7 @@ class FcDemandConfig:
 
     enabled: bool = False
     mode: ControlMode = ControlMode.OBSERVE_ONLY
-    pool_volume_gal: float = 10000.0
     target_fc_ppm: float = 4.0
-    chlorine_strength_percent: float = 12.0
     minimum_test_interval_hours: float = 12.0
     max_observation_interval_days: float = DEFAULT_MAX_OBSERVATION_INTERVAL_DAYS
     preferred_test_start_hour: int = DEFAULT_PREFERRED_TEST_START_HOUR
@@ -72,12 +70,8 @@ class FcDemandConfig:
             tuple(float(weight) for weight in self.observation_weights),
         )
 
-        if self.pool_volume_gal <= 0:
-            raise ValueError("fc_demand.pool_volume_gal must be > 0")
         if self.target_fc_ppm < 0:
             raise ValueError("fc_demand.target_fc_ppm must be >= 0")
-        if self.chlorine_strength_percent <= 0:
-            raise ValueError("fc_demand.chlorine_strength_percent must be > 0")
         if self.minimum_test_interval_hours < 0:
             raise ValueError("fc_demand.minimum_test_interval_hours must be >= 0")
         if self.max_observation_interval_days <= 0:
@@ -125,17 +119,7 @@ class FcDemandConfig:
         return cls(
             enabled=_bool_value(config_data, "enabled", cls.enabled),
             mode=_control_mode_value(config_data, "mode", cls.mode),
-            pool_volume_gal=_float_value(
-                config_data,
-                "pool_volume_gal",
-                cls.pool_volume_gal,
-            ),
             target_fc_ppm=_float_value(config_data, "target_fc_ppm", cls.target_fc_ppm),
-            chlorine_strength_percent=_float_value(
-                config_data,
-                "chlorine_strength_percent",
-                cls.chlorine_strength_percent,
-            ),
             minimum_test_interval_hours=_float_value(
                 config_data,
                 "minimum_test_interval_hours",
@@ -531,6 +515,8 @@ class _MaintenanceEstimate:
 def estimate_fc_demand_plan(
     *,
     config: FcDemandConfig,
+    pool_volume_gal: float,
+    chlorine_strength_percent: float,
     now: datetime,
     pump_timer_config: PumpTimerConfig,
     chlorination_config: ChlorinationConfig,
@@ -561,6 +547,8 @@ def estimate_fc_demand_plan(
         return FcDemandPlan(
             status=_base_status(
                 config,
+                pool_volume_gal=pool_volume_gal,
+                chlorine_strength_percent=chlorine_strength_percent,
                 now=now,
                 pump_timer_config=pump_timer_config,
                 chlorination_config=chlorination_config,
@@ -574,6 +562,8 @@ def estimate_fc_demand_plan(
 
     demand_observations = fc_demand_observations(
         config=config,
+        pool_volume_gal=pool_volume_gal,
+        chlorine_strength_percent=chlorine_strength_percent,
         fc_observations=reference_fc_observations,
         automated_chlorine_deliveries=automated_chlorine_deliveries,
         sodium_hypochlorite_additions=sodium_hypochlorite_additions,
@@ -602,6 +592,8 @@ def estimate_fc_demand_plan(
         return FcDemandPlan(
             status=_base_status(
                 config,
+                pool_volume_gal=pool_volume_gal,
+                chlorine_strength_percent=chlorine_strength_percent,
                 now=now,
                 pump_timer_config=pump_timer_config,
                 chlorination_config=chlorination_config,
@@ -617,10 +609,17 @@ def estimate_fc_demand_plan(
             )
     )
 
-    maintenance = _maintenance_estimate(config, learning_observations)
+    maintenance = _maintenance_estimate(
+        config,
+        learning_observations,
+        pool_volume_gal=pool_volume_gal,
+        chlorine_strength_percent=chlorine_strength_percent,
+    )
     latest_demand_observation = demand_observations[-1]
     feedback = _feedback_for_latest_test(
         config=config,
+        pool_volume_gal=pool_volume_gal,
+        chlorine_strength_percent=chlorine_strength_percent,
         latest_test=latest_reference_observation,
         now=now,
         pump_timer_config=pump_timer_config,
@@ -651,8 +650,8 @@ def estimate_fc_demand_plan(
         ready=True,
         reason="FC demand maintenance estimate ready",
         target_fc_ppm=config.target_fc_ppm,
-        pool_volume_gal=config.pool_volume_gal,
-        chlorine_strength_percent=config.chlorine_strength_percent,
+        pool_volume_gal=pool_volume_gal,
+        chlorine_strength_percent=chlorine_strength_percent,
         latest_fc_ppm=(
             latest_fc_observation.free_chlorine
             if latest_fc_observation is not None
@@ -790,6 +789,8 @@ def estimate_fc_demand_plan(
 def fc_demand_observations(
     *,
     config: FcDemandConfig,
+    pool_volume_gal: float,
+    chlorine_strength_percent: float,
     fc_observations: Sequence[FcObservation] = (),
     automated_chlorine_deliveries: Sequence[ChlorineDeliveryPoint] = (),
     sodium_hypochlorite_additions: Sequence[ChemicalAddition] = (),
@@ -812,8 +813,8 @@ def fc_demand_observations(
         )
         automated_added_fc = fc_ppm_from_fl_oz(
             automated_oz,
-            strength_percent=config.chlorine_strength_percent,
-            pool_volume_gal=config.pool_volume_gal,
+            strength_percent=chlorine_strength_percent,
+            pool_volume_gal=pool_volume_gal,
         )
         manual_additions = _manual_hypo_between(
             sodium_hypochlorite_additions,
@@ -825,7 +826,7 @@ def fc_demand_observations(
             fc_ppm_from_fl_oz(
                 addition.amount_fl_oz,
                 strength_percent=addition.strength_percent,
-                pool_volume_gal=config.pool_volume_gal,
+                pool_volume_gal=pool_volume_gal,
             )
             for addition in manual_additions
         )
@@ -1053,6 +1054,9 @@ def _valid_observation_elapsed_hours(
 def _maintenance_estimate(
     config: FcDemandConfig,
     observations: tuple[FcDemandObservation, ...],
+    *,
+    pool_volume_gal: float,
+    chlorine_strength_percent: float,
 ) -> _MaintenanceEstimate:
     previous_limited_dose: float | None = None
     latest_estimate: _MaintenanceEstimate | None = None
@@ -1067,8 +1071,8 @@ def _maintenance_estimate(
         predicted_demand = weighted_demand + weather_adjustment
         unlimited_dose = fl_oz_for_fc_ppm(
             predicted_demand,
-            strength_percent=config.chlorine_strength_percent,
-            pool_volume_gal=config.pool_volume_gal,
+            strength_percent=chlorine_strength_percent,
+            pool_volume_gal=pool_volume_gal,
         )
         limited_dose, rate_limited = _rate_limited_maintenance_dose(
             unlimited_dose,
@@ -1077,8 +1081,8 @@ def _maintenance_estimate(
         )
         rate_limited_demand = fc_ppm_from_fl_oz(
             limited_dose,
-            strength_percent=config.chlorine_strength_percent,
-            pool_volume_gal=config.pool_volume_gal,
+            strength_percent=chlorine_strength_percent,
+            pool_volume_gal=pool_volume_gal,
         )
         latest_estimate = _MaintenanceEstimate(
             baseline_demand_ppm_per_day=weighted_demand,
@@ -1141,6 +1145,8 @@ def _rate_limited_maintenance_dose(
 def _feedback_for_latest_test(
     *,
     config: FcDemandConfig,
+    pool_volume_gal: float,
+    chlorine_strength_percent: float,
     latest_test: FcObservation | None,
     now: datetime,
     pump_timer_config: PumpTimerConfig,
@@ -1161,8 +1167,8 @@ def _feedback_for_latest_test(
     )
     feedback_dose_oz = _signed_fl_oz_for_fc_ppm(
         feedback_fc_ppm,
-        strength_percent=config.chlorine_strength_percent,
-        pool_volume_gal=config.pool_volume_gal,
+        strength_percent=chlorine_strength_percent,
+        pool_volume_gal=pool_volume_gal,
     )
     return {
         "fc_ppm": feedback_fc_ppm,
@@ -1219,6 +1225,8 @@ def _manual_hypo_between(
 def _base_status(
     config: FcDemandConfig,
     *,
+    pool_volume_gal: float,
+    chlorine_strength_percent: float,
     now: datetime,
     pump_timer_config: PumpTimerConfig,
     chlorination_config: ChlorinationConfig,
@@ -1232,6 +1240,8 @@ def _base_status(
 ) -> FcDemandStatus:
     feedback = _feedback_for_latest_test(
         config=config,
+        pool_volume_gal=pool_volume_gal,
+        chlorine_strength_percent=chlorine_strength_percent,
         latest_test=latest_reference_observation,
         now=now,
         pump_timer_config=pump_timer_config,
@@ -1242,8 +1252,8 @@ def _base_status(
         ready=ready,
         reason=reason,
         target_fc_ppm=config.target_fc_ppm,
-        pool_volume_gal=config.pool_volume_gal,
-        chlorine_strength_percent=config.chlorine_strength_percent,
+        pool_volume_gal=pool_volume_gal,
+        chlorine_strength_percent=chlorine_strength_percent,
         latest_fc_ppm=(
             latest_observation.free_chlorine
             if latest_observation is not None

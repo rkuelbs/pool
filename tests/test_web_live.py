@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from poolctl.app import build_app_from_mapping
-from poolctl.config import LiveViewConfig
+from poolctl.config import MonitoringConfig
 from poolctl.domain.models import (
     ActuatorId,
     ActuatorState,
@@ -484,6 +484,7 @@ def test_chlorine_supply_payload_calculates_days_and_status(
             quality=Quality.GOOD,
         ),
         daily_dose_oz=daily_dose_oz,
+        monitoring_config=MonitoringConfig.from_mapping({}),
     )
 
     assert payload["days_remaining"] == expected_days
@@ -574,16 +575,16 @@ def test_format_measurement_uses_domain_units() -> None:
     )
 
 
-def test_measurement_status_uses_configured_display_bands() -> None:
-    config = LiveViewConfig.from_mapping(
+def test_measurement_status_uses_canonical_monitoring_limits() -> None:
+    config = MonitoringConfig.from_mapping(
         {
-            "live_view": {
-                "sensor_limits": {
+            "monitoring": {
+                "limits": {
                     "pump_output_psi": {
-                        "caution_min": 1.0,
-                        "normal_min": 6.0,
-                        "normal_max": 25.0,
-                        "caution_max": 30.0,
+                        "alarm_below": 1.0,
+                        "caution_below": 6.0,
+                        "caution_above": 25.0,
+                        "alarm_above": 30.0,
                     }
                 }
             }
@@ -724,7 +725,7 @@ def test_web_pages_use_poolscope_branding_and_live_logo() -> None:
         "live.html": "PoolScope Live",
         "history.html": "PoolScope History",
         "schedule.html": "PoolScope Schedule",
-        "config.html": "PoolScope Config",
+        "settings.html": "PoolScope Settings",
     }
 
     for page_name, title in page_titles.items():
@@ -738,7 +739,7 @@ def test_web_pages_use_poolscope_branding_and_live_logo() -> None:
     live_markup = (static_dir / "live.html").read_text(encoding="utf-8")
     schedule_markup = (static_dir / "schedule.html").read_text(encoding="utf-8")
     styles = (static_dir / "styles.css").read_text(encoding="utf-8")
-    script = (static_dir / "app.js").read_text(encoding="utf-8")
+    settings_script = (static_dir / "settings.js").read_text(encoding="utf-8")
     logo = static_dir / "poolscope.png"
 
     assert '<img class="brand-mark" src="/poolscope.png" alt="">' in live_markup
@@ -749,8 +750,43 @@ def test_web_pages_use_poolscope_branding_and_live_logo() -> None:
     assert 'id="headerPumpMode"' in schedule_markup
     assert ".brand-mark::before" not in styles
     assert logo.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
-    assert 'message: "PoolScope test notification"' in script
-    assert 'payload.default_title || "PoolScope"' in script
+    assert 'message: "PoolScope Settings test notification"' in settings_script
+    assert 'settingsElement("notificationsDefaultTitle").value.trim() || "PoolScope"' in settings_script
+
+
+def test_settings_page_uses_collapsible_consumer_tiles_and_canonical_ranges() -> None:
+    static_dir = Path(__file__).parents[1] / "src" / "poolctl" / "web" / "static"
+    markup = (static_dir / "settings.html").read_text(encoding="utf-8")
+    script = (static_dir / "settings.js").read_text(encoding="utf-8")
+    app_script = (static_dir / "app.js").read_text(encoding="utf-8")
+    styles = (static_dir / "styles.css").read_text(encoding="utf-8")
+
+    card_ids = [
+        "pool-site",
+        "status-ranges",
+        "chlorination",
+        "free-chlorine-control",
+        "filter-flow",
+        "notifications",
+        "safety-freeze",
+        "sensors-calibration",
+        "acquisition-logging",
+        "hardware-runtime",
+    ]
+    positions = [markup.index(f'id="{card_id}"') for card_id in card_ids]
+    assert positions == sorted(positions)
+    assert markup.count('class="settings-card"') == 10
+    assert markup.count("<details") >= 10
+    assert 'id="monitoringPrimaryRows"' in markup
+    assert "These ranges control status colors throughout PoolScope" in markup
+    assert 'data-settings-link="status-ranges"' in markup
+    assert ".settings-card[open]" in styles
+    assert "grid-column: 1 / -1;" in styles
+    assert "monitoring.limits" not in markup
+    assert 'settingsRequest("/api/config/monitoring")' in script
+    assert "caution_below" in script
+    assert "warning_below" not in script
+    assert 'fetch("/api/config/monitoring"' in app_script
 
 
 def test_schedule_editor_uses_operating_modes_and_preserves_drafts() -> None:
@@ -759,7 +795,7 @@ def test_schedule_editor_uses_operating_modes_and_preserves_drafts() -> None:
     styles = (static_dir / "styles.css").read_text(encoding="utf-8")
     schedule_markup = (static_dir / "schedule.html").read_text(encoding="utf-8")
 
-    for page_name in ("live.html", "history.html", "schedule.html", "config.html"):
+    for page_name in ("live.html", "history.html", "schedule.html"):
         markup = (static_dir / page_name).read_text(encoding="utf-8")
         assert "<span>Mode</span>" in markup
         assert "<span>Pump Speed</span>" not in markup

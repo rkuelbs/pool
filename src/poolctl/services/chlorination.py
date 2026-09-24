@@ -43,6 +43,7 @@ class ChlorinationConfig:
     enabled: bool = True
     daily_dose_oz: float = 0.0
     pump_output_oz_per_min: float = 1.0
+    chlorine_strength_percent: float = 12.0
     no_dose_first_minutes: float = 1.0
     no_dose_last_minutes: float = 10.0
     max_duty_cycle: float = 0.5
@@ -55,6 +56,8 @@ class ChlorinationConfig:
             raise ValueError("chlorination.daily_dose_oz must be >= 0")
         if self.pump_output_oz_per_min <= 0:
             raise ValueError("chlorination.pump_output_oz_per_min must be > 0")
+        if self.chlorine_strength_percent <= 0:
+            raise ValueError("chlorination.chlorine_strength_percent must be > 0")
         if self.no_dose_first_minutes < 0:
             raise ValueError("chlorination.no_dose_first_minutes must be >= 0")
         if self.no_dose_last_minutes < 0:
@@ -86,6 +89,11 @@ class ChlorinationConfig:
                 config_data,
                 "pump_output_oz_per_min",
                 cls.pump_output_oz_per_min,
+            ),
+            chlorine_strength_percent=_float_value(
+                config_data,
+                "chlorine_strength_percent",
+                cls.chlorine_strength_percent,
             ),
             no_dose_first_minutes=_float_value(
                 config_data,

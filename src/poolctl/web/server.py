@@ -27,12 +27,24 @@ from typing import Any, Literal, TypeVar
 from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from poolctl.app import ChlorineTankEstimate, PoolControllerApp, build_app_from_config
-from poolctl.config import DriverProfile, RuntimeConfig, SiteConfig
+from poolctl.app import (
+    ChlorineTankEstimate,
+    PoolControllerApp,
+    RelaySafetyConfig,
+    build_app_from_config,
+)
+from poolctl.config import (
+    DriverProfile,
+    MonitoringConfig,
+    PoolConfig,
+    RuntimeConfig,
+    SiteConfig,
+)
 from poolctl.config_files import (
     config_write_path,
     load_config_with_overrides,
     load_writable_config_mapping,
+    merge_config_mappings,
     save_config_mapping,
 )
 from poolctl.domain.models import (
@@ -49,7 +61,9 @@ from poolctl.domain.models import (
     SensorId,
 )
 from poolctl.drivers.modbus.registers import ModbusRegisterDeviceConfig
+from poolctl.drivers.modbus.relay_board import ModbusRelayBoardConfig
 from poolctl.drivers.raspberrypi.analog_inputs import WaveshareAnalogInputConfig
+from poolctl.drivers.raspberrypi.actuators import RelayActuatorConfig
 from poolctl.drivers.raspberrypi.sensors import (
     DFRobotSensorCircuitBreakerConfig,
     calibrate_dfrobot_ph_sensor,
@@ -58,7 +72,7 @@ from poolctl.services.acquisition import AcquisitionConfig
 from poolctl.services.chlorination import ChlorinationConfig
 from poolctl.services.clock import AcceleratedClock, Clock
 from poolctl.services.fc_demand import FcDemandConfig
-from poolctl.services.flow_estimation import FilterLoadingConfig
+from poolctl.services.flow_estimation import FilterLoadingConfig, FlowEstimationConfig
 from poolctl.services.measurement_logging import MeasurementLoggingConfig
 from poolctl.services.notifications import NotificationsConfig
 from poolctl.services.pump_timer import (
@@ -80,7 +94,6 @@ STATIC_DIR = Path(__file__).with_name("static")
 MAX_EVENT_COUNT = 500
 EnumT = TypeVar("EnumT", bound=Enum)
 CHEMICAL_DEFAULT_STRENGTH_PERCENT = {
-    ChemicalType.SODIUM_HYPOCHLORITE: 12.0,
     ChemicalType.MURIATIC_ACID: 31.45,
 }
 CHEMICAL_LABELS = {
@@ -332,6 +345,7 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
     event_log: list[dict[str, Any]]
     event_ids: set[str]
     async_runtime: AsyncRuntime
+    startup_restart_config: dict[str, Any]
 
     def handle(self) -> None:
         """Finish quietly when the browser abandons an in-flight response."""
@@ -359,11 +373,19 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/config":
-            self._serve_file(STATIC_DIR / "config.html", "text/html; charset=utf-8")
+            self._serve_redirect("/settings")
+            return
+
+        if path == "/settings":
+            self._serve_file(STATIC_DIR / "settings.html", "text/html; charset=utf-8")
             return
 
         if path == "/app.js":
             self._serve_file(STATIC_DIR / "app.js", "application/javascript; charset=utf-8")
+            return
+
+        if path == "/settings.js":
+            self._serve_file(STATIC_DIR / "settings.js", "application/javascript; charset=utf-8")
             return
 
         if path == "/styles.css":
@@ -394,6 +416,10 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             self._serve_health()
             return
 
+        if path == "/api/settings/meta":
+            self._serve_settings_meta()
+            return
+
         if path == "/api/events":
             self._serve_events()
             return
@@ -416,6 +442,14 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
 
         if path == "/api/config/site":
             self._serve_site_config()
+            return
+
+        if path == "/api/config/pool":
+            self._serve_pool_config()
+            return
+
+        if path == "/api/config/monitoring":
+            self._serve_monitoring_config()
             return
 
         if path == "/api/config/pump_timer":
@@ -446,6 +480,10 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             self._serve_filter_loading_config()
             return
 
+        if path == "/api/config/flow_estimation":
+            self._serve_flow_estimation_config()
+            return
+
         if path == "/api/config/fc_demand":
             self._serve_fc_demand_config()
             return
@@ -470,6 +508,14 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             self._serve_ph_sensor_config()
             return
 
+        if path == "/api/config/orp_sensor":
+            self._serve_orp_sensor_config()
+            return
+
+        if path == "/api/config/relay":
+            self._serve_relay_config()
+            return
+
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
     def do_POST(self) -> None:
@@ -485,6 +531,14 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
 
         if path == "/api/config/site":
             self._serve_update_site_config()
+            return
+
+        if path == "/api/config/pool":
+            self._serve_update_pool_config()
+            return
+
+        if path == "/api/config/monitoring":
+            self._serve_update_monitoring_config()
             return
 
         if path == "/api/config/pump_timer":
@@ -505,6 +559,10 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
 
         if path == "/api/config/filter_loading":
             self._serve_update_filter_loading_config()
+            return
+
+        if path == "/api/config/flow_estimation":
+            self._serve_update_flow_estimation_config()
             return
 
         if path == "/api/config/fc_demand":
@@ -529,6 +587,14 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
 
         if path == "/api/config/ph_sensor":
             self._serve_update_ph_sensor_config()
+            return
+
+        if path == "/api/config/orp_sensor":
+            self._serve_update_orp_sensor_config()
+            return
+
+        if path == "/api/config/relay":
+            self._serve_update_relay_config()
             return
 
         if path == "/api/safety/clear_lockout":
@@ -602,6 +668,13 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(content)))
         self.end_headers()
         self.wfile.write(content)
+
+    def _serve_redirect(self, location: str) -> None:
+        self.send_response(HTTPStatus.PERMANENT_REDIRECT)
+        self.send_header("Location", location)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def _serve_live_snapshot(self) -> None:
         try:
@@ -763,6 +836,15 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
     def _serve_health(self) -> None:
         self._serve_json(build_health_payload(self.app))
 
+    def _serve_settings_meta(self) -> None:
+        self._serve_json(
+            serialize_settings_meta(
+                config_path=self.config_path,
+                local_config_path=self.local_config_path,
+                startup_config=self.startup_restart_config,
+            )
+        )
+
     def _serve_command_result(self) -> None:
         try:
             payload = self._read_json_body()
@@ -813,6 +895,40 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             self._serve_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
             return
 
+        self._serve_json(result)
+
+    def _serve_pool_config(self) -> None:
+        self._serve_json(serialize_pool_config(self.app))
+
+    def _serve_update_pool_config(self) -> None:
+        try:
+            payload = self._read_json_body()
+            result = apply_pool_config_update(
+                app=self.app,
+                config_path=self.config_path,
+                local_config_path=self.local_config_path,
+                payload=payload,
+            )
+        except ValueError as error:
+            self._serve_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        self._serve_json(result)
+
+    def _serve_monitoring_config(self) -> None:
+        self._serve_json(serialize_monitoring_config(self.app))
+
+    def _serve_update_monitoring_config(self) -> None:
+        try:
+            payload = self._read_json_body()
+            result = apply_monitoring_config_update(
+                app=self.app,
+                config_path=self.config_path,
+                local_config_path=self.local_config_path,
+                payload=payload,
+            )
+        except ValueError as error:
+            self._serve_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return
         self._serve_json(result)
 
     def _serve_pump_timer_config(self) -> None:
@@ -967,6 +1083,23 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
 
         self._serve_json(result)
 
+    def _serve_flow_estimation_config(self) -> None:
+        self._serve_json(serialize_flow_estimation_config(self.app))
+
+    def _serve_update_flow_estimation_config(self) -> None:
+        try:
+            payload = self._read_json_body()
+            result = apply_flow_estimation_config_update(
+                app=self.app,
+                config_path=self.config_path,
+                local_config_path=self.local_config_path,
+                payload=payload,
+            )
+        except ValueError as error:
+            self._serve_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        self._serve_json(result)
+
     def _serve_fc_demand_config(self) -> None:
         self._serve_json(serialize_fc_demand_config(self.app))
 
@@ -1085,6 +1218,54 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             self._serve_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
             return
 
+        self._serve_json(result)
+
+    def _serve_orp_sensor_config(self) -> None:
+        try:
+            payload = serialize_orp_sensor_config(
+                self.config_path,
+                local_config_path=self.local_config_path,
+            )
+        except ValueError as error:
+            self._serve_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        self._serve_json(payload)
+
+    def _serve_update_orp_sensor_config(self) -> None:
+        try:
+            payload = self._read_json_body()
+            result = apply_orp_sensor_config_update(
+                config_path=self.config_path,
+                local_config_path=self.local_config_path,
+                payload=payload,
+            )
+        except ValueError as error:
+            self._serve_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        self._serve_json(result)
+
+    def _serve_relay_config(self) -> None:
+        try:
+            payload = serialize_relay_config(
+                self.config_path,
+                local_config_path=self.local_config_path,
+            )
+        except ValueError as error:
+            self._serve_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        self._serve_json(payload)
+
+    def _serve_update_relay_config(self) -> None:
+        try:
+            payload = self._read_json_body()
+            result = apply_relay_config_update(
+                config_path=self.config_path,
+                local_config_path=self.local_config_path,
+                payload=payload,
+            )
+        except ValueError as error:
+            self._serve_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return
         self._serve_json(result)
 
     def _serve_calibrate_ph_sensor(self) -> None:
@@ -1378,6 +1559,9 @@ def create_server(
     BoundPoolCtlWebHandler.event_log = []
     BoundPoolCtlWebHandler.event_ids = set()
     BoundPoolCtlWebHandler.async_runtime = async_runtime
+    BoundPoolCtlWebHandler.startup_restart_config = _restart_required_config(
+        _load_config_mapping(config_path, local_config_path=local_config_path)
+    )
     server = ThreadingHTTPServer((host, port), BoundPoolCtlWebHandler)
     setattr(server, "_poolctl_async_runtime", async_runtime)
     return server
@@ -1903,7 +2087,11 @@ def add_chemical_addition(
     amount_fl_oz = _amount_to_fl_oz(amount, unit)
     strength_percent = raw.get("strength_percent")
     if strength_percent is None or str(strength_percent).strip() == "":
-        strength_percent = CHEMICAL_DEFAULT_STRENGTH_PERCENT[chemical]
+        strength_percent = (
+            app.chlorination_config.chlorine_strength_percent
+            if chemical == ChemicalType.SODIUM_HYPOCHLORITE
+            else CHEMICAL_DEFAULT_STRENGTH_PERCENT[chemical]
+        )
     strength = _positive_float(strength_percent, "strength_percent")
 
     metadata = raw.get("metadata", {})
@@ -2115,6 +2303,47 @@ def _optional_string(value: Any) -> str | None:
     return text or None
 
 
+RESTART_REQUIRED_CONFIG_KEYS = (
+    "runtime",
+    "acquisition",
+    "logging",
+    "enable_modbus_ph_sensor",
+    "modbus_ph_sensor",
+    "modbus_orp_sensor",
+    "modbus_analog_input",
+    "modbus_relay",
+)
+
+
+def _restart_required_config(data: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: deepcopy(data.get(key))
+        for key in RESTART_REQUIRED_CONFIG_KEYS
+        if key in data
+    }
+
+
+def serialize_settings_meta(
+    *,
+    config_path: Path,
+    local_config_path: Path | None,
+    startup_config: dict[str, Any],
+) -> dict[str, Any]:
+    current = _restart_required_config(
+        _load_config_mapping(config_path, local_config_path=local_config_path)
+    )
+    return {
+        "config_path": str(config_path),
+        "local_config_path": (
+            str(local_config_path) if local_config_path is not None else None
+        ),
+        "write_path": str(
+            config_write_path(config_path, local_path=local_config_path)
+        ),
+        "restart_required": current != startup_config,
+    }
+
+
 def build_health_payload(app: PoolControllerApp) -> dict[str, Any]:
     now = app.clock.now()
     latest = (
@@ -2286,6 +2515,89 @@ async def apply_site_config_update_serial(
         local_config_path=local_config_path,
         payload=payload,
     )
+
+
+def serialize_pool_config(app: PoolControllerApp) -> dict[str, Any]:
+    return {
+        "name": app.pool_config.name,
+        "volume_gal": app.pool_config.volume_gal,
+        "applied_live": True,
+    }
+
+
+def apply_pool_config_update(
+    *,
+    app: PoolControllerApp,
+    config_path: Path,
+    local_config_path: Path | None = None,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    proposed = PoolConfig.from_mapping(
+        {
+            "pool": {
+                "name": payload.get("name", app.pool_config.name),
+                "volume_gal": payload.get("volume_gal", app.pool_config.volume_gal),
+            }
+        }
+    )
+    config_data = _load_config_write_mapping(
+        config_path,
+        local_config_path=local_config_path,
+    )
+    config_data["pool"] = {
+        "name": proposed.name,
+        "volume_gal": proposed.volume_gal,
+    }
+    _save_config_write_mapping(
+        config_path,
+        local_config_path=local_config_path,
+        data=config_data,
+    )
+    app.apply_pool_config(proposed)
+    return {"updated": True, **serialize_pool_config(app)}
+
+
+def serialize_monitoring_config(app: PoolControllerApp) -> dict[str, Any]:
+    return {
+        "limits": {
+            sensor_id.value: limits.as_mapping(include_missing=True)
+            for sensor_id, limits in sorted(
+                app.monitoring_config.limits.items(),
+                key=lambda item: item[0].value,
+            )
+        },
+        "applied_live": True,
+    }
+
+
+def apply_monitoring_config_update(
+    *,
+    app: PoolControllerApp,
+    config_path: Path,
+    local_config_path: Path | None = None,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    proposed = MonitoringConfig.from_mapping({"monitoring": payload})
+    config_data = _load_config_write_mapping(
+        config_path,
+        local_config_path=local_config_path,
+    )
+    config_data["monitoring"] = {
+        "limits": {
+            sensor_id.value: limits.as_mapping()
+            for sensor_id, limits in sorted(
+                proposed.limits.items(),
+                key=lambda item: item[0].value,
+            )
+        }
+    }
+    _save_config_write_mapping(
+        config_path,
+        local_config_path=local_config_path,
+        data=config_data,
+    )
+    app.apply_monitoring_config(proposed)
+    return {"updated": True, **serialize_monitoring_config(app)}
 
 
 def serialize_pump_timer_config(app: PoolControllerApp) -> dict[str, Any]:
@@ -2645,6 +2957,7 @@ def serialize_chlorination_config(app: PoolControllerApp) -> dict[str, Any]:
         "enabled": config.enabled,
         "daily_dose_oz": config.daily_dose_oz,
         "pump_output_oz_per_min": config.pump_output_oz_per_min,
+        "chlorine_strength_percent": config.chlorine_strength_percent,
         "no_dose_first_minutes": config.no_dose_first_minutes,
         "no_dose_last_minutes": config.no_dose_last_minutes,
         "max_duty_cycle": config.max_duty_cycle,
@@ -2669,6 +2982,7 @@ def apply_chlorination_config_update(
         "enabled": proposed.enabled,
         "daily_dose_oz": proposed.daily_dose_oz,
         "pump_output_oz_per_min": proposed.pump_output_oz_per_min,
+        "chlorine_strength_percent": proposed.chlorine_strength_percent,
         "no_dose_first_minutes": proposed.no_dose_first_minutes,
         "no_dose_last_minutes": proposed.no_dose_last_minutes,
         "max_duty_cycle": proposed.max_duty_cycle,
@@ -2691,8 +3005,6 @@ def serialize_filter_loading_config(app: PoolControllerApp) -> dict[str, Any]:
     return {
         "enabled": config.enabled,
         "clean_flow_gpm": config.clean_flow_gpm,
-        "yellow_flow_loss_percent": config.yellow_flow_loss_percent,
-        "red_flow_loss_percent": config.red_flow_loss_percent,
         "stabilization_seconds": config.stabilization_seconds,
         "averaging_seconds": config.averaging_seconds,
         "max_pressure_age_seconds": config.max_pressure_age_seconds,
@@ -2713,8 +3025,6 @@ def apply_filter_loading_config_update(
     config_data["filter_loading"] = {
         "enabled": proposed.enabled,
         "clean_flow_gpm": proposed.clean_flow_gpm,
-        "yellow_flow_loss_percent": proposed.yellow_flow_loss_percent,
-        "red_flow_loss_percent": proposed.red_flow_loss_percent,
         "stabilization_seconds": proposed.stabilization_seconds,
         "averaging_seconds": proposed.averaging_seconds,
         "max_pressure_age_seconds": proposed.max_pressure_age_seconds,
@@ -2729,14 +3039,73 @@ def apply_filter_loading_config_update(
     }
 
 
+def serialize_flow_estimation_config(app: PoolControllerApp) -> dict[str, Any]:
+    model = app.flow_estimation_config.pump_pressure_model
+    return {
+        "pump_pressure": {
+            "pressure_scale_psi": model.pressure_scale_psi,
+            "c_dynamic": model.c_dynamic,
+            "c_suction": model.c_suction,
+            "c_no_flow_low": model.c_no_flow_low,
+            "c_no_flow_high": model.c_no_flow_high,
+        },
+        "applied_live": True,
+    }
+
+
+def apply_flow_estimation_config_update(
+    *,
+    app: PoolControllerApp,
+    config_path: Path,
+    local_config_path: Path | None = None,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    pump_pressure = payload.get("pump_pressure", payload)
+    if not isinstance(pump_pressure, dict):
+        raise ValueError("pump_pressure must be a mapping")
+    parsed = FlowEstimationConfig.from_mapping(
+        {"flow_estimation": {"pump_pressure": pump_pressure}}
+    )
+    proposed = FlowEstimationConfig(
+        pump_pressure_model=parsed.pump_pressure_model,
+        filter_loading=app.flow_estimation_config.filter_loading,
+    )
+    model = proposed.pump_pressure_model
+    config_data = _load_config_write_mapping(
+        config_path,
+        local_config_path=local_config_path,
+    )
+    section = config_data.setdefault("flow_estimation", {})
+    if not isinstance(section, dict):
+        raise ValueError("flow_estimation must be a mapping in config")
+    section["pump_pressure"] = {
+        "pressure_scale_psi": model.pressure_scale_psi,
+        "c_dynamic": model.c_dynamic,
+        "c_suction": model.c_suction,
+        "c_no_flow_low": model.c_no_flow_low,
+        "c_no_flow_high": model.c_no_flow_high,
+    }
+    _save_config_write_mapping(
+        config_path,
+        local_config_path=local_config_path,
+        data=config_data,
+    )
+    app.apply_flow_estimation_config(proposed)
+    return {"updated": True, **serialize_flow_estimation_config(app)}
+
+
 def serialize_fc_demand_config(app: PoolControllerApp) -> dict[str, Any]:
     config = app.fc_demand_config
     return {
         "enabled": config.enabled,
         "mode": config.mode.value,
-        "pool_volume_gal": config.pool_volume_gal,
         "target_fc_ppm": config.target_fc_ppm,
-        "chlorine_strength_percent": config.chlorine_strength_percent,
+        "dose_basis": {
+            "pool_volume_gal": app.pool_config.volume_gal,
+            "chlorine_strength_percent": (
+                app.chlorination_config.chlorine_strength_percent
+            ),
+        },
         "minimum_test_interval_hours": config.minimum_test_interval_hours,
         "max_observation_interval_days": config.max_observation_interval_days,
         "preferred_test_start_hour": config.preferred_test_start_hour,
@@ -2760,15 +3129,20 @@ def apply_fc_demand_config_update(
     local_config_path: Path | None = None,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
+    moved_fields = {"pool_volume_gal", "chlorine_strength_percent"} & set(payload)
+    if moved_fields:
+        raise ValueError(
+            "FC demand no longer owns "
+            + ", ".join(sorted(moved_fields))
+            + "; edit Pool & Site or Chlorination instead"
+        )
     proposed = FcDemandConfig.from_mapping({"fc_demand": payload})
 
     config_data = _load_config_write_mapping(config_path, local_config_path=local_config_path)
     config_data["fc_demand"] = {
         "enabled": proposed.enabled,
         "mode": proposed.mode.value,
-        "pool_volume_gal": proposed.pool_volume_gal,
         "target_fc_ppm": proposed.target_fc_ppm,
-        "chlorine_strength_percent": proposed.chlorine_strength_percent,
         "minimum_test_interval_hours": proposed.minimum_test_interval_hours,
         "max_observation_interval_days": proposed.max_observation_interval_days,
         "preferred_test_start_hour": proposed.preferred_test_start_hour,
@@ -2976,7 +3350,9 @@ def serialize_notifications_config(app: PoolControllerApp) -> dict[str, Any]:
             "app_token_configured": bool(config.pushover.app_token),
             "user_key_configured": bool(config.pushover.user_key),
         },
-        "alerts": config.alerts.as_payload(),
+        "rules": {
+            key: rule.as_payload() for key, rule in config.rules.items()
+        },
         "applied_live": True,
     }
 
@@ -3024,7 +3400,9 @@ def apply_notifications_config_update(
         "provider": proposed.provider.value,
         "default_title": proposed.default_title,
         "pushover": pushover_data,
-        "alerts": proposed.alerts.as_payload(),
+        "rules": {
+            key: rule.as_payload() for key, rule in proposed.rules.items()
+        },
     }
     _save_config_write_mapping(config_path, local_config_path=local_config_path, data=config_data)
 
@@ -3139,6 +3517,126 @@ def apply_analog_input_config_update(
         "updated": True,
         "requires_restart": True,
         "message": "Analog input config updated on disk. Restart is required to rebuild hardware drivers.",
+    }
+
+
+def serialize_orp_sensor_config(
+    config_path: Path,
+    *,
+    local_config_path: Path | None = None,
+) -> dict[str, Any]:
+    data = _load_config_mapping(config_path, local_config_path=local_config_path)
+    raw_sensor_data = data.get("modbus_orp_sensor", {})
+    if not isinstance(raw_sensor_data, dict):
+        raise ValueError("modbus_orp_sensor must be a mapping in config")
+    config = ModbusRegisterDeviceConfig.from_mapping(
+        data,
+        "modbus_orp_sensor",
+        default_slave_id=3,
+    )
+    breaker = _dfrobot_circuit_breaker_config(raw_sensor_data)
+    return {
+        "modbus_orp_sensor": {
+            "port": config.port,
+            "slave_id": config.slave_id,
+            "baudrate": config.baudrate,
+            "timeout_s": config.timeout_s,
+            "circuit_breaker": _dfrobot_circuit_breaker_payload(breaker),
+        },
+        "requires_restart": True,
+    }
+
+
+def apply_orp_sensor_config_update(
+    *,
+    config_path: Path,
+    local_config_path: Path | None = None,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    sensor_data = payload.get("modbus_orp_sensor", {})
+    if not isinstance(sensor_data, dict):
+        raise ValueError("modbus_orp_sensor must be a mapping")
+    effective = _load_config_mapping(config_path, local_config_path=local_config_path)
+    existing = effective.get("modbus_orp_sensor", {})
+    if not isinstance(existing, dict):
+        existing = {}
+    merged = merge_config_mappings(existing, sensor_data)
+    proposed = ModbusRegisterDeviceConfig.from_mapping(
+        {"modbus_orp_sensor": merged},
+        "modbus_orp_sensor",
+        default_slave_id=3,
+    )
+    breaker = _dfrobot_circuit_breaker_config(merged)
+    config_data = _load_config_write_mapping(
+        config_path,
+        local_config_path=local_config_path,
+    )
+    config_data["modbus_orp_sensor"] = {
+        "port": proposed.port,
+        "slave_id": proposed.slave_id,
+        "baudrate": proposed.baudrate,
+        "timeout_s": proposed.timeout_s,
+        "circuit_breaker": _dfrobot_circuit_breaker_payload(breaker),
+    }
+    _save_config_write_mapping(
+        config_path,
+        local_config_path=local_config_path,
+        data=config_data,
+    )
+    return {
+        "updated": True,
+        "requires_restart": True,
+        "message": "ORP sensor config saved — controller restart required.",
+    }
+
+
+def serialize_relay_config(
+    config_path: Path,
+    *,
+    local_config_path: Path | None = None,
+) -> dict[str, Any]:
+    data = _load_config_mapping(config_path, local_config_path=local_config_path)
+    raw = data.get("modbus_relay", {})
+    if not isinstance(raw, dict):
+        raise ValueError("modbus_relay must be a mapping in config")
+    return {"modbus_relay": deepcopy(raw), "requires_restart": True}
+
+
+def apply_relay_config_update(
+    *,
+    config_path: Path,
+    local_config_path: Path | None = None,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    relay_data = payload.get("modbus_relay")
+    if not isinstance(relay_data, dict):
+        raise ValueError("modbus_relay must be a mapping")
+    effective = _load_config_mapping(config_path, local_config_path=local_config_path)
+    existing = effective.get("modbus_relay", {})
+    if not isinstance(existing, dict):
+        existing = {}
+    merged = merge_config_mappings(existing, relay_data)
+    validation_mapping = {"modbus_relay": merged}
+    ModbusRelayBoardConfig.from_mapping(validation_mapping)
+    RelayActuatorConfig.from_mapping(validation_mapping)
+    RelaySafetyConfig.from_mapping(
+        validation_mapping,
+        driver_profile=DriverProfile.RASPBERRY_PI,
+    )
+    config_data = _load_config_write_mapping(
+        config_path,
+        local_config_path=local_config_path,
+    )
+    config_data["modbus_relay"] = merged
+    _save_config_write_mapping(
+        config_path,
+        local_config_path=local_config_path,
+        data=config_data,
+    )
+    return {
+        "updated": True,
+        "requires_restart": True,
+        "message": "Relay board config saved — controller restart required.",
     }
 
 

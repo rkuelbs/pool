@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from poolctl.config import MonitoringConfig
 from poolctl.domain.models import (
     ActuatorId,
     ActuatorState,
@@ -361,7 +362,9 @@ def test_filter_loading_uncalibrated_completes_without_flow_loss() -> None:
     assert update.result.clean_flow_gpm is None
     assert update.result.raw_flow_loss_percent is None
     assert update.result.flow_loss_percent is None
-    assert update.result.status == "uncalibrated"
+    assert update.result.as_payload(
+        monitoring_config=MonitoringConfig.from_mapping({})
+    )["status"] == "unknown"
 
 
 def test_filter_loading_retains_negative_raw_loss_and_clamps_display() -> None:
@@ -394,10 +397,12 @@ def test_filter_loading_retains_negative_raw_loss_and_clamps_display() -> None:
     assert update.result.raw_flow_loss_percent is not None
     assert update.result.raw_flow_loss_percent < 0.0
     assert update.result.flow_loss_percent == 0.0
-    assert update.result.status == "green"
+    assert update.result.as_payload(
+        monitoring_config=MonitoringConfig.from_mapping({})
+    )["status"] == "normal"
 
 
-def test_filter_loading_status_thresholds_and_config_recompute() -> None:
+def test_filter_loading_uses_monitoring_status_and_config_recompute() -> None:
     now = datetime(2026, 5, 21, 7, 0, tzinfo=timezone.utc)
     model = PumpPressureFlowModelConfig()
     reference_flow = estimate_pump_flow_from_pressure(
@@ -409,8 +414,6 @@ def test_filter_loading_status_thresholds_and_config_recompute() -> None:
     estimator = FilterLoadingEstimator(
         FilterLoadingConfig(
             clean_flow_gpm=reference_flow / 0.88,
-            yellow_flow_loss_percent=10.0,
-            red_flow_loss_percent=15.0,
             stabilization_seconds=0,
             averaging_seconds=1,
         )
@@ -433,13 +436,12 @@ def test_filter_loading_status_thresholds_and_config_recompute() -> None:
     )
 
     assert update.result is not None
-    assert update.result.status == "yellow"
+    monitoring = MonitoringConfig.from_mapping({})
+    assert update.result.as_payload(monitoring_config=monitoring)["status"] == "caution"
 
     estimator.apply_config(
         FilterLoadingConfig(
             clean_flow_gpm=reference_flow / 0.80,
-            yellow_flow_loss_percent=10.0,
-            red_flow_loss_percent=15.0,
             stabilization_seconds=30,
             averaging_seconds=300,
         )
@@ -448,11 +450,9 @@ def test_filter_loading_status_thresholds_and_config_recompute() -> None:
     recomputed = estimator.last_result
     assert recomputed is not None
     assert recomputed.reference_psi == update.result.reference_psi
-    assert recomputed.status == "red"
+    assert recomputed.as_payload(monitoring_config=monitoring)["status"] == "alarm"
 
 
 def test_filter_loading_config_validates_flow_loss_calibration() -> None:
     with pytest.raises(ValueError):
         FilterLoadingConfig(clean_flow_gpm=0.0)
-    with pytest.raises(ValueError):
-        FilterLoadingConfig(yellow_flow_loss_percent=15.0, red_flow_loss_percent=15.0)

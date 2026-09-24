@@ -30,7 +30,9 @@ from poolctl.web.server import (
     apply_fc_demand_config_update,
     apply_logging_config_update,
     apply_notifications_config_update,
+    apply_monitoring_config_update,
     apply_ph_sensor_config_update,
+    apply_pool_config_update,
     apply_pump_timer_config_update,
     apply_runtime_config_update,
     apply_safety_config_update,
@@ -43,15 +45,18 @@ from poolctl.web.server import (
     serialize_acquisition_config,
     serialize_logging_config,
     serialize_notifications_config,
+    serialize_monitoring_config,
     serialize_analog_input_config,
     serialize_chlorination_config,
     serialize_fc_demand_config,
     serialize_filter_loading_config,
     serialize_ph_sensor_config,
+    serialize_pool_config,
     serialize_pump_timer_config,
     serialize_runtime_config,
     serialize_safety_config,
     serialize_site_config,
+    serialize_settings_meta,
     send_test_notification,
     start_chlorination_calibration,
     start_chlorination_prime,
@@ -85,6 +90,93 @@ def config_mapping() -> dict[str, object]:
             ]
         },
     }
+
+
+def test_pool_update_applies_live_and_persists_canonical_owner(tmp_path: Path) -> None:
+    config = config_mapping()
+    config["fc_demand"] = {"pool_volume_gal": 12345.0}
+    path = tmp_path / "pool.yaml"
+    path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    app = build_app_from_mapping(config, clock=make_clock())
+
+    assert serialize_pool_config(app)["volume_gal"] == 12345.0
+    result = apply_pool_config_update(
+        app=app,
+        config_path=path,
+        payload={"name": "Backyard Pool", "volume_gal": 12750.0},
+    )
+
+    assert result["applied_live"] is True
+    assert app.pool_config.volume_gal == 12750.0
+    saved = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert saved["pool"] == {"name": "Backyard Pool", "volume_gal": 12750.0}
+    assert "pool_volume_gal" not in saved.get("fc_demand", {})
+
+
+def test_monitoring_update_is_canonical_and_applies_live(tmp_path: Path) -> None:
+    config = config_mapping()
+    path = tmp_path / "pool.yaml"
+    path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    app = build_app_from_mapping(config, clock=make_clock())
+
+    result = apply_monitoring_config_update(
+        app=app,
+        config_path=path,
+        payload={
+            "limits": {
+                "raw_ph": {
+                    "alarm_below": 6.7,
+                    "caution_below": 7.1,
+                    "caution_above": 7.9,
+                    "alarm_above": 8.3,
+                },
+                "filter_flow_loss_percent": {
+                    "caution_above": 11.0,
+                    "alarm_above": 16.0,
+                },
+            }
+        },
+    )
+
+    assert result["applied_live"] is True
+    assert serialize_monitoring_config(app)["limits"]["raw_ph"]["caution_below"] == 7.1
+    saved = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert saved["monitoring"]["limits"]["filter_flow_loss_percent"] == {
+        "caution_above": 11.0,
+        "alarm_above": 16.0,
+    }
+
+
+def test_settings_meta_reports_persisted_restart_required_change(tmp_path: Path) -> None:
+    config = config_mapping()
+    path = tmp_path / "pool.yaml"
+    path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    app = build_app_from_mapping(config, clock=make_clock())
+    startup = {"runtime": config["runtime"]}
+
+    before = serialize_settings_meta(
+        config_path=path,
+        local_config_path=None,
+        startup_config=startup,
+    )
+    assert before["restart_required"] is False
+
+    apply_runtime_config_update(
+        app=app,
+        config_path=path,
+        payload={
+            "driver_profile": "simulated",
+            "enabled_actuators": ["pump_motor"],
+            "enabled_sensor_groups": [],
+        },
+    )
+    after = serialize_settings_meta(
+        config_path=path,
+        local_config_path=None,
+        startup_config=startup,
+    )
+    assert after["restart_required"] is True
+    assert after["write_path"] == str(path)
 
 
 def test_serialize_pump_timer_config() -> None:
@@ -557,8 +649,6 @@ def test_filter_loading_update_applies_live_and_persists(tmp_path: Path) -> None
         payload={
             "enabled": True,
             "clean_flow_gpm": None,
-            "yellow_flow_loss_percent": 9.0,
-            "red_flow_loss_percent": 14.0,
             "stabilization_seconds": 75.0,
             "averaging_seconds": 180.0,
             "max_pressure_age_seconds": 8.0,
@@ -568,11 +658,11 @@ def test_filter_loading_update_applies_live_and_persists(tmp_path: Path) -> None
     assert result["updated"] is True
     assert result["applied_live"] is True
     assert app.flow_estimation_config.filter_loading.clean_flow_gpm is None
-    assert serialize_filter_loading_config(app)["red_flow_loss_percent"] == 14.0
+    assert serialize_filter_loading_config(app)["averaging_seconds"] == 180.0
     saved = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert saved["filter_loading"]["clean_flow_gpm"] is None
-    assert saved["filter_loading"]["yellow_flow_loss_percent"] == 9.0
-    assert saved["filter_loading"]["red_flow_loss_percent"] == 14.0
+    assert "yellow_flow_loss_percent" not in saved["filter_loading"]
+    assert "red_flow_loss_percent" not in saved["filter_loading"]
     assert saved["filter_loading"]["averaging_seconds"] == 180.0
 
 
@@ -605,9 +695,7 @@ def test_fc_demand_update_applies_live_and_persists(tmp_path: Path) -> None:
         payload={
             "enabled": True,
             "mode": "automatic",
-            "pool_volume_gal": 14500.0,
             "target_fc_ppm": 5.0,
-            "chlorine_strength_percent": 12.5,
             "minimum_test_interval_hours": 24.0,
             "max_observation_interval_days": 6.0,
             "preferred_test_start_hour": 19,
@@ -624,7 +712,8 @@ def test_fc_demand_update_applies_live_and_persists(tmp_path: Path) -> None:
     assert result["updated"] is True
     assert result["applied_live"] is True
     assert result["mode"] == "automatic"
-    assert app.fc_demand_config.pool_volume_gal == 14500.0
+    assert result["dose_basis"]["pool_volume_gal"] == 10000.0
+    assert result["dose_basis"]["chlorine_strength_percent"] == 12.0
     assert app.fc_demand_config.max_observation_interval_days == 6.0
     assert app.fc_demand_config.preferred_test_start_hour == 19
     assert app.fc_demand_config.preferred_test_end_hour == 22
@@ -635,7 +724,8 @@ def test_fc_demand_update_applies_live_and_persists(tmp_path: Path) -> None:
     assert serialize_fc_demand_config(app)["fc_feedback_gain"] == 0.75
     saved = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert saved["fc_demand"]["mode"] == "automatic"
-    assert saved["fc_demand"]["pool_volume_gal"] == 14500.0
+    assert "pool_volume_gal" not in saved["fc_demand"]
+    assert "chlorine_strength_percent" not in saved["fc_demand"]
     assert saved["fc_demand"]["max_observation_interval_days"] == 6.0
     assert saved["fc_demand"]["preferred_test_start_hour"] == 19
     assert saved["fc_demand"]["preferred_test_end_hour"] == 22
@@ -939,40 +1029,41 @@ def test_notifications_update_applies_live_and_persists(tmp_path: Path) -> None:
                 "priority": 1,
                 "sound": "bike",
             },
-            "alerts": {
-                "chlorine_tank": {
+            "rules": {
+                "chlorine_tank_days_remaining": {
                     "enabled": True,
-                    "caution_below": 4.0,
-                    "warning_below": 1.5,
+                    "notify_caution": True,
+                    "notify_alarm": True,
                     "caution_repeat_minutes": 720.0,
-                    "warning_repeat_minutes": 120.0,
+                    "alarm_repeat_minutes": 120.0,
                 },
-                "ph": {
+                "raw_ph": {
                     "enabled": True,
-                    "caution_below": 7.2,
-                    "caution_above": 7.8,
-                    "warning_below": 6.9,
-                    "warning_above": 8.1,
+                    "notify_caution": True,
+                    "notify_alarm": True,
                     "caution_repeat_minutes": 360.0,
-                    "warning_repeat_minutes": 60.0,
+                    "alarm_repeat_minutes": 60.0,
                 },
-                "orp": {
+                "raw_orp": {
                     "enabled": False,
-                    "caution_below": 600.0,
-                    "caution_above": 800.0,
-                    "warning_below": 400.0,
-                    "warning_above": 900.0,
+                    "notify_caution": True,
+                    "notify_alarm": True,
                     "caution_repeat_minutes": 1440.0,
-                    "warning_repeat_minutes": 240.0,
+                    "alarm_repeat_minutes": 240.0,
                 },
-                "filter_flow_loss": {
+                "filter_flow_loss_percent": {
                     "enabled": True,
-                    "warning_above": 16.0,
-                    "warning_repeat_minutes": 1440.0,
+                    "notify_caution": False,
+                    "notify_alarm": True,
+                    "caution_repeat_minutes": 1440.0,
+                    "alarm_repeat_minutes": 1440.0,
                 },
                 "freeze_temperature_unavailable": {
                     "enabled": True,
-                    "warning_repeat_minutes": 180.0,
+                    "notify_caution": False,
+                    "notify_alarm": True,
+                    "caution_repeat_minutes": 1440.0,
+                    "alarm_repeat_minutes": 180.0,
                 },
             },
         },
@@ -985,12 +1076,21 @@ def test_notifications_update_applies_live_and_persists(tmp_path: Path) -> None:
     saved = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert saved["notifications"]["enabled"] is True
     assert saved["notifications"]["pushover"]["app_token_env"] == "POOL_PUSHOVER_TOKEN"
-    assert saved["notifications"]["alerts"]["chlorine_tank"]["warning_below"] == 1.5
-    assert saved["notifications"]["alerts"]["ph"]["warning_repeat_minutes"] == 60.0
-    assert saved["notifications"]["alerts"]["filter_flow_loss"]["warning_above"] == 16.0
+    assert "alerts" not in saved["notifications"]
     assert (
-        saved["notifications"]["alerts"]["freeze_temperature_unavailable"]
-        ["warning_repeat_minutes"]
+        saved["notifications"]["rules"]["chlorine_tank_days_remaining"][
+            "alarm_repeat_minutes"
+        ]
+        == 120.0
+    )
+    assert saved["notifications"]["rules"]["raw_ph"]["alarm_repeat_minutes"] == 60.0
+    assert (
+        saved["notifications"]["rules"]["filter_flow_loss_percent"]["notify_alarm"]
+        is True
+    )
+    assert (
+        saved["notifications"]["rules"]["freeze_temperature_unavailable"]
+        ["alarm_repeat_minutes"]
         == 180.0
     )
     assert "app_token" not in saved["notifications"]["pushover"]
@@ -1596,20 +1696,20 @@ def test_history_event_forms_use_local_datetime_inputs() -> None:
     assert 'id="labChlorineTankLevelGal" type="number"' in history_html
     assert 'id="chlorineTankRefillAmountGal" type="number"' in history_html
 
-    for page_name in ("config.html", "live.html", "schedule.html"):
+    for page_name in ("live.html", "schedule.html"):
         html = (static_dir / page_name).read_text(encoding="utf-8")
         assert 'id="labSampledAt" type="datetime-local"' in html
         assert 'id="labChlorineTankLevelGal" type="number"' in html
 
-    config_html = (static_dir / "config.html").read_text(encoding="utf-8")
-    script = (static_dir / "app.js").read_text(encoding="utf-8")
-    assert ">Site Config</h2>" in config_html
-    assert 'id="siteTimezone"' in config_html
-    assert 'id="siteLatitude"' in config_html
-    assert 'id="siteLongitude"' in config_html
-    assert 'id="siteSave"' in config_html
-    assert 'fetch("/api/config/site"' in script
-    assert 'id="pushoverAppToken" type="text"' in config_html
-    assert 'id="pushoverUserKey" type="text"' in config_html
-    assert "Caution below days" in config_html
-    assert "Warning below days" in config_html
+    settings_html = (static_dir / "settings.html").read_text(encoding="utf-8")
+    script = (static_dir / "settings.js").read_text(encoding="utf-8")
+    assert "<strong>Pool &amp; Site</strong>" in settings_html
+    assert 'id="siteTimezone"' in settings_html
+    assert 'id="siteLatitude"' in settings_html
+    assert 'id="siteLongitude"' in settings_html
+    assert 'id="siteSave"' in settings_html
+    assert 'settingsRequest("/api/config/site")' in script
+    assert 'id="pushoverAppToken" type="password"' in settings_html
+    assert 'id="pushoverUserKey" type="password"' in settings_html
+    assert 'id="monitoringPrimaryRows"' in settings_html
+    assert "Caution below days" not in settings_html

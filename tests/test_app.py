@@ -2487,17 +2487,25 @@ async def test_tick_sends_notification_alerts_with_repeat_throttle() -> None:
             "enabled": True,
             "provider": "pushover",
             "default_title": "poolctl test",
-            "alerts": {
-                "ph": {
+            "rules": {
+                "raw_ph": {
                     "enabled": True,
-                    "caution_below": 7.2,
-                    "caution_above": 7.8,
-                    "warning_below": 6.8,
-                    "warning_above": 8.2,
+                    "notify_caution": True,
+                    "notify_alarm": True,
                     "caution_repeat_minutes": 60.0,
-                    "warning_repeat_minutes": 15.0,
+                    "alarm_repeat_minutes": 15.0,
                 }
             },
+        },
+        "monitoring": {
+            "limits": {
+                "raw_ph": {
+                    "alarm_below": 6.8,
+                    "caution_below": 7.2,
+                    "caution_above": 7.8,
+                    "alarm_above": 8.2,
+                }
+            }
         },
     }
     app = build_app_from_mapping(config, clock=clock, sensor_drivers=[ph_sensor])

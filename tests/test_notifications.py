@@ -1,17 +1,15 @@
-"""
-Tests for notification configuration and dispatch behavior.
-
-Notifications are currently used for alerting integrations such as Pushover,
-and tests keep disabled/configured cases predictable.
-"""
+"""Tests for canonical status-driven notification behavior."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
+from poolctl.config import MonitoringConfig
 from poolctl.domain.models import Measurement, Quality, SensorId
 from poolctl.services.notifications import (
+    NotificationAlertSeverity,
     NotificationMessage,
     NotificationService,
     NotificationsConfig,
@@ -19,462 +17,232 @@ from poolctl.services.notifications import (
 )
 
 
-def test_notifications_config_defaults_to_disabled_pushover() -> None:
-    config = NotificationsConfig.from_mapping({})
-
-    assert config.enabled is False
-    assert config.provider.value == "pushover"
-    assert config.default_title == "PoolScope"
-    assert config.pushover.app_token_env == "PUSHOVER_APP_TOKEN"
-    assert config.pushover.user_key_env == "PUSHOVER_USER_KEY"
-    assert config.alerts.chlorine_tank.caution_below == 7.0
-    assert config.alerts.chlorine_tank.warning_below == 3.0
-    assert config.alerts.ph.warning_above == 8.2
-    assert config.alerts.orp.caution_below == 600.0
-    assert config.alerts.filter_flow_loss.enabled is False
-    assert config.alerts.filter_flow_loss.warning_above == 15.0
-    assert config.alerts.filter_flow_loss.warning_repeat_minutes == 1440.0
-    assert config.alerts.freeze_temperature_unavailable.enabled is True
-    assert config.alerts.freeze_temperature_unavailable.warning_repeat_minutes == 240.0
+NOW = datetime(2026, 5, 21, 12, tzinfo=timezone.utc)
 
 
-def test_pushover_config_normalizes_credentials_entered_as_env_names() -> None:
-    app_token = "aafss2se7zy9xgfxwq4b44mpnbyezq"
-    user_key = "uuckxcf4pw5r71tn6x1hdbafo6279m"
-
-    config = NotificationsConfig.from_mapping(
-        {
-            "notifications": {
-                "enabled": True,
-                "pushover": {
-                    "app_token_env": app_token,
-                    "user_key_env": user_key,
-                },
-            }
-        }
-    )
-
-    payload = config.pushover.as_payload()
-    assert config.pushover.app_token == app_token
-    assert config.pushover.user_key == user_key
-    assert config.pushover.app_token_env == "PUSHOVER_APP_TOKEN"
-    assert config.pushover.user_key_env == "PUSHOVER_USER_KEY"
-    assert payload["configured"] is True
-    assert app_token not in str(payload)
-    assert user_key not in str(payload)
-
-
-def test_pushover_send_reports_missing_credentials(monkeypatch) -> None:
-    monkeypatch.delenv("PUSHOVER_APP_TOKEN", raising=False)
-    monkeypatch.delenv("PUSHOVER_USER_KEY", raising=False)
-    config = NotificationsConfig.from_mapping(
-        {
-            "notifications": {
-                "enabled": True,
-                "provider": "pushover",
-            }
-        }
-    )
-    service = NotificationService(config)
-
-    result = service.send(NotificationMessage(title="poolctl", message="test"))
-
-    assert result.sent is False
-    assert "Pushover credentials" in str(result.error)
-
-
-def test_pushover_send_uses_environment_credentials(monkeypatch) -> None:
-    posted: list[tuple[str, Mapping[str, str], float]] = []
-
-    def fake_post_form(
-        url: str,
-        data: Mapping[str, str],
-        timeout_s: float,
-    ) -> tuple[int, str]:
-        posted.append((url, dict(data), timeout_s))
-        return 200, '{"status":1,"request":"abc"}'
-
-    monkeypatch.setenv("PUSHOVER_APP_TOKEN", "token123")
-    monkeypatch.setenv("PUSHOVER_USER_KEY", "user456")
-    config = NotificationsConfig.from_mapping(
-        {
-            "notifications": {
-                "enabled": True,
-                "default_title": "poolctl test",
-                "pushover": {
-                    "timeout_s": 3.0,
-                    "priority": 1,
-                    "sound": "pushover",
-                },
-            }
-        }
-    )
-    service = NotificationService(config, post_form=fake_post_form)
-
-    result = service.send(NotificationMessage(title="title", message="hello"))
-
-    assert result.sent is True
-    assert posted
-    assert posted[0][0] == "https://api.pushover.net/1/messages.json"
-    assert posted[0][1]["token"] == "token123"
-    assert posted[0][1]["user"] == "user456"
-    assert posted[0][1]["message"] == "hello"
-    assert posted[0][1]["priority"] == "1"
-    assert posted[0][1]["sound"] == "pushover"
-    assert posted[0][2] == 3.0
-
-
-def test_pushover_send_uses_direct_credentials() -> None:
-    posted: list[tuple[str, Mapping[str, str], float]] = []
-
-    def fake_post_form(
-        url: str,
-        data: Mapping[str, str],
-        timeout_s: float,
-    ) -> tuple[int, str]:
-        posted.append((url, dict(data), timeout_s))
-        return 200, '{"status":1,"request":"abc"}'
-
-    config = NotificationsConfig.from_mapping(
-        {
-            "notifications": {
-                "enabled": True,
-                "pushover": {
-                    "app_token": "direct-token",
-                    "user_key": "direct-user",
-                },
-            }
-        }
-    )
-    service = NotificationService(config, post_form=fake_post_form)
-
-    result = service.send(NotificationMessage(title="title", message="hello"))
-
-    assert result.sent is True
-    assert posted[0][1]["token"] == "direct-token"
-    assert posted[0][1]["user"] == "direct-user"
-
-
-def test_pushover_status_reports_configured_from_environment(monkeypatch) -> None:
-    monkeypatch.setenv("PUSHOVER_APP_TOKEN", "token123")
-    monkeypatch.setenv("PUSHOVER_USER_KEY", "user456")
-    config = NotificationsConfig.from_mapping(
-        {
-            "notifications": {
-                "enabled": True,
-                "provider": "pushover",
-            }
-        }
-    )
-
-    status = NotificationService(config).status_payload()
-
-    assert status["enabled"] is True
-    assert status["pushover"]["configured"] is True
-
-
-def test_notification_service_does_not_leak_environment_values(monkeypatch) -> None:
-    monkeypatch.setenv("PUSHOVER_APP_TOKEN", "secret-token")
-    monkeypatch.setenv("PUSHOVER_USER_KEY", "secret-user")
-    status = NotificationService(
-        NotificationsConfig.from_mapping({"notifications": {"enabled": True}})
-    ).status_payload()
-
-    rendered = str(status)
-    assert "secret-token" not in rendered
-    assert "secret-user" not in rendered
-
-
-def test_notification_alert_evaluator_applies_warning_and_repeat_throttle() -> None:
-    config = NotificationsConfig.from_mapping(
-        {
-            "notifications": {
-                "alerts": {
-                    "ph": {
-                        "enabled": True,
-                        "caution_below": 7.2,
-                        "caution_above": 7.8,
-                        "warning_below": 6.8,
-                        "warning_above": 8.2,
-                        "caution_repeat_minutes": 60.0,
-                        "warning_repeat_minutes": 15.0,
-                    }
-                }
-            }
-        }
-    )
-    now = datetime(2026, 5, 21, 12, tzinfo=timezone.utc)
-    measurements = {
-        SensorId.RAW_PH: Measurement(
-            sensor_id=SensorId.RAW_PH,
-            observed_at=now,
-            value=8.35,
-            unit="pH",
-            quality=Quality.GOOD,
-        )
+def notification_config(**rule_overrides: dict[str, object]) -> NotificationsConfig:
+    rules: dict[str, dict[str, object]] = {
+        "raw_ph": {"enabled": True},
+        "raw_orp": {"enabled": True},
+        "filter_flow_loss_percent": {"enabled": True},
+        "chlorine_tank_days_remaining": {"enabled": True},
+        "freeze_temperature_unavailable": {"enabled": True},
     }
-
-    first = evaluate_notification_alerts(
-        config=config.alerts,
-        measurements=measurements,
-        now=now,
-        last_sent_at={},
-    )
-    throttled = evaluate_notification_alerts(
-        config=config.alerts,
-        measurements=measurements,
-        now=now + timedelta(minutes=10),
-        last_sent_at={"ph:warning": now},
-    )
-    repeated = evaluate_notification_alerts(
-        config=config.alerts,
-        measurements=measurements,
-        now=now + timedelta(minutes=16),
-        last_sent_at={"ph:warning": now},
+    rules.update(rule_overrides)
+    return NotificationsConfig.from_mapping(
+        {"notifications": {"enabled": True, "rules": rules}}
     )
 
-    assert len(first) == 1
-    assert first[0].severity.value == "warning"
-    assert first[0].direction == "above"
-    assert first[0].throttle_key == "ph:warning"
-    assert throttled == ()
-    assert len(repeated) == 1
 
-
-def test_notification_alert_evaluator_uses_tank_days_remaining() -> None:
-    config = NotificationsConfig.from_mapping(
-        {
-            "notifications": {
-                "alerts": {
-                    "chlorine_tank": {
-                        "enabled": True,
-                        "caution_below": 7.0,
-                        "warning_below": 3.0,
-                        "caution_repeat_minutes": 60.0,
-                        "warning_repeat_minutes": 15.0,
-                    }
-                }
-            }
-        }
+def measurement(
+    sensor_id: SensorId,
+    value: float,
+    unit: str,
+    *,
+    quality: Quality = Quality.GOOD,
+) -> Measurement:
+    return Measurement(
+        sensor_id=sensor_id,
+        observed_at=NOW,
+        value=value,
+        unit=unit,
+        quality=quality,
     )
-    now = datetime(2026, 5, 21, 12, tzinfo=timezone.utc)
-    measurements = {
-        SensorId.CHLORINE_TANK_DAYS_REMAINING: Measurement(
-            sensor_id=SensorId.CHLORINE_TANK_DAYS_REMAINING,
-            observed_at=now,
-            value=2.5,
-            unit="days",
-            quality=Quality.GOOD,
-            metadata={"remaining_gal": 1.25},
-        ),
-        SensorId.CHLORINE_TANK_LEVEL_GAL: Measurement(
-            sensor_id=SensorId.CHLORINE_TANK_LEVEL_GAL,
-            observed_at=now,
-            value=8.0,
-            unit="gal",
-            quality=Quality.GOOD,
-        ),
+
+
+def test_notification_config_owns_rules_not_numeric_thresholds() -> None:
+    config = notification_config()
+
+    assert config.rules["raw_ph"].enabled is True
+    assert config.rules["raw_ph"].caution_repeat_minutes == 1440.0
+    payload = config.rules["raw_ph"].as_payload()
+    assert set(payload) == {
+        "enabled",
+        "notify_caution",
+        "notify_alarm",
+        "caution_repeat_minutes",
+        "alarm_repeat_minutes",
     }
+    assert not {"caution_below", "alarm_below", "caution_above", "alarm_above"} & set(
+        payload
+    )
 
+
+@pytest.mark.parametrize(
+    ("value", "severity", "direction", "threshold"),
+    [
+        (7.2, NotificationAlertSeverity.CAUTION, "below", 7.2),
+        (6.8, NotificationAlertSeverity.ALARM, "below", 6.8),
+        (7.8, NotificationAlertSeverity.CAUTION, "above", 7.8),
+        (8.2, NotificationAlertSeverity.ALARM, "above", 8.2),
+    ],
+)
+def test_notifications_use_canonical_monitoring_boundaries(
+    value: float,
+    severity: NotificationAlertSeverity,
+    direction: str,
+    threshold: float,
+) -> None:
+    config = notification_config()
     alerts = evaluate_notification_alerts(
-        config=config.alerts,
-        measurements=measurements,
-        now=now,
-        last_sent_at={},
-    )
-
-    assert len(alerts) == 1
-    assert alerts[0].sensor_id == SensorId.CHLORINE_TANK_DAYS_REMAINING
-    assert alerts[0].severity.value == "warning"
-    assert alerts[0].threshold == 3.0
-    assert alerts[0].message() == (
-        "Chlorine tank supply warning: 2.5 days remaining (1.25 gal) "
-        "is below the warning threshold (3.0 days)"
-    )
-
-
-def test_notification_alert_evaluator_uses_filter_flow_loss_threshold() -> None:
-    config = NotificationsConfig.from_mapping(
-        {
-            "notifications": {
-                "alerts": {
-                    "filter_flow_loss": {
-                        "enabled": True,
-                        "warning_above": 15.0,
-                        "warning_repeat_minutes": 1440.0,
-                    }
-                }
-            }
-        }
-    )
-    now = datetime(2026, 5, 21, 12, tzinfo=timezone.utc)
-    measurements = {
-        SensorId.FILTER_FLOW_LOSS_PERCENT: Measurement(
-            sensor_id=SensorId.FILTER_FLOW_LOSS_PERCENT,
-            observed_at=now,
-            value=15.8,
-            unit="percent",
-            quality=Quality.GOOD,
-            metadata={"test_age_seconds": 2 * 86400.0},
-        )
-    }
-
-    first = evaluate_notification_alerts(
-        config=config.alerts,
-        measurements=measurements,
-        now=now,
-        last_sent_at={},
-    )
-    throttled = evaluate_notification_alerts(
-        config=config.alerts,
-        measurements=measurements,
-        now=now + timedelta(minutes=60),
-        last_sent_at={"filter_flow_loss:warning": now},
-    )
-
-    assert len(first) == 1
-    assert first[0].sensor_id == SensorId.FILTER_FLOW_LOSS_PERCENT
-    assert first[0].throttle_key == "filter_flow_loss:warning"
-    assert first[0].message() == (
-        "Clean filter soon: standardized flow loss is 15.8% "
-        "(last hydraulic test: 2 days ago)."
-    )
-    assert throttled == ()
-
-
-def test_filter_alert_repeats_for_old_latched_result_and_clean_retest_clears() -> None:
-    config = NotificationsConfig.from_mapping(
-        {
-            "notifications": {
-                "alerts": {
-                    "filter_flow_loss": {
-                        "enabled": True,
-                        "warning_above": 15.0,
-                        "warning_repeat_minutes": 60.0,
-                    }
-                }
-            }
-        }
-    )
-    now = datetime(2026, 5, 21, 12, tzinfo=timezone.utc)
-    old_result = Measurement(
-        sensor_id=SensorId.FILTER_FLOW_LOSS_PERCENT,
-        observed_at=now - timedelta(days=5),
-        value=16.2,
-        unit="percent",
-        quality=Quality.GOOD,
-        metadata={"test_age_seconds": 5 * 86400.0},
-    )
-
-    repeated = evaluate_notification_alerts(
-        config=config.alerts,
-        measurements={SensorId.FILTER_FLOW_LOSS_PERCENT: old_result},
-        now=now,
-        last_sent_at={"filter_flow_loss:warning": now - timedelta(minutes=61)},
-    )
-    clean = evaluate_notification_alerts(
-        config=config.alerts,
+        config=config.rules,
+        monitoring_config=MonitoringConfig.from_mapping({}),
         measurements={
-            SensorId.FILTER_FLOW_LOSS_PERCENT: old_result.model_copy(
-                update={"observed_at": now, "value": 8.0, "metadata": {"test_age_seconds": 0.0}}
+            SensorId.RAW_PH: measurement(SensorId.RAW_PH, value, "pH"),
+        },
+        now=NOW,
+        last_sent_at={},
+    )
+
+    alert = next(item for item in alerts if item.sensor_id is SensorId.RAW_PH)
+    assert alert.severity is severity
+    assert alert.direction == direction
+    assert alert.threshold == threshold
+
+
+def test_notification_severity_selection_and_cooldown_are_rule_owned() -> None:
+    config = notification_config(
+        raw_ph={
+            "enabled": True,
+            "notify_caution": False,
+            "notify_alarm": True,
+            "caution_repeat_minutes": 60,
+            "alarm_repeat_minutes": 15,
+        }
+    )
+    monitoring = MonitoringConfig.from_mapping({})
+    caution = evaluate_notification_alerts(
+        config=config.rules,
+        monitoring_config=monitoring,
+        measurements={
+            SensorId.RAW_PH: measurement(SensorId.RAW_PH, 7.1, "pH"),
+        },
+        now=NOW,
+        last_sent_at={},
+    )
+    assert not any(item.sensor_id is SensorId.RAW_PH for item in caution)
+
+    alarm_measurements = {
+        SensorId.RAW_PH: measurement(SensorId.RAW_PH, 6.7, "pH"),
+    }
+    first = evaluate_notification_alerts(
+        config=config.rules,
+        monitoring_config=monitoring,
+        measurements=alarm_measurements,
+        now=NOW,
+        last_sent_at={},
+    )
+    ph_alert = next(item for item in first if item.sensor_id is SensorId.RAW_PH)
+    assert ph_alert.repeat_minutes == 15.0
+    suppressed = evaluate_notification_alerts(
+        config=config.rules,
+        monitoring_config=monitoring,
+        measurements=alarm_measurements,
+        now=NOW + timedelta(minutes=14),
+        last_sent_at={ph_alert.throttle_key: NOW},
+    )
+    assert not any(item.sensor_id is SensorId.RAW_PH for item in suppressed)
+
+
+def test_filter_and_tank_notifications_share_one_sided_monitoring_limits() -> None:
+    config = notification_config()
+    alerts = evaluate_notification_alerts(
+        config=config.rules,
+        monitoring_config=MonitoringConfig.from_mapping({}),
+        measurements={
+            SensorId.FILTER_FLOW_LOSS_PERCENT: measurement(
+                SensorId.FILTER_FLOW_LOSS_PERCENT, 15.0, "percent"
+            ),
+            SensorId.CHLORINE_TANK_DAYS_REMAINING: Measurement(
+                sensor_id=SensorId.CHLORINE_TANK_DAYS_REMAINING,
+                observed_at=NOW,
+                value=7.0,
+                unit="days",
+                metadata={"remaining_gal": 3.5},
+            ),
+        },
+        now=NOW,
+        last_sent_at={},
+    )
+
+    by_sensor = {alert.sensor_id: alert for alert in alerts}
+    assert (
+        by_sensor[SensorId.FILTER_FLOW_LOSS_PERCENT].severity
+        is NotificationAlertSeverity.ALARM
+    )
+    assert (
+        by_sensor[SensorId.CHLORINE_TANK_DAYS_REMAINING].severity
+        is NotificationAlertSeverity.CAUTION
+    )
+
+
+def test_invalid_measurements_do_not_notify() -> None:
+    config = notification_config()
+    alerts = evaluate_notification_alerts(
+        config=config.rules,
+        monitoring_config=MonitoringConfig.from_mapping({}),
+        measurements={
+            SensorId.RAW_ORP: measurement(
+                SensorId.RAW_ORP,
+                100.0,
+                "mV",
+                quality=Quality.BAD,
             )
         },
-        now=now,
+        now=NOW,
         last_sent_at={},
     )
-
-    assert len(repeated) == 1
-    assert "5 days ago" in repeated[0].message()
-    assert clean == ()
+    assert not any(item.sensor_id is SensorId.RAW_ORP for item in alerts)
 
 
-def test_freeze_temperature_loss_notification_is_throttled() -> None:
-    config = NotificationsConfig.from_mapping({})
-    now = datetime(2026, 5, 21, 12, tzinfo=timezone.utc)
-    freeze_status = {"fail_safe": True}
-
-    first = evaluate_notification_alerts(
-        config=config.alerts,
+def test_freeze_fail_safe_remains_a_distinct_operational_condition() -> None:
+    config = notification_config()
+    alerts = evaluate_notification_alerts(
+        config=config.rules,
+        monitoring_config=MonitoringConfig.from_mapping({}),
         measurements={},
-        now=now,
+        now=NOW,
         last_sent_at={},
-        freeze_status=freeze_status,
+        freeze_status={"fail_safe": True},
     )
-    throttled = evaluate_notification_alerts(
-        config=config.alerts,
-        measurements={},
-        now=now + timedelta(minutes=30),
-        last_sent_at={"freeze_temperature_unavailable:warning": now},
-        freeze_status=freeze_status,
+    freeze_alert = next(
+        item for item in alerts if item.signal_key == "freeze_temperature_unavailable"
     )
-    repeated = evaluate_notification_alerts(
-        config=config.alerts,
-        measurements={},
-        now=now + timedelta(minutes=241),
-        last_sent_at={"freeze_temperature_unavailable:warning": now},
-        freeze_status=freeze_status,
-    )
-
-    assert len(first) == 1
-    assert first[0].message() == (
-        "Freeze protection temperature unavailable; using fail-safe freeze protection."
-    )
-    assert throttled == ()
-    assert len(repeated) == 1
+    assert freeze_alert.severity is NotificationAlertSeverity.ALARM
+    assert "fail-safe" in freeze_alert.message()
 
 
-def test_notification_alert_evaluator_throttles_ph_caution_across_directions() -> None:
-    config = NotificationsConfig.from_mapping(
+def test_notification_service_disabled_and_configured_delivery() -> None:
+    disabled = NotificationService(NotificationsConfig.from_mapping({}))
+    result = disabled.send(NotificationMessage(title="PoolScope", message="test"))
+    assert result.sent is False
+    assert result.error == "notifications disabled"
+
+    requests: list[tuple[str, dict[str, str], float]] = []
+
+    def post_form(
+        url: str,
+        data: dict[str, str],
+        timeout_s: float,
+    ) -> tuple[int, str]:
+        requests.append((url, data, timeout_s))
+        return 200, '{"status": 1, "request": "abc"}'
+
+    configured = NotificationsConfig.from_mapping(
         {
             "notifications": {
-                "alerts": {
-                    "ph": {
-                        "enabled": True,
-                        "caution_below": 7.2,
-                        "caution_above": 7.8,
-                        "warning_below": 6.8,
-                        "warning_above": 8.2,
-                        "caution_repeat_minutes": 60.0,
-                        "warning_repeat_minutes": 15.0,
-                    }
-                }
+                "enabled": True,
+                "pushover": {
+                    "app_token": "token",
+                    "user_key": "user",
+                    "priority": 1,
+                },
             }
         }
     )
-    now = datetime(2026, 5, 21, 12, tzinfo=timezone.utc)
-    high_caution = {
-        SensorId.RAW_PH: Measurement(
-            sensor_id=SensorId.RAW_PH,
-            observed_at=now,
-            value=7.9,
-            unit="pH",
-            quality=Quality.GOOD,
-        )
-    }
-    low_caution = {
-        SensorId.RAW_PH: Measurement(
-            sensor_id=SensorId.RAW_PH,
-            observed_at=now + timedelta(minutes=10),
-            value=7.1,
-            unit="pH",
-            quality=Quality.GOOD,
-        )
-    }
-
-    first = evaluate_notification_alerts(
-        config=config.alerts,
-        measurements=high_caution,
-        now=now,
-        last_sent_at={},
+    sent = NotificationService(configured, post_form=post_form).send(
+        NotificationMessage(title="PoolScope", message="test")
     )
-    oscillation = evaluate_notification_alerts(
-        config=config.alerts,
-        measurements=low_caution,
-        now=now + timedelta(minutes=10),
-        last_sent_at={"ph:caution": now},
-    )
-
-    assert len(first) == 1
-    assert first[0].direction == "above"
-    assert first[0].throttle_key == "ph:caution"
-    assert oscillation == ()
+    assert sent.sent is True
+    assert requests[0][1]["token"] == "token"
+    assert requests[0][1]["user"] == "user"

@@ -17,13 +17,21 @@ from poolctl.services.fc_demand import (
     FcDemandConfig,
     FcDemandObservationQuality,
     FcObservationTiming,
-    estimate_fc_demand_plan,
+    estimate_fc_demand_plan as _estimate_fc_demand_plan,
     fc_observations_from_lab_tests,
     fc_ppm_from_fl_oz,
     fl_oz_for_fc_ppm,
 )
 from poolctl.services.pump_timer import PumpTimerConfig, PumpTimerSchedule
 from poolctl.services.schedule import DailyTimeWindow, TimeOfDay
+
+
+def estimate_fc_demand_plan(**kwargs):
+    return _estimate_fc_demand_plan(
+        pool_volume_gal=10000.0,
+        chlorine_strength_percent=12.0,
+        **kwargs,
+    )
 
 
 def at(day: int, hour: int, minute: int = 0) -> datetime:

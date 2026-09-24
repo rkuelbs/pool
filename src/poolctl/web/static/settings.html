@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>PoolScope Settings</title>
+    <link rel="icon" type="image/png" href="/poolscope.png">
+    <link rel="apple-touch-icon" href="/poolscope.png">
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body data-page="settings">
+    <main class="shell settings-shell">
+      <header class="topbar live-product-header">
+        <div class="brand-lockup">
+          <img class="brand-mark" src="/poolscope.png" alt="">
+          <div>
+            <span class="eyebrow">Pool automation</span>
+            <h1>PoolScope</h1>
+            <p id="runtimeLine">Controller settings</p>
+          </div>
+        </div>
+        <div class="header-status" aria-label="Controller summary">
+          <div class="header-status-pills">
+            <span id="safetyBadge" class="status-pill is-neutral">Safety starting</span>
+            <span id="restartBadge" class="status-pill is-neutral hidden">Restart required</span>
+          </div>
+          <span id="chlorineSupplyBadge" class="hidden"></span>
+          <span id="cpuTempBadge" class="hidden"></span>
+          <span id="cpuLoadLine" class="hidden"></span>
+          <span id="cpuFanLine" class="hidden"></span>
+          <span id="loopTimingLine" class="timestamp">Loop: --</span>
+          <span id="updatedAt" class="timestamp">--</span>
+          <span id="healthLine" class="timestamp">--</span>
+        </div>
+      </header>
+      <nav class="page-nav" aria-label="Dashboard pages">
+        <a href="/live" data-nav-page="live">Live</a>
+        <a href="/history" data-nav-page="history">History</a>
+        <a href="/schedule" data-nav-page="schedule">Schedule</a>
+        <a href="/settings" data-nav-page="settings">Settings</a>
+      </nav>
+
+      <section class="settings-page" data-view-section="settings">
+        <div class="settings-heading">
+          <div>
+            <span class="eyebrow">Controller configuration</span>
+            <h2>Settings</h2>
+            <p>Manage your pool, automation, alerts, and installed hardware.</p>
+          </div>
+          <div class="settings-actions">
+            <button id="settingsReloadSaved" type="button" class="button-secondary">Reload Saved</button>
+            <button id="configRestartService" type="button">Restart PoolScope</button>
+          </div>
+        </div>
+        <div id="configSyncStatus" class="settings-global-status" role="status">Loading saved settings…</div>
+
+        <h2 class="settings-group-title">Pool Settings</h2>
+        <div class="settings-grid">
+          <details class="settings-card" id="pool-site" data-settings-card>
+            <summary>
+              <span><strong>Pool &amp; Site</strong><small id="poolSiteSummary">Loading…</small></span>
+              <span class="settings-card-meta"><span id="poolSiteBadge" class="settings-badge">Live</span><i aria-hidden="true"></i></span>
+            </summary>
+            <div class="settings-card-body">
+              <section class="settings-subsection">
+                <h3>Pool</h3>
+                <div class="settings-form-grid">
+                  <label>Pool name <input id="poolName" type="text" autocomplete="off"></label>
+                  <label>Pool volume <span class="input-with-unit"><input id="poolVolumeGal" type="number" step="100" min="1"><span>gal</span></span></label>
+                </div>
+                <div class="settings-form-actions"><button id="poolSave" type="button">Save Pool</button></div>
+                <p id="poolStatus" class="settings-save-status">--</p>
+              </section>
+              <section class="settings-subsection">
+                <h3>Location</h3>
+                <div class="settings-form-grid">
+                  <label>Time zone <input id="siteTimezone" type="text" placeholder="America/Chicago" autocomplete="off"></label>
+                  <label>Latitude <input id="siteLatitude" type="number" min="-90" max="90" step="0.000001"></label>
+                  <label>Longitude <input id="siteLongitude" type="number" min="-180" max="180" step="0.000001"></label>
+                </div>
+                <p class="setting-help">Location is shared by solar schedules and weather. Latitude and longitude must be set together.</p>
+                <div class="settings-form-actions"><button id="siteSave" type="button">Save Location</button><button id="siteReload" type="button" class="button-secondary">Reload</button></div>
+                <p id="siteStatus" class="settings-save-status">--</p>
+              </section>
+            </div>
+          </details>
+
+          <details class="settings-card" id="status-ranges" data-settings-card>
+            <summary>
+              <span><strong>Status Ranges</strong><small id="monitoringSummary">Loading…</small></span>
+              <span class="settings-card-meta"><span class="settings-badge">Shared</span><i aria-hidden="true"></i></span>
+            </summary>
+            <div class="settings-card-body">
+              <p class="setting-help setting-help-wide">These ranges control status colors throughout PoolScope and are also used by notification rules.</p>
+              <div class="settings-table-wrap">
+                <table class="settings-table monitoring-table">
+                  <thead><tr><th>Metric</th><th>Alarm Low</th><th>Caution Low</th><th>Caution High</th><th>Alarm High</th></tr></thead>
+                  <tbody id="monitoringPrimaryRows"></tbody>
+                </table>
+              </div>
+              <details class="settings-advanced">
+                <summary>Additional monitored signals</summary>
+                <div class="settings-table-wrap">
+                  <table class="settings-table monitoring-table">
+                    <thead><tr><th>Metric</th><th>Alarm Low</th><th>Caution Low</th><th>Caution High</th><th>Alarm High</th></tr></thead>
+                    <tbody id="monitoringAdvancedRows"></tbody>
+                  </table>
+                </div>
+              </details>
+              <div class="settings-form-actions"><button id="monitoringSave" type="button">Save Status Ranges</button><button id="monitoringReload" type="button" class="button-secondary">Reload</button></div>
+              <p id="monitoringStatus" class="settings-save-status">--</p>
+            </div>
+          </details>
+
+          <details class="settings-card" id="chlorination" data-settings-card>
+            <summary>
+              <span><strong>Chlorination</strong><small id="chlorinationSummary">Loading…</small></span>
+              <span class="settings-card-meta"><span id="chlorinationBadge" class="settings-badge">--</span><i aria-hidden="true"></i></span>
+            </summary>
+            <div class="settings-card-body">
+              <section class="settings-subsection"><h3>General</h3>
+                <div class="settings-form-grid">
+                  <label class="setting-toggle"><span>Enabled</span><input id="chlorinationEnabled" type="checkbox"></label>
+                  <label>Base daily dose <span class="input-with-unit"><input id="chlorinationDailyDoseOz" type="number" step="0.1" min="0"><span>fl oz</span></span></label>
+                  <label>Dosing pump rate <span class="input-with-unit"><input id="chlorinationPumpOutputOzPerMin" type="number" step="0.01" min="0.01"><span>oz/min</span></span><small>Measured pump output used to convert requested volume into runtime.</small></label>
+                  <label>Chlorine concentration <span class="input-with-unit"><input id="chlorinationStrengthPercent" type="number" step="0.1" min="0.1"><span>%</span></span></label>
+                </div>
+              </section>
+              <section class="settings-subsection"><h3>Dosing Window</h3>
+                <div class="settings-form-grid">
+                  <label>No-dose after startup <span class="input-with-unit"><input id="chlorinationNoDoseFirstMinutes" type="number" step="0.1" min="0"><span>min</span></span><small>Waits for stable circulation before chlorine injection begins.</small></label>
+                  <label>No-dose before shutdown <span class="input-with-unit"><input id="chlorinationNoDoseLastMinutes" type="number" step="0.1" min="0"><span>min</span></span><small>Stops injection early so treated water clears the plumbing.</small></label>
+                </div>
+              </section>
+              <details class="settings-advanced"><summary>Advanced pulse control</summary>
+                <div class="settings-form-grid">
+                  <label>Maximum duty cycle <input id="chlorinationMaxDutyCycle" type="number" step="0.01" min="0.01" max="1"></label>
+                  <label>Nominal ON time <span class="input-with-unit"><input id="chlorinationCycleOnSeconds" type="number" step="1" min="1"><span>s</span></span></label>
+                  <label>Minimum ON time <span class="input-with-unit"><input id="chlorinationMinCycleOnSeconds" type="number" step="1" min="1"><span>s</span></span></label>
+                  <label>Maximum cycle period <span class="input-with-unit"><input id="chlorinationMaxCyclePeriodSeconds" type="number" step="1" min="1"><span>s</span></span></label>
+                </div>
+              </details>
+              <div class="settings-form-actions"><button id="chlorinationSave" type="button">Save Chlorination</button><button id="chlorinationReload" type="button" class="button-secondary">Reload</button></div>
+              <p id="chlorinationConfigStatus" class="settings-save-status">--</p>
+              <section class="settings-subsection"><h3>Maintenance</h3>
+                <div class="settings-form-actions"><button id="chlorinationPrimeConfigButton" type="button" class="button-secondary">Prime Pump</button><button id="chlorinationCalibrationConfigButton" type="button" class="button-secondary">Calibrate Pump</button><button id="chlorinationDiagnosticStopButton" type="button" class="button-danger">Stop Test</button></div>
+              </section>
+            </div>
+          </details>
+
+          <details class="settings-card" id="free-chlorine-control" data-settings-card>
+            <summary>
+              <span><strong>Free Chlorine Control</strong><small id="fcDemandSummary">Loading…</small></span>
+              <span class="settings-card-meta"><span id="fcDemandBadge" class="settings-badge">--</span><i aria-hidden="true"></i></span>
+            </summary>
+            <div class="settings-card-body">
+              <section class="settings-subsection"><h3>Control</h3>
+                <div class="settings-form-grid">
+                  <label class="setting-toggle"><span>Enabled</span><input id="fcDemandEnabled" type="checkbox"></label>
+                  <label>Mode <select id="fcDemandMode"><option value="observe_only">Observe only</option><option value="recommend">Recommend</option><option value="approve_required">Approve required</option><option value="automatic">Automatic</option></select></label>
+                  <label>Target FC <span class="input-with-unit"><input id="fcDemandTargetFcPpm" type="number" step="0.1" min="0"><span>ppm</span></span></label>
+                  <label>Maximum daily dose <span class="input-with-unit"><input id="fcDemandMaxDailyDoseOz" type="number" step="1" min="0"><span>fl oz</span></span><small>Limits the chlorine PoolScope may automatically dispense in one day.</small></label>
+                </div>
+                <div class="canonical-context"><span id="fcDemandDoseBasis">Dose basis: --</span><a href="#pool-site" data-settings-link="pool-site">Edit Pool &amp; Site</a><a href="#chlorination" data-settings-link="chlorination">Edit Chlorination</a></div>
+              </section>
+              <section class="settings-subsection"><h3>Observation Rules</h3>
+                <div class="settings-form-grid">
+                  <label>Minimum test interval <span class="input-with-unit"><input id="fcDemandMinimumTestIntervalHours" type="number" step="1" min="0"><span>h</span></span><small>Prevents closely spaced FC tests from being treated as independent demand observations.</small></label>
+                  <label>Maximum observation age <span class="input-with-unit"><input id="fcDemandMaxObservationIntervalDays" type="number" step="0.5" min="0.5"><span>days</span></span></label>
+                  <label>Preferred test start <span class="input-with-unit"><input id="fcDemandPreferredTestStartHour" type="number" step="1" min="0" max="23"><span>hour</span></span></label>
+                  <label>Preferred test end <span class="input-with-unit"><input id="fcDemandPreferredTestEndHour" type="number" step="1" min="0" max="24"><span>hour</span></span></label>
+                </div>
+              </section>
+              <details class="settings-advanced"><summary>Advanced estimator</summary>
+                <div class="settings-form-grid">
+                  <label>Recent observations <input id="fcDemandRecentObservationCount" type="number" step="1" min="1"></label>
+                  <label>Observation weights <input id="fcDemandObservationWeights" type="text"></label>
+                  <label>Negative-noise tolerance <input id="fcDemandNegativeDemandNoiseTolerance" type="number" step="0.01" min="0"><small>Small apparent FC gains can be treated as measurement noise instead of demand.</small></label>
+                  <label>Feedback gain <input id="fcDemandFeedbackGain" type="number" step="0.05" min="0"><small>Higher values react faster to new tests but can be less stable.</small></label>
+                  <label>Maximum maintenance change <span class="input-with-unit"><input id="fcDemandMaxMaintenanceChangePercent" type="number" step="1" min="0"><span>%</span></span></label>
+                </div>
+              </details>
+              <div class="settings-form-actions"><button id="fcDemandSave" type="button">Save FC Control</button><button id="fcDemandReload" type="button" class="button-secondary">Reload</button></div>
+              <p id="fcDemandConfigStatus" class="settings-save-status">--</p>
+            </div>
+          </details>
+
+          <details class="settings-card" id="filter-flow" data-settings-card>
+            <summary>
+              <span><strong>Filter &amp; Flow</strong><small id="filterSummary">Loading…</small></span>
+              <span class="settings-card-meta"><span id="filterBadge" class="settings-badge">--</span><i aria-hidden="true"></i></span>
+            </summary>
+            <div class="settings-card-body">
+              <section class="settings-subsection"><h3>Filter Loading</h3>
+                <div class="settings-form-grid">
+                  <label class="setting-toggle"><span>Enabled</span><input id="filterLoadingEnabled" type="checkbox"></label>
+                  <label>Clean standardized flow <span class="input-with-unit"><input id="filterLoadingCleanFlowGpm" type="number" step="0.1" min="0.1" placeholder="Not calibrated"><span>GPM</span></span><small>The expected flow with a clean filter, used as the loading baseline.</small></label>
+                  <label>Stabilization time <span class="input-with-unit"><input id="filterLoadingStabilizationSeconds" type="number" step="1" min="0"><span>s</span></span></label>
+                  <label>Averaging time <span class="input-with-unit"><input id="filterLoadingAveragingSeconds" type="number" step="1" min="1"><span>s</span></span></label>
+                  <label>Maximum pressure age <span class="input-with-unit"><input id="filterLoadingMaxPressureAgeSeconds" type="number" step="1" min="0"><span>s</span></span></label>
+                </div>
+                <div class="canonical-context"><span id="filterStatusThresholds">Status thresholds: --</span><a href="#status-ranges" data-settings-link="status-ranges">Edit Status Ranges</a></div>
+                <div class="settings-form-actions"><button id="filterLoadingSave" type="button">Save Filter Model</button><button id="filterLoadingReload" type="button" class="button-secondary">Reload</button></div>
+                <p id="filterLoadingConfigStatus" class="settings-save-status">--</p>
+              </section>
+              <details class="settings-advanced"><summary>Flow model</summary>
+                <p class="setting-help">These coefficients calibrate estimated flow from pump pressure. Change them only when validating the hydraulic model.</p>
+                <div class="settings-form-grid">
+                  <label>Pressure scale <input id="flowPressureScale" type="number" step="0.0001" min="0.0001"></label>
+                  <label>Dynamic coefficient <input id="flowDynamicCoefficient" type="number" step="0.00001" min="0.00001"></label>
+                  <label>Suction coefficient <input id="flowSuctionCoefficient" type="number" step="0.00001" min="0"></label>
+                  <label>No-flow coefficient, LOW <input id="flowNoFlowLow" type="number" step="0.01"></label>
+                  <label>No-flow coefficient, HIGH <input id="flowNoFlowHigh" type="number" step="0.01"></label>
+                </div>
+                <div class="settings-form-actions"><button id="flowModelSave" type="button">Save Flow Model</button></div>
+                <p id="flowModelStatus" class="settings-save-status">--</p>
+              </details>
+            </div>
+          </details>
+
+          <details class="settings-card" id="notifications" data-settings-card>
+            <summary>
+              <span><strong>Notifications</strong><small id="notificationsSummary">Loading…</small></span>
+              <span class="settings-card-meta"><span id="notificationsBadge" class="settings-badge">--</span><i aria-hidden="true"></i></span>
+            </summary>
+            <div class="settings-card-body">
+              <div class="settings-form-grid">
+                <label class="setting-toggle"><span>Enabled</span><input id="notificationsEnabled" type="checkbox"></label>
+                <label>Provider <select id="notificationsProvider"><option value="pushover">Pushover</option></select></label>
+                <label>Default title <input id="notificationsDefaultTitle" type="text"></label>
+                <label>Priority <input id="pushoverPriority" type="number" step="1" min="-2" max="2"></label>
+                <label>Sound <input id="pushoverSound" type="text" placeholder="Provider default"></label>
+              </div>
+              <details class="settings-advanced"><summary>Provider credentials and connection</summary>
+                <div class="settings-form-grid">
+                  <label>App token <input id="pushoverAppToken" type="password" autocomplete="new-password"></label>
+                  <label>User key <input id="pushoverUserKey" type="password" autocomplete="new-password"></label>
+                  <label>App-token environment name <input id="pushoverAppTokenEnv" type="text"></label>
+                  <label>User-key environment name <input id="pushoverUserKeyEnv" type="text"></label>
+                  <label>API URL <input id="pushoverApiUrl" type="url"></label>
+                  <label>Timeout <span class="input-with-unit"><input id="pushoverTimeout" type="number" step="0.1" min="0.1"><span>s</span></span></label>
+                </div>
+              </details>
+              <section class="settings-subsection"><h3>Notification Rules</h3><div id="notificationRuleRows" class="notification-rule-list"></div></section>
+              <div class="settings-form-actions"><button id="notificationsSave" type="button">Save Notifications</button><button id="notificationsTest" type="button" class="button-secondary">Send Test</button><button id="notificationsReload" type="button" class="button-secondary">Reload</button><a class="button-link" href="#status-ranges" data-settings-link="status-ranges">Edit Status Ranges</a></div>
+              <p id="notificationsStatus" class="settings-save-status">--</p>
+            </div>
+          </details>
+        </div>
+
+        <h2 class="settings-group-title">Advanced</h2>
+        <div class="settings-grid">
+          <details class="settings-card" id="safety-freeze" data-settings-card>
+            <summary><span><strong>Safety &amp; Freeze</strong><small id="safetySummary">Operational interlocks and freeze protection</small></span><span class="settings-card-meta"><span class="settings-badge is-critical">Always active</span><i aria-hidden="true"></i></span></summary>
+            <div class="settings-card-body">
+              <section class="settings-subsection"><h3>Freeze Protection</h3>
+                <div class="settings-form-grid">
+                  <label class="setting-toggle"><span>Enabled</span><input id="safetyFreezeEnabled" type="checkbox"></label>
+                  <label>Primary temperature source <select id="safetyFreezePrimaryTempSensor"></select></label>
+                  <label>Fallback temperature source <select id="safetyFreezeFallbackTempSensor"></select></label>
+                  <label>Maximum reading age <span class="input-with-unit"><input id="safetyFreezeMaxTempAge" type="number" step="1" min="0"><span>s</span></span></label>
+                  <label>LOW on below <input id="safetyFreezeLowOnTemp" type="number" step="0.1"></label>
+                  <label>LOW off above <input id="safetyFreezeLowOffTemp" type="number" step="0.1"></label>
+                  <label>HIGH on below <input id="safetyFreezeHighOnTemp" type="number" step="0.1"></label>
+                  <label>HIGH off above <input id="safetyFreezeHighOffTemp" type="number" step="0.1"></label>
+                  <label>Minimum run time <span class="input-with-unit"><input id="safetyFreezeMinRunSeconds" type="number" step="1" min="0"><span>s</span></span></label>
+                  <label>Temperature unit <select id="safetyFreezeUnit"><option value="degF">°F</option><option value="degC">°C</option></select></label>
+                </div><p class="setting-help">Separate on/off temperatures prevent rapid switching near a threshold.</p>
+              </section>
+              <section class="settings-subsection"><h3>Hydraulic Protection</h3>
+                <div class="settings-form-grid">
+                  <label>Pump output sensor <select id="safetySensorPumpOutput"></select></label>
+                  <label>Pump prime minimum <input id="safetyPrimeMin" type="number" step="0.1"></label>
+                  <label>Pump overpressure <input id="safetyOverpressure" type="number" step="0.1"></label>
+                  <label>Maximum sensor age <input id="safetyPumpOutputMaxAge" type="number" step="0.1" min="0"></label>
+                  <label>Prime timeout <input id="safetyPrimeTimeout" type="number" step="0.1"></label>
+                </div>
+              </section>
+              <section class="settings-subsection"><h3>Chlorination Interlock &amp; Tank Safety</h3>
+                <div class="settings-form-grid">
+                  <label>Minimum pump pressure <input id="safetyChlorineMinPump" type="number" step="0.1"></label>
+                  <label>Maximum pump pressure <input id="safetyChlorineMaxPump" type="number" step="0.1"></label>
+                  <label>Tank level sensor <select id="safetyChlorineTankLevelSensor"></select></label>
+                  <label>Low warning <input id="safetyChlorineTankWarningGal" type="number" step="0.1" min="0"></label>
+                  <label>Inhibit below <input id="safetyChlorineTankInhibitGal" type="number" step="0.1" min="0"></label>
+                  <label>Re-enable at <input id="safetyChlorineTankReenableGal" type="number" step="0.1" min="0"></label>
+                  <label>Forecast reserve <input id="safetyChlorineTankForecastReserveGal" type="number" step="0.1" min="0"></label>
+                </div><p class="setting-help">Tank safety uses physical gallons for dosing inhibition; days-remaining status is configured separately.</p>
+              </section>
+              <div class="settings-form-actions"><button id="safetySave" type="button">Save Safety</button><button id="safetyClearLockout" type="button" class="button-danger">Clear Lockout</button><button id="safetyReload" type="button" class="button-secondary">Reload</button></div>
+              <p id="safetyStatus" class="settings-save-status">--</p>
+            </div>
+          </details>
+
+          <details class="settings-card" id="sensors-calibration" data-settings-card>
+            <summary><span><strong>Sensors &amp; Calibration</strong><small id="sensorsSummary">RS485 chemistry and analog inputs</small></span><span class="settings-card-meta"><span class="settings-badge requires-restart">Restart on change</span><i aria-hidden="true"></i></span></summary>
+            <div class="settings-card-body">
+              <section class="settings-subsection"><h3>pH Sensor</h3>
+                <div class="settings-form-grid">
+                  <label class="setting-toggle"><span>Enabled</span><input id="phSensorEnabled" type="checkbox"></label>
+                  <label>Serial port <input id="phSensorPort" type="text"></label><label>Slave address <input id="phSensorSlaveId" type="number" min="1" max="254"></label><label>Baud rate <input id="phSensorBaudrate" type="number" min="1"></label><label>Timeout <input id="phSensorTimeout" type="number" step="0.1" min="0.1"></label>
+                  <label class="setting-toggle"><span>Failure backoff</span><input id="phBreakerEnabled" type="checkbox"></label><label>Failures before backoff <input id="phBreakerFailures" type="number" min="1"></label><label>Backoff time <input id="phBreakerCooldown" type="number" min="1"></label>
+                </div><p class="setting-help">Failure backoff prevents a disconnected probe from repeatedly delaying other sensor reads.</p>
+                <div class="settings-form-actions"><button id="phSensorSave" type="button">Save pH Sensor</button><button id="phSensorReload" type="button" class="button-secondary">Reload</button></div>
+                <div class="settings-form-grid compact"><label>Low calibration point <input id="phCalLowValue" type="number" step="0.01" min="0.01" max="14"></label><label>High calibration point <input id="phCalHighValue" type="number" step="0.01" min="0.01" max="14"></label></div>
+                <div class="settings-form-actions"><button id="phCalLowButton" type="button" class="button-secondary">Calibrate Low</button><button id="phCalHighButton" type="button" class="button-secondary">Calibrate High</button></div><p id="phSensorStatus" class="settings-save-status">--</p>
+              </section>
+              <section class="settings-subsection"><h3>ORP Sensor</h3>
+                <div class="settings-form-grid"><label>Serial port <input id="orpSensorPort" type="text"></label><label>Slave address <input id="orpSensorSlaveId" type="number" min="1" max="254"></label><label>Baud rate <input id="orpSensorBaudrate" type="number" min="1"></label><label>Timeout <input id="orpSensorTimeout" type="number" step="0.1" min="0.1"></label><label class="setting-toggle"><span>Failure backoff</span><input id="orpBreakerEnabled" type="checkbox"></label><label>Failures before backoff <input id="orpBreakerFailures" type="number" min="1"></label><label>Backoff time <input id="orpBreakerCooldown" type="number" min="1"></label></div>
+                <div class="settings-form-actions"><button id="orpSensorSave" type="button">Save ORP Sensor</button><button id="orpSensorReload" type="button" class="button-secondary">Reload</button></div><p id="orpSensorStatus" class="settings-save-status">--</p>
+              </section>
+              <details class="settings-advanced"><summary>Pressure and tank analog inputs</summary>
+                <div class="settings-form-grid"><label>Serial port <input id="analogPort" type="text"></label><label>Slave address <input id="analogSlaveId" type="number" min="1"></label><label>Baud rate <input id="analogBaudrate" type="number" min="1"></label><label>Timeout <input id="analogTimeout" type="number" step="0.1" min="0"></label><label>Raw-to-volts scale <input id="analogScale" type="number" step="0.0001"></label><label>Raw-to-volts offset <input id="analogOffset" type="number" step="0.0001"></label><label>Startup channel mode <input id="analogStartupChannelMode" type="number" min="0" placeholder="No write"></label></div>
+                <div id="analogLiveVoltages" class="state-list"></div><div id="analogSensorRows" class="config-rows"></div>
+                <div class="settings-form-actions"><button id="analogAddSensor" type="button" class="button-secondary">Add Input</button><button id="analogSave" type="button">Save Analog Inputs</button><button id="analogReload" type="button" class="button-secondary">Reload</button></div><p id="analogStatus" class="settings-save-status">--</p>
+              </details>
+            </div>
+          </details>
+
+          <details class="settings-card" id="acquisition-logging" data-settings-card>
+            <summary><span><strong>Acquisition &amp; Logging</strong><small>Sensor timing, filtering, and data storage</small></span><span class="settings-card-meta"><span class="settings-badge requires-restart">Restart on change</span><i aria-hidden="true"></i></span></summary>
+            <div class="settings-card-body">
+              <section class="settings-subsection"><h3>Sensor Acquisition</h3><div id="acqGroupRows" class="config-rows"></div><div class="settings-form-actions"><button id="acqAddGroup" type="button" class="button-secondary">Add Group</button></div></section>
+              <section class="settings-subsection"><h3>Chemistry Refresh</h3><div class="settings-form-grid"><label class="setting-toggle"><span>Enabled</span><input id="acqRefreshEnabled" type="checkbox"></label><label>Maximum pump-off time <input id="acqRefreshMaxOff" type="number" min="1"></label><label>Refresh duration <input id="acqRefreshDuration" type="number" min="1"></label><label>Pump speed <select id="acqRefreshSpeed"><option value="low">LOW</option><option value="high">HIGH</option></select></label></div></section>
+              <div class="settings-form-actions"><button id="acqSave" type="button">Save Acquisition</button><button id="acqReload" type="button" class="button-secondary">Reload</button></div><p id="acqStatus" class="settings-save-status">--</p>
+              <section class="settings-subsection"><h3>Data Storage</h3><div class="settings-form-grid"><label>Database path <input id="loggingDatabasePath" type="text"></label><label>Control snapshot interval <input id="loggingControlMeasurementInterval" type="number" min="0.1" step="0.1"></label></div><div class="settings-form-actions"><button id="loggingSave" type="button">Save Storage</button><button id="loggingReload" type="button" class="button-secondary">Reload</button></div><p id="loggingStatus" class="settings-save-status">--</p></section>
+            </div>
+          </details>
+
+          <details class="settings-card" id="hardware-runtime" data-settings-card>
+            <summary><span><strong>Hardware &amp; Runtime</strong><small id="hardwareSummary">Controller profile and installed equipment</small></span><span class="settings-card-meta"><span class="settings-badge requires-restart">Restart on change</span><i aria-hidden="true"></i></span></summary>
+            <div class="settings-card-body">
+              <section class="settings-subsection"><h3>Controller</h3><div class="settings-form-grid"><label>Driver profile <select id="runtimeDriverProfile"><option value="simulated">Simulated</option><option value="raspberry_pi">Raspberry Pi</option></select></label></div></section>
+              <section class="settings-subsection"><h3>Installed Hardware</h3><div id="runtimeActuatorOptions" class="settings-check-grid"></div><h4>Sensor groups</h4><div id="runtimeSensorGroupOptions" class="settings-check-grid"></div><div class="settings-form-actions"><button id="runtimeSave" type="button">Save Runtime</button><button id="runtimeReload" type="button" class="button-secondary">Reload</button></div><p id="runtimeStatus" class="settings-save-status">--</p></section>
+              <details class="settings-advanced"><summary>Relay board and I/O</summary><div class="settings-form-grid"><label>Serial port <input id="relayPort" type="text"></label><label>Slave address <input id="relaySlaveId" type="number" min="1"></label><label>Baud rate <input id="relayBaudrate" type="number" min="1"></label><label>Timeout <input id="relayTimeout" type="number" step="0.1" min="0.1"></label><label class="setting-toggle"><span>Timed dosing flash</span><input id="relayDosingUsesFlash" type="checkbox"></label><label class="setting-toggle"><span>Startup safe stop</span><input id="relayStartupSafeOff" type="checkbox"></label><label>Reconciliation interval <input id="relayReconciliationInterval" type="number" min="0"></label><label>Pump relay <input id="relayPumpMotor" type="number" min="1" max="8"></label><label>Speed relay <input id="relayPumpSpeed" type="number" min="1" max="8"></label><label>Booster relay <input id="relayBooster" type="number" min="1" max="8"></label><label>Dosing relay <input id="relayDosingPump" type="number" min="1" max="8"></label><label>LOW relay state <select id="relayLowState"><option value="true">Energized</option><option value="false">De-energized</option></select></label><label>HIGH relay state <select id="relayHighState"><option value="true">Energized</option><option value="false">De-energized</option></select></label></div><p class="setting-help">Timed dosing flash provides independent hardware OFF timing for normal chlorine pulses.</p><div class="settings-form-actions"><button id="relaySave" type="button">Save Relay Board</button><button id="relayReload" type="button" class="button-secondary">Reload</button></div><p id="relayStatus" class="settings-save-status">--</p></details>
+              <section class="settings-subsection"><h3>System</h3><dl class="settings-paths"><div><dt>Configuration file</dt><dd id="settingsConfigPath">--</dd></div><div><dt>Local override</dt><dd id="settingsLocalConfigPath">--</dd></div><div><dt>Settings write target</dt><dd id="settingsWritePath">--</dd></div></dl></section>
+            </div>
+          </details>
+        </div>
+      </section>
+    </main>
+    <script src="/settings.js"></script>
+    <script src="/app.js"></script>
+  </body>
+</html>

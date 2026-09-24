@@ -2,9 +2,9 @@
 Parse high-level runtime and GUI configuration.
 
 Most other modules use small service-specific config dataclasses. This module
-keeps only the deployment facts the app builder needs: which driver family to
-use, which physical outputs are present, which acquisition groups are active,
-and how the live dashboard should present sensors.
+keeps deployment facts and configuration shared across service boundaries:
+pool/site identity, monitoring limits, the active driver family, physical
+outputs, and acquisition groups.
 """
 
 from __future__ import annotations
@@ -98,6 +98,31 @@ class SiteConfig:
         )
 
 
+@dataclass(frozen=True)
+class PoolConfig:
+    """Canonical pool identity and physical volume."""
+
+    name: str = "Home Pool"
+    volume_gal: float = 10000.0
+
+    def __post_init__(self) -> None:
+        if not self.name.strip():
+            raise ValueError("pool.name must not be blank")
+        if self.volume_gal <= 0:
+            raise ValueError("pool.volume_gal must be > 0")
+
+    @classmethod
+    def from_mapping(cls, data: Mapping[str, Any]) -> PoolConfig:
+        pool_data = _mapping_value(data, "pool", default={})
+        raw_name = pool_data.get("name", cls.name)
+        if not isinstance(raw_name, str):
+            raise ValueError("pool.name must be a string")
+        return cls(
+            name=raw_name.strip(),
+            volume_gal=_float_value(pool_data, "volume_gal", cls.volume_gal),
+        )
+
+
 DEFAULT_SENSOR_GROUPS = frozenset(
     {
         "pressures",
@@ -148,63 +173,106 @@ class RuntimeConfig:
 
 
 @dataclass(frozen=True)
-class SensorDisplayLimits:
-    """
-    Dashboard operating bands for one sensor.
+class MonitoringLimit:
+    """Canonical normal/caution/alarm boundaries for one measurement."""
 
-    Values inside normal_min/normal_max are normal. Values between the normal
-    band and caution_min/caution_max are caution. Values outside the caution
-    band are alarm.
-    """
-
-    caution_min: float
-    normal_min: float
-    normal_max: float
-    caution_max: float
+    alarm_below: float | None = None
+    caution_below: float | None = None
+    caution_above: float | None = None
+    alarm_above: float | None = None
 
     def __post_init__(self) -> None:
-        if not (
-            self.caution_min <= self.normal_min
-            <= self.normal_max
-            <= self.caution_max
-        ):
-            raise ValueError(
-                "sensor display limits must satisfy "
-                "caution_min <= normal_min <= normal_max <= caution_max"
+        ordered = tuple(
+            value
+            for value in (
+                self.alarm_below,
+                self.caution_below,
+                self.caution_above,
+                self.alarm_above,
             )
+            if value is not None
+        )
+        if not ordered:
+            raise ValueError("monitoring limits must define at least one boundary")
+        if any(left > right for left, right in zip(ordered, ordered[1:], strict=False)):
+            raise ValueError(
+                "monitoring limits must satisfy alarm_below <= caution_below "
+                "<= caution_above <= alarm_above for configured boundaries"
+            )
+
+    @classmethod
+    def from_mapping(cls, data: Mapping[str, Any]) -> MonitoringLimit:
+        return cls(
+            alarm_below=_optional_float_value(data, "alarm_below"),
+            caution_below=_optional_float_value(data, "caution_below"),
+            caution_above=_optional_float_value(data, "caution_above"),
+            alarm_above=_optional_float_value(data, "alarm_above"),
+        )
+
+    def as_mapping(self, *, include_missing: bool = False) -> dict[str, float | None]:
+        values = {
+            "alarm_below": self.alarm_below,
+            "caution_below": self.caution_below,
+            "caution_above": self.caution_above,
+            "alarm_above": self.alarm_above,
+        }
+        if include_missing:
+            return values
+        return {key: value for key, value in values.items() if value is not None}
+
+
+def default_monitoring_limits() -> dict[SensorId, MonitoringLimit]:
+    """Defaults matching PoolScope's established primary status bands."""
+    return {
+        SensorId.RAW_PH: MonitoringLimit(6.8, 7.2, 7.8, 8.2),
+        SensorId.RAW_ORP: MonitoringLimit(400.0, 600.0, 800.0, 900.0),
+        SensorId.CALCIUM_SATURATION_INDEX: MonitoringLimit(-0.6, -0.3, 0.3, 0.6),
+        SensorId.FILTER_FLOW_LOSS_PERCENT: MonitoringLimit(
+            caution_above=10.0,
+            alarm_above=15.0,
+        ),
+        SensorId.CHLORINE_TANK_DAYS_REMAINING: MonitoringLimit(
+            alarm_below=3.0,
+            caution_below=7.0,
+        ),
+        SensorId.CPU_TEMP: MonitoringLimit(caution_above=70.0, alarm_above=80.0),
+    }
 
 
 @dataclass(frozen=True)
-class LiveViewConfig:
-    """
-    Display-only configuration for the live dashboard.
-    """
+class MonitoringConfig:
+    """Canonical status ranges shared by every status and alert consumer."""
 
-    sensor_limits: dict[SensorId, SensorDisplayLimits]
+    limits: dict[SensorId, MonitoringLimit]
 
     @classmethod
-    def from_mapping(cls, data: Mapping[str, Any]) -> LiveViewConfig:
-        live_view_data = _mapping_value(data, "live_view", default={})
-        limits_data = _mapping_value(live_view_data, "sensor_limits", default={})
-        sensor_limits: dict[SensorId, SensorDisplayLimits] = {}
+    def from_mapping(cls, data: Mapping[str, Any]) -> MonitoringConfig:
+        monitoring_data = _mapping_value(data, "monitoring", default={})
+        raw_limits = monitoring_data.get("limits")
+        if raw_limits is None:
+            return cls(limits=default_monitoring_limits())
+        if not isinstance(raw_limits, Mapping):
+            raise ValueError("monitoring.limits must be a mapping")
 
-        for raw_sensor_id, raw_limits in limits_data.items():
+        limits = default_monitoring_limits()
+        for raw_sensor_id, raw_limit in raw_limits.items():
             if not isinstance(raw_sensor_id, str):
-                raise ValueError("live_view sensor limit keys must be strings")
-
-            if not isinstance(raw_limits, Mapping):
+                raise ValueError("monitoring.limits keys must be sensor ids")
+            if not isinstance(raw_limit, Mapping):
                 raise ValueError(
-                    f"live_view sensor limits for {raw_sensor_id} must be a mapping"
+                    f"monitoring.limits.{raw_sensor_id} must be a mapping"
                 )
+            try:
+                sensor_id = SensorId(raw_sensor_id)
+            except ValueError as error:
+                raise ValueError(
+                    f"monitoring.limits contains unknown sensor id: {raw_sensor_id}"
+                ) from error
+            limits[sensor_id] = MonitoringLimit.from_mapping(raw_limit)
+        return cls(limits=limits)
 
-            sensor_limits[SensorId(raw_sensor_id)] = SensorDisplayLimits(
-                caution_min=_required_float_value(raw_limits, "caution_min"),
-                normal_min=_required_float_value(raw_limits, "normal_min"),
-                normal_max=_required_float_value(raw_limits, "normal_max"),
-                caution_max=_required_float_value(raw_limits, "caution_max"),
-            )
-
-        return cls(sensor_limits=sensor_limits)
+    def limit_for(self, sensor_id: SensorId) -> MonitoringLimit | None:
+        return self.limits.get(sensor_id)
 
 
 def load_runtime_config(path: str | Path) -> RuntimeConfig:
@@ -304,6 +372,22 @@ def _required_float_value(data: Mapping[str, Any], key: str) -> float:
     if not isinstance(value, int | float):
         raise ValueError(f"{key} must be a number")
 
+    return float(value)
+
+
+def _float_value(data: Mapping[str, Any], key: str, default: float) -> float:
+    value = data.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise ValueError(f"{key} must be a number")
+    return float(value)
+
+
+def _optional_float_value(data: Mapping[str, Any], key: str) -> float | None:
+    value = data.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise ValueError(f"{key} must be a number or null")
     return float(value)
 
 

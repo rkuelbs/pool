@@ -20,7 +20,9 @@ from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any
 
-from poolctl.domain.models import Measurement, Quality, SensorId
+from poolctl.config import MonitoringConfig, MonitoringLimit
+from poolctl.domain.models import Measurement, SensorId
+from poolctl.services.monitoring import StatusLevel, classify_measurement
 
 
 class NotificationProvider(str, Enum):
@@ -29,7 +31,7 @@ class NotificationProvider(str, Enum):
 
 class NotificationAlertSeverity(str, Enum):
     CAUTION = "caution"
-    WARNING = "warning"
+    ALARM = "alarm"
 
 
 @dataclass(frozen=True)
@@ -99,182 +101,92 @@ class PushoverConfig:
 
 
 @dataclass(frozen=True)
-class SignalNotificationConfig:
+class NotificationRuleConfig:
     enabled: bool = False
-    caution_below: float | None = None
-    caution_above: float | None = None
-    warning_below: float | None = None
-    warning_above: float | None = None
+    notify_caution: bool = True
+    notify_alarm: bool = True
     caution_repeat_minutes: float = 1440.0
-    warning_repeat_minutes: float = 240.0
+    alarm_repeat_minutes: float = 240.0
 
     def __post_init__(self) -> None:
         if self.caution_repeat_minutes <= 0:
             raise ValueError("caution_repeat_minutes must be > 0")
-        if self.warning_repeat_minutes <= 0:
-            raise ValueError("warning_repeat_minutes must be > 0")
-        if (
-            self.caution_below is not None
-            and self.warning_below is not None
-            and self.warning_below > self.caution_below
-        ):
-            raise ValueError("warning_below must be <= caution_below")
-        if (
-            self.caution_above is not None
-            and self.warning_above is not None
-            and self.warning_above < self.caution_above
-        ):
-            raise ValueError("warning_above must be >= caution_above")
-        if self.enabled and not any(
-            threshold is not None
-            for threshold in (
-                self.caution_below,
-                self.caution_above,
-                self.warning_below,
-                self.warning_above,
-            )
-        ):
-            raise ValueError("enabled notification alert must define at least one threshold")
+        if self.alarm_repeat_minutes <= 0:
+            raise ValueError("alarm_repeat_minutes must be > 0")
 
     @classmethod
     def from_mapping(
         cls,
         data: Mapping[str, Any],
         *,
-        default: SignalNotificationConfig,
-    ) -> SignalNotificationConfig:
+        default: NotificationRuleConfig,
+    ) -> NotificationRuleConfig:
+        supported = {
+            "enabled",
+            "notify_caution",
+            "notify_alarm",
+            "caution_repeat_minutes",
+            "alarm_repeat_minutes",
+        }
+        unknown = set(data) - supported
+        if unknown:
+            raise ValueError(
+                "notification rules do not own measurement thresholds or unsupported fields: "
+                + ", ".join(sorted(str(item) for item in unknown))
+            )
         return cls(
             enabled=_bool_value(data, "enabled", default.enabled),
-            caution_below=_optional_float_value(data, "caution_below", default.caution_below),
-            caution_above=_optional_float_value(data, "caution_above", default.caution_above),
-            warning_below=_optional_float_value(data, "warning_below", default.warning_below),
-            warning_above=_optional_float_value(data, "warning_above", default.warning_above),
+            notify_caution=_bool_value(
+                data,
+                "notify_caution",
+                default.notify_caution,
+            ),
+            notify_alarm=_bool_value(data, "notify_alarm", default.notify_alarm),
             caution_repeat_minutes=_float_value(
                 data,
                 "caution_repeat_minutes",
                 default.caution_repeat_minutes,
             ),
-            warning_repeat_minutes=_float_value(
+            alarm_repeat_minutes=_float_value(
                 data,
-                "warning_repeat_minutes",
-                default.warning_repeat_minutes,
+                "alarm_repeat_minutes",
+                default.alarm_repeat_minutes,
             ),
         )
 
     def as_payload(self) -> dict[str, Any]:
         return {
             "enabled": self.enabled,
-            "caution_below": self.caution_below,
-            "caution_above": self.caution_above,
-            "warning_below": self.warning_below,
-            "warning_above": self.warning_above,
+            "notify_caution": self.notify_caution,
+            "notify_alarm": self.notify_alarm,
             "caution_repeat_minutes": self.caution_repeat_minutes,
-            "warning_repeat_minutes": self.warning_repeat_minutes,
+            "alarm_repeat_minutes": self.alarm_repeat_minutes,
         }
 
 
-@dataclass(frozen=True)
-class ConditionNotificationConfig:
-    enabled: bool = True
-    warning_repeat_minutes: float = 240.0
-
-    def __post_init__(self) -> None:
-        if self.warning_repeat_minutes <= 0:
-            raise ValueError("warning_repeat_minutes must be > 0")
-
-    @classmethod
-    def from_mapping(
-        cls,
-        data: Mapping[str, Any],
-        *,
-        default: ConditionNotificationConfig,
-    ) -> ConditionNotificationConfig:
-        return cls(
-            enabled=_bool_value(data, "enabled", default.enabled),
-            warning_repeat_minutes=_float_value(
-                data,
-                "warning_repeat_minutes",
-                default.warning_repeat_minutes,
-            ),
-        )
-
-    def as_payload(self) -> dict[str, Any]:
-        return {
-            "enabled": self.enabled,
-            "warning_repeat_minutes": self.warning_repeat_minutes,
-        }
+NUMERIC_NOTIFICATION_SIGNALS = (
+    SensorId.CHLORINE_TANK_DAYS_REMAINING,
+    SensorId.RAW_PH,
+    SensorId.RAW_ORP,
+    SensorId.FILTER_FLOW_LOSS_PERCENT,
+)
+FREEZE_TEMPERATURE_UNAVAILABLE_RULE = "freeze_temperature_unavailable"
 
 
-@dataclass(frozen=True)
-class NotificationAlertConfig:
-    chlorine_tank: SignalNotificationConfig = field(
-        default_factory=lambda: SignalNotificationConfig(
-            caution_below=7.0,
-            warning_below=3.0,
-        )
-    )
-    ph: SignalNotificationConfig = field(
-        default_factory=lambda: SignalNotificationConfig(
-            caution_below=7.2,
-            caution_above=7.8,
-            warning_below=6.8,
-            warning_above=8.2,
-        )
-    )
-    orp: SignalNotificationConfig = field(
-        default_factory=lambda: SignalNotificationConfig(
-            caution_below=600.0,
-            caution_above=800.0,
-            warning_below=400.0,
-            warning_above=900.0,
-        )
-    )
-    filter_flow_loss: SignalNotificationConfig = field(
-        default_factory=lambda: SignalNotificationConfig(
-            warning_above=15.0,
-            warning_repeat_minutes=1440.0,
-        )
-    )
-    freeze_temperature_unavailable: ConditionNotificationConfig = field(
-        default_factory=ConditionNotificationConfig
-    )
-
-    @classmethod
-    def from_mapping(cls, data: Mapping[str, Any]) -> NotificationAlertConfig:
-        defaults = cls()
-        return cls(
-            chlorine_tank=SignalNotificationConfig.from_mapping(
-                _mapping_value(data, "chlorine_tank", default={}),
-                default=defaults.chlorine_tank,
-            ),
-            ph=SignalNotificationConfig.from_mapping(
-                _mapping_value(data, "ph", default={}),
-                default=defaults.ph,
-            ),
-            orp=SignalNotificationConfig.from_mapping(
-                _mapping_value(data, "orp", default={}),
-                default=defaults.orp,
-            ),
-            filter_flow_loss=SignalNotificationConfig.from_mapping(
-                _mapping_value(data, "filter_flow_loss", default={}),
-                default=defaults.filter_flow_loss,
-            ),
-            freeze_temperature_unavailable=ConditionNotificationConfig.from_mapping(
-                _mapping_value(data, "freeze_temperature_unavailable", default={}),
-                default=defaults.freeze_temperature_unavailable,
-            ),
-        )
-
-    def as_payload(self) -> dict[str, Any]:
-        return {
-            "chlorine_tank": self.chlorine_tank.as_payload(),
-            "ph": self.ph.as_payload(),
-            "orp": self.orp.as_payload(),
-            "filter_flow_loss": self.filter_flow_loss.as_payload(),
-            "freeze_temperature_unavailable": (
-                self.freeze_temperature_unavailable.as_payload()
-            ),
-        }
+def default_notification_rules() -> dict[str, NotificationRuleConfig]:
+    return {
+        SensorId.CHLORINE_TANK_DAYS_REMAINING.value: NotificationRuleConfig(),
+        SensorId.RAW_PH.value: NotificationRuleConfig(),
+        SensorId.RAW_ORP.value: NotificationRuleConfig(),
+        SensorId.FILTER_FLOW_LOSS_PERCENT.value: NotificationRuleConfig(
+            notify_caution=False,
+            alarm_repeat_minutes=1440.0,
+        ),
+        FREEZE_TEMPERATURE_UNAVAILABLE_RULE: NotificationRuleConfig(
+            enabled=True,
+            notify_caution=False,
+        ),
+    }
 
 
 @dataclass(frozen=True)
@@ -283,13 +195,29 @@ class NotificationsConfig:
     provider: NotificationProvider = NotificationProvider.PUSHOVER
     default_title: str = "PoolScope"
     pushover: PushoverConfig = field(default_factory=PushoverConfig)
-    alerts: NotificationAlertConfig = field(default_factory=NotificationAlertConfig)
+    rules: dict[str, NotificationRuleConfig] = field(
+        default_factory=default_notification_rules
+    )
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> NotificationsConfig:
         notifications_data = _mapping_value(data, "notifications", default={})
         pushover_data = _mapping_value(notifications_data, "pushover", default={})
-        alerts_data = _mapping_value(notifications_data, "alerts", default={})
+        rules_data = _mapping_value(notifications_data, "rules", default={})
+        defaults = default_notification_rules()
+        unknown_rules = set(rules_data) - set(defaults)
+        if unknown_rules:
+            raise ValueError(
+                "notifications.rules contains unsupported rules: "
+                + ", ".join(sorted(str(item) for item in unknown_rules))
+            )
+        rules = {
+            key: NotificationRuleConfig.from_mapping(
+                _mapping_value(rules_data, key, default={}),
+                default=default,
+            )
+            for key, default in defaults.items()
+        }
         return cls(
             enabled=_bool_value(notifications_data, "enabled", cls.enabled),
             provider=_provider_value(
@@ -303,7 +231,7 @@ class NotificationsConfig:
                 cls.default_title,
             ),
             pushover=PushoverConfig.from_mapping(pushover_data),
-            alerts=NotificationAlertConfig.from_mapping(alerts_data),
+            rules=rules,
         )
 
 
@@ -335,7 +263,10 @@ class NotificationAlert:
         value = _display_value(self.value, self.unit)
         threshold = _display_value(self.threshold, self.unit)
         relation = "below" if self.direction == "below" else "above"
-        if self.signal_key == "chlorine_tank" and self.unit == "days":
+        if (
+            self.signal_key == SensorId.CHLORINE_TANK_DAYS_REMAINING.value
+            and self.unit == "days"
+        ):
             gallons = _optional_float(self.context.get("remaining_gal"))
             gallons_text = (
                 f" ({_display_value(gallons, 'gal')})"
@@ -347,11 +278,11 @@ class NotificationAlert:
                 f"{gallons_text} is {relation} the {self.severity.value} "
                 f"threshold ({threshold})"
             )
-        if self.signal_key == "filter_flow_loss":
+        if self.signal_key == SensorId.FILTER_FLOW_LOSS_PERCENT.value:
             age_text = _test_age_text(self.context.get("test_age_seconds"))
             suffix = f" (last hydraulic test: {age_text})" if age_text else ""
             return f"Clean filter soon: standardized flow loss is {value}{suffix}."
-        if self.signal_key == "freeze_temperature_unavailable":
+        if self.signal_key == FREEZE_TEMPERATURE_UNAVAILABLE_RULE:
             return "Freeze protection temperature unavailable; using fail-safe freeze protection."
         return (
             f"{self.label} {self.severity.value}: {value} is {relation} "
@@ -399,7 +330,9 @@ class NotificationService:
             "enabled": self.config.enabled,
             "provider": self.config.provider.value,
             "default_title": self.config.default_title,
-            "alerts": self.config.alerts.as_payload(),
+            "rules": {
+                key: rule.as_payload() for key, rule in self.config.rules.items()
+            },
         }
         if self.config.provider == NotificationProvider.PUSHOVER:
             payload["pushover"] = self.config.pushover.as_payload()
@@ -480,7 +413,8 @@ class NotificationService:
 
 def evaluate_notification_alerts(
     *,
-    config: NotificationAlertConfig,
+    config: Mapping[str, NotificationRuleConfig],
+    monitoring_config: MonitoringConfig,
     measurements: Mapping[SensorId, Measurement],
     now: datetime,
     last_sent_at: Mapping[str, datetime],
@@ -488,40 +422,32 @@ def evaluate_notification_alerts(
 ) -> tuple[NotificationAlert, ...]:
     alerts: list[NotificationAlert] = []
     specs = (
-        (
-            "chlorine_tank",
-            "Chlorine tank supply",
-            SensorId.CHLORINE_TANK_DAYS_REMAINING,
-            config.chlorine_tank,
-        ),
-        ("ph", "pH", SensorId.RAW_PH, config.ph),
-        ("orp", "ORP", SensorId.RAW_ORP, config.orp),
-        (
-            "filter_flow_loss",
-            "Filter flow loss",
-            SensorId.FILTER_FLOW_LOSS_PERCENT,
-            config.filter_flow_loss,
-        ),
+        ("Chlorine tank supply", SensorId.CHLORINE_TANK_DAYS_REMAINING),
+        ("pH", SensorId.RAW_PH),
+        ("ORP", SensorId.RAW_ORP),
+        ("Filter flow loss", SensorId.FILTER_FLOW_LOSS_PERCENT),
     )
-    for signal_key, label, sensor_id, signal_config in specs:
+    for label, sensor_id in specs:
+        signal_key = sensor_id.value
+        signal_config = config[signal_key]
         measurement = measurements.get(sensor_id)
-        if measurement is None or measurement.quality != Quality.GOOD:
-            continue
         alert = active_notification_alert(
             signal_key=signal_key,
             label=label,
             sensor_id=sensor_id,
             measurement=measurement,
             config=signal_config,
+            limits=monitoring_config.limit_for(sensor_id),
         )
         if alert is None:
             continue
         last_sent = last_sent_at.get(alert.throttle_key)
         if last_sent is None or now - last_sent >= timedelta(minutes=alert.repeat_minutes):
             alerts.append(alert)
-    freeze_config = config.freeze_temperature_unavailable
+    freeze_config = config[FREEZE_TEMPERATURE_UNAVAILABLE_RULE]
     if (
         freeze_config.enabled
+        and freeze_config.notify_alarm
         and freeze_status is not None
         and freeze_status.get("fail_safe") is True
     ):
@@ -529,12 +455,12 @@ def evaluate_notification_alerts(
             sensor_id=SensorId.WATER_TEMP,
             signal_key="freeze_temperature_unavailable",
             label="Freeze protection temperature",
-            severity=NotificationAlertSeverity.WARNING,
+            severity=NotificationAlertSeverity.ALARM,
             direction="unavailable",
             value=0.0,
             unit="",
             threshold=0.0,
-            repeat_minutes=freeze_config.warning_repeat_minutes,
+            repeat_minutes=freeze_config.alarm_repeat_minutes,
             context=dict(freeze_status),
         )
         last_sent = last_sent_at.get(freeze_alert.throttle_key)
@@ -550,58 +476,33 @@ def active_notification_alert(
     signal_key: str,
     label: str,
     sensor_id: SensorId,
-    measurement: Measurement,
-    config: SignalNotificationConfig,
+    measurement: Measurement | None,
+    config: NotificationRuleConfig,
+    limits: MonitoringLimit | None,
 ) -> NotificationAlert | None:
     if not config.enabled:
         return None
-
-    value = float(measurement.value)
-    if config.warning_below is not None and value <= config.warning_below:
-        return _notification_alert(
-            signal_key=signal_key,
-            label=label,
-            sensor_id=sensor_id,
-            measurement=measurement,
-            severity=NotificationAlertSeverity.WARNING,
-            direction="below",
-            threshold=config.warning_below,
-            repeat_minutes=config.warning_repeat_minutes,
-        )
-    if config.warning_above is not None and value >= config.warning_above:
-        return _notification_alert(
-            signal_key=signal_key,
-            label=label,
-            sensor_id=sensor_id,
-            measurement=measurement,
-            severity=NotificationAlertSeverity.WARNING,
-            direction="above",
-            threshold=config.warning_above,
-            repeat_minutes=config.warning_repeat_minutes,
-        )
-    if config.caution_below is not None and value <= config.caution_below:
-        return _notification_alert(
-            signal_key=signal_key,
-            label=label,
-            sensor_id=sensor_id,
-            measurement=measurement,
-            severity=NotificationAlertSeverity.CAUTION,
-            direction="below",
-            threshold=config.caution_below,
-            repeat_minutes=config.caution_repeat_minutes,
-        )
-    if config.caution_above is not None and value >= config.caution_above:
-        return _notification_alert(
-            signal_key=signal_key,
-            label=label,
-            sensor_id=sensor_id,
-            measurement=measurement,
-            severity=NotificationAlertSeverity.CAUTION,
-            direction="above",
-            threshold=config.caution_above,
-            repeat_minutes=config.caution_repeat_minutes,
-        )
-    return None
+    evaluation = classify_measurement(measurement, limits)
+    if measurement is None or evaluation.direction is None or evaluation.threshold is None:
+        return None
+    if evaluation.level == StatusLevel.ALARM and config.notify_alarm:
+        severity = NotificationAlertSeverity.ALARM
+        repeat_minutes = config.alarm_repeat_minutes
+    elif evaluation.level == StatusLevel.CAUTION and config.notify_caution:
+        severity = NotificationAlertSeverity.CAUTION
+        repeat_minutes = config.caution_repeat_minutes
+    else:
+        return None
+    return _notification_alert(
+        signal_key=signal_key,
+        label=label,
+        sensor_id=sensor_id,
+        measurement=measurement,
+        severity=severity,
+        direction=evaluation.direction.value,
+        threshold=evaluation.threshold,
+        repeat_minutes=repeat_minutes,
+    )
 
 
 def _notification_alert(

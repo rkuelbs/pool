@@ -18,8 +18,13 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from poolctl.config import DriverProfile, LiveViewConfig, RuntimeConfig
-from poolctl.config_files import load_config_with_overrides
+from poolctl.config import (
+    DriverProfile,
+    MonitoringConfig,
+    PoolConfig,
+    RuntimeConfig,
+)
+from poolctl.config_files import load_config_with_overrides, normalize_config_mapping
 from poolctl.domain.models import (
     ACTUATOR_AUTO_OFF_AT_METADATA,
     ACTUATOR_ON_PULSE_SECONDS_METADATA,
@@ -430,12 +435,13 @@ class PoolControllerApp:
     """
 
     runtime_config: RuntimeConfig
+    pool_config: PoolConfig
+    monitoring_config: MonitoringConfig
     safety_config: SafetyConfig
     acquisition_config: AcquisitionConfig
     pump_timer_config: PumpTimerConfig
     chlorination_config: ChlorinationConfig
     fc_demand_config: FcDemandConfig
-    live_view_config: LiveViewConfig
     measurement_logging_config: MeasurementLoggingConfig
     clock: Clock
     router: CommandRouter
@@ -758,6 +764,14 @@ class PoolControllerApp:
             config.no_dose_first_minutes * 60.0
         )
 
+    def apply_pool_config(self, config: PoolConfig) -> None:
+        """Apply the canonical pool identity and volume."""
+        object.__setattr__(self, "pool_config", config)
+
+    def apply_monitoring_config(self, config: MonitoringConfig) -> None:
+        """Apply shared dashboard and notification status limits."""
+        object.__setattr__(self, "monitoring_config", config)
+
     def apply_fc_demand_config(self, config: FcDemandConfig) -> None:
         """
         Apply updated FC-demand estimator settings to the running app.
@@ -802,6 +816,24 @@ class PoolControllerApp:
             self.filter_loading_estimator.apply_config(
                 config,
                 pump_pressure_model=flow_config.pump_pressure_model,
+            )
+
+    def apply_flow_estimation_config(self, config: FlowEstimationConfig) -> None:
+        """Apply hydraulic model and filter calibration settings live."""
+        object.__setattr__(self, "flow_estimation_config", config)
+        if self.filter_loading_estimator is None:
+            object.__setattr__(
+                self,
+                "filter_loading_estimator",
+                FilterLoadingEstimator(
+                    config.filter_loading,
+                    pump_pressure_model=config.pump_pressure_model,
+                ),
+            )
+        else:
+            self.filter_loading_estimator.apply_config(
+                config.filter_loading,
+                pump_pressure_model=config.pump_pressure_model,
             )
 
     def set_timer_override(
@@ -1227,7 +1259,10 @@ class PoolControllerApp:
             "provider": self.notifications_config.provider.value,
             "default_title": self.notifications_config.default_title,
             "pushover": self.notifications_config.pushover.as_payload(),
-            "alerts": self.notifications_config.alerts.as_payload(),
+            "rules": {
+                key: rule.as_payload()
+                for key, rule in self.notifications_config.rules.items()
+            },
         }
 
     def send_notification(
@@ -1317,7 +1352,8 @@ class PoolControllerApp:
 
         now = self.clock.now()
         alerts = evaluate_notification_alerts(
-            config=self.notifications_config.alerts,
+            config=self.notifications_config.rules,
+            monitoring_config=self.monitoring_config,
             measurements=measurements,
             now=now,
             last_sent_at=self.notification_alert_last_sent_at,
@@ -2032,6 +2068,10 @@ class PoolControllerApp:
         if not self.fc_demand_config.enabled:
             return estimate_fc_demand_plan(
                 config=self.fc_demand_config,
+                pool_volume_gal=self.pool_config.volume_gal,
+                chlorine_strength_percent=(
+                    self.chlorination_config.chlorine_strength_percent
+                ),
                 now=now,
                 pump_timer_config=self.pump_timer_config,
                 chlorination_config=self.chlorination_config,
@@ -2050,9 +2090,9 @@ class PoolControllerApp:
                     ready=False,
                     reason="measurement logging is required for FC demand estimation",
                     target_fc_ppm=self.fc_demand_config.target_fc_ppm,
-                    pool_volume_gal=self.fc_demand_config.pool_volume_gal,
+                    pool_volume_gal=self.pool_config.volume_gal,
                     chlorine_strength_percent=(
-                        self.fc_demand_config.chlorine_strength_percent
+                        self.chlorination_config.chlorine_strength_percent
                     ),
                     max_observation_interval_days=(
                         self.fc_demand_config.max_observation_interval_days
@@ -2099,6 +2139,10 @@ class PoolControllerApp:
         )
         return estimate_fc_demand_plan(
             config=self.fc_demand_config,
+            pool_volume_gal=self.pool_config.volume_gal,
+            chlorine_strength_percent=(
+                self.chlorination_config.chlorine_strength_percent
+            ),
             now=now,
             pump_timer_config=self.pump_timer_config,
             chlorination_config=self.chlorination_config,
@@ -2598,14 +2642,14 @@ class PoolControllerApp:
         manual_hypo_oz = sum(addition.amount_fl_oz for addition in manual_additions)
         automated_added_fc_ppm = fc_ppm_from_fl_oz(
             automated_oz,
-            strength_percent=self.fc_demand_config.chlorine_strength_percent,
-            pool_volume_gal=self.fc_demand_config.pool_volume_gal,
+            strength_percent=self.chlorination_config.chlorine_strength_percent,
+            pool_volume_gal=self.pool_config.volume_gal,
         )
         manual_added_fc_ppm = sum(
             fc_ppm_from_fl_oz(
                 addition.amount_fl_oz,
                 strength_percent=addition.strength_percent,
-                pool_volume_gal=self.fc_demand_config.pool_volume_gal,
+                pool_volume_gal=self.pool_config.volume_gal,
             )
             for addition in manual_additions
         )
@@ -2634,9 +2678,9 @@ class PoolControllerApp:
                 "automated_added_fc_ppm": automated_added_fc_ppm,
                 "manual_added_fc_ppm": manual_added_fc_ppm,
                 "total_added_fc_ppm": automated_added_fc_ppm + manual_added_fc_ppm,
-                "pool_volume_gal": self.fc_demand_config.pool_volume_gal,
+                "pool_volume_gal": self.pool_config.volume_gal,
                 "automated_chlorine_strength_percent": (
-                    self.fc_demand_config.chlorine_strength_percent
+                    self.chlorination_config.chlorine_strength_percent
                 ),
             },
         )
@@ -3268,7 +3312,10 @@ def build_app_from_mapping(
     sensor_drivers: Iterable[SensorDriver] | None = None,
     multi_sensor_drivers: Iterable[MultiSensorDriver] = (),
 ) -> PoolControllerApp:
+    data = normalize_config_mapping(data)
     runtime_config = RuntimeConfig.from_mapping(data)
+    pool_config = PoolConfig.from_mapping(data)
+    monitoring_config = MonitoringConfig.from_mapping(data)
     safety_config = SafetyConfig.from_mapping(data)
     acquisition_config = _filter_acquisition_config(
         AcquisitionConfig.from_mapping(data),
@@ -3277,7 +3324,6 @@ def build_app_from_mapping(
     pump_timer_config = PumpTimerConfig.from_mapping(data)
     chlorination_config = ChlorinationConfig.from_mapping(data)
     fc_demand_config = FcDemandConfig.from_mapping(data)
-    live_view_config = LiveViewConfig.from_mapping(data)
     measurement_logging_config = MeasurementLoggingConfig.from_mapping(data)
     relay_safety_config = RelaySafetyConfig.from_mapping(
         data,
@@ -3376,12 +3422,13 @@ def build_app_from_mapping(
 
     return PoolControllerApp(
         runtime_config=runtime_config,
+        pool_config=pool_config,
+        monitoring_config=monitoring_config,
         safety_config=safety_config,
         acquisition_config=acquisition_config,
         pump_timer_config=pump_timer_config,
         chlorination_config=chlorination_config,
         fc_demand_config=fc_demand_config,
-        live_view_config=live_view_config,
         measurement_logging_config=measurement_logging_config,
         clock=built_clock,
         router=router,

@@ -176,8 +176,11 @@ Use this local file for values that change on the actual pool:
 - `allow_dosing` choices per schedule window
 - daily chlorine dose
 - dosing pump calibration rate
-- FC-demand target, pool volume, and operating mode
-- site latitude/longitude (tracked configs leave them null and weather disabled)
+- pool name and volume
+- chlorine strength, dosing-pump calibration, and daily dose
+- FC-demand target and operating mode
+- real site latitude/longitude (tracked configs use the neutral `45.0, -90.0`
+  demonstration location and keep weather disabled)
 - measured clean-filter `clean_flow_gpm` (`Qclean`)
 - site-specific paths or hardware settings if they differ from the tracked base
 
@@ -196,9 +199,9 @@ block. Enabling either feature without both coordinates is a configuration
 error; leaving weather disabled skips it cleanly without creating observations
 for a fake location.
 
-The dashboard Config and Schedule forms save to the local override when the
+The dashboard Settings and Schedule forms save to the local override when the
 server is started with `--local-config`. Site timezone and coordinates are
-maintained under **Site Config** on the Config page; the Schedule page saves
+maintained under **Pool & Site** on the Settings page; the Schedule page saves
 only profile definitions. This lets `git pull` update `configs/pi-prod.yaml`
 without conflicting with daily schedule and dosing edits made on the Pi.
 `GET /api/config/site` reads the effective canonical site block and
@@ -209,10 +212,12 @@ Important sections:
 
 - `runtime`: driver profile, installed actuators, and enabled acquisition
   sensor groups.
+- `pool`: canonical pool name and volume.
 - `site`: canonical local timezone and coordinates shared by schedules and weather.
 - `pump_timer`: named profiles, active profile, typed schedule timing,
   pump/booster state, and chlorine-dosing eligibility.
-- `chlorination`: open-loop liquid chlorine dose settings.
+- `chlorination`: open-loop liquid chlorine dose settings, pump calibration,
+  and canonical sodium-hypochlorite concentration.
 - `fc_demand`: optional free-chlorine demand estimator settings.
 - `safety`: pump-output pressure interlocks, tank hysteresis, lockout
   thresholds, and freeze protection.
@@ -232,14 +237,78 @@ Important sections:
 - `flow_estimation`: pump-output-pressure flow constants.
 - `filter_loading`: standardized high-speed pump-output pressure test
   calibration and timing.
-- `live_view`: dashboard display limits.
+- `monitoring.limits`: canonical user-visible normal/caution/alarm boundaries
+  shared by dashboard KPIs, history bands, filter/tank status, and notification
+  evaluation.
 - `weather`: Open-Meteo enablement, units, and polling settings; location comes
   from `site`.
-- `notifications`: push notification provider settings and optional alert rules
+- `notifications`: push notification provider settings and optional state rules
   for usable chlorine tank days remaining, pH, ORP, filter flow loss, and total
-  freeze-temperature loss.
-  Pushover keys can be entered on the Config page or supplied through
+  freeze-temperature loss. Numeric measurement thresholds are not stored here.
+  Pushover keys can be entered on the Settings page or supplied through
   environment variables.
+
+### Settings organization and ownership
+
+`/settings` is the canonical configuration UI; `/config` redirects there for
+older bookmarks. The page uses collapsible, responsive cards organized around
+pool-owner concepts:
+
+- Pool Settings: Pool & Site, Status Ranges, Chlorination, Free Chlorine
+  Control, Filter & Flow, and Notifications.
+- Advanced: Safety & Freeze, Sensors & Calibration, Acquisition & Logging, and
+  Hardware & Runtime.
+
+Collapsed cards summarize their important effective values. Expanded cards span
+the available grid width, related values owned elsewhere are shown read-only
+with a link to their canonical card, and hardware/acquisition changes are
+clearly marked as requiring a controller restart. Saving does not restart the
+service automatically.
+
+PoolScope follows a one-value-one-owner rule. In particular, pool volume belongs
+to `pool.volume_gal`, chlorine concentration belongs to
+`chlorination.chlorine_strength_percent`, FC controller tuning belongs to
+`fc_demand`, visible status boundaries belong to `monitoring.limits`, and
+notification cadence/severity selection belongs to `notifications.rules`.
+Safety interlocks remain under `safety` even where a number resembles a visible
+status limit: an interlock changes equipment behavior, while a monitoring limit
+only classifies and reports state.
+
+The shared classifier emits `normal`, `caution`, `alarm`, `invalid`, or
+`unknown`. Alarm boundaries take precedence over caution boundaries, and
+configured boundaries are inclusive. One-sided limits are valid. Missing
+measurements are unknown; non-finite or explicitly bad measurements are
+invalid. Dashboard KPI colors, history status bands, filter/tank indicators,
+and notification evaluation all consume this same classification.
+
+Existing installations migrate during configuration normalization without
+changing their configured numeric values. Legacy `fc_demand.pool_volume_gal`
+and `fc_demand.chlorine_strength_percent`, `live_view.sensor_limits`,
+notification `alerts` thresholds, and filter yellow/red flow-loss fields may
+still be read when the canonical value is absent. A canonical value in the
+same layer wins; a local legacy override can still supersede a tracked base
+value during migration. Conflicting legacy threshold copies are rejected
+instead of silently choosing one. Newly saved/generated configuration contains
+only `pool`, `chlorination`, `monitoring.limits`, and threshold-free
+`notifications.rules` ownership.
+
+Ranges use explicit directional names and may be two-sided or one-sided:
+
+```yaml
+monitoring:
+  limits:
+    raw_ph:
+      alarm_below: 6.8
+      caution_below: 7.2
+      caution_above: 7.8
+      alarm_above: 8.2
+    filter_flow_loss_percent:
+      caution_above: 10.0
+      alarm_above: 15.0
+    chlorine_tank_days_remaining:
+      alarm_below: 3.0
+      caution_below: 7.0
+```
 
 The canonical schedule schema uses one active profile and typed timing. Fixed
 clock values should be quoted strings:
@@ -656,10 +725,10 @@ top status strip displays `Usable
 chlorine remaining X gallons, Y days`, where usable gallons subtract the 2
 gallon reserve from the true estimated level. Days are computed from the
 FC-demand maintenance dose when one is available; otherwise they use the current
-chlorination daily dose. The status is green above 7 usable days remaining,
-yellow above 3 days, and red at 3 days or less. If no tank level or nonzero
-daily dose is available, the indicator stays neutral.
-The Config page has diagnostic dosing-pump buttons:
+chlorination daily dose. Its normal/caution/alarm colors use the canonical
+`monitoring.limits.chlorine_tank_days_remaining` boundaries. If no tank level
+or nonzero daily dose is available, the indicator stays neutral.
+The Chlorination Settings card has diagnostic dosing-pump buttons:
 
 - `Prime Dosing Pump 30s`: runs the dosing pump continuously for 30 seconds.
 - `Calibrate Dosing Pump 20m`: runs the dosing pump at 50% duty cycle for 20
@@ -759,6 +828,10 @@ runtime:
   - chemistry_loop
   - chemical_tank
 
+pool:
+  name: Home Pool
+  volume_gal: 10000.0
+
 modbus_relay:
   dosing_uses_flash: true
   startup_safe_off: true
@@ -770,6 +843,7 @@ chlorination:
   enabled: true
   daily_dose_oz: 0.0
   pump_output_oz_per_min: 1.0
+  chlorine_strength_percent: 12.0
   no_dose_first_minutes: 1.0
   no_dose_last_minutes: 10.0
   max_duty_cycle: 0.5
@@ -780,9 +854,7 @@ chlorination:
 fc_demand:
   enabled: true
   mode: observe_only
-  pool_volume_gal: 10000.0
   target_fc_ppm: 4.0
-  chlorine_strength_percent: 12.0
   minimum_test_interval_hours: 12.0
   max_observation_interval_days: 7.0
   preferred_test_start_hour: 18
@@ -860,7 +932,7 @@ After cleaning the filter, run the standardized HIGH/booster-OFF period and use
 the completed estimated flow as `clean_flow_gpm` (`Qclean`). Until this value is
 entered, tests still complete and show reference PSI, estimated current flow,
 timestamp, age, and sample count, but flow loss is unavailable and status is
-`uncalibrated`.
+`unknown`.
 
 When calibrated:
 
@@ -870,11 +942,11 @@ raw flow loss % = 100 * (1 - Qcurrent / Qclean)
 
 The raw value is preserved, including small negative values from normal
 variation. Dashboard display clamps flow loss to 0-100%. Status is computed in
-the backend from configured thresholds:
-
-- `green`: flow loss is below `yellow_flow_loss_percent`.
-- `yellow`: flow loss is at or above yellow and below `red_flow_loss_percent`.
-- `red`: flow loss is at or above red.
+the shared monitoring service from
+`monitoring.limits.filter_flow_loss_percent`: values at or above
+`caution_above` are caution, and values at or above `alarm_above` are alarm.
+The Filter & Flow card displays those values read-only and links to Status
+Ranges for editing.
 
 Completed tests log:
 
@@ -1034,13 +1106,13 @@ Pushover setup:
 1. Create a Pushover account and install the mobile app.
 2. Create a Pushover application/API token from your Pushover dashboard.
 3. Copy your Pushover user key.
-4. Enter the app token and user key in the Config page, or put them on the Pi
+4. Enter the app token and user key on the Settings page, or put them on the Pi
    in `/etc/poolctl/poolctl.env`.
-5. Enable notifications in the Config page or YAML.
-6. Press `Send Test` on the Config page.
+5. Enable notifications on the Settings page or in YAML.
+6. Press `Send Test` on the Settings page.
 
 `pi-prod.yaml` stores only the names of the environment variables by default,
-but the Config page can save direct keys to the active writable config:
+but the Settings page can save direct keys to the active writable config:
 
 ```yaml
 notifications:
@@ -1056,58 +1128,59 @@ notifications:
     timeout_s: 5.0
     priority: 0
     sound: null
-  alerts:
-    chlorine_tank:
+  rules:
+    chlorine_tank_days_remaining:
       enabled: true
-      caution_below: 7.0
-      warning_below: 3.0
+      notify_caution: true
+      notify_alarm: true
       caution_repeat_minutes: 1440.0
-      warning_repeat_minutes: 240.0
-    ph:
+      alarm_repeat_minutes: 240.0
+    raw_ph:
       enabled: true
-      caution_below: 7.2
-      caution_above: 7.8
-      warning_below: 6.8
-      warning_above: 8.2
+      notify_caution: true
+      notify_alarm: true
       caution_repeat_minutes: 1440.0
-      warning_repeat_minutes: 240.0
-    orp:
+      alarm_repeat_minutes: 240.0
+    raw_orp:
       enabled: true
-      caution_below: 600.0
-      caution_above: 800.0
-      warning_below: 400.0
-      warning_above: 900.0
+      notify_caution: true
+      notify_alarm: true
       caution_repeat_minutes: 1440.0
-      warning_repeat_minutes: 240.0
-    filter_flow_loss:
+      alarm_repeat_minutes: 240.0
+    filter_flow_loss_percent:
       enabled: false
-      warning_above: 15.0
-      warning_repeat_minutes: 1440.0
+      notify_caution: false
+      notify_alarm: true
+      caution_repeat_minutes: 1440.0
+      alarm_repeat_minutes: 1440.0
     freeze_temperature_unavailable:
       enabled: true
-      warning_repeat_minutes: 240.0
+      notify_caution: false
+      notify_alarm: true
+      caution_repeat_minutes: 1440.0
+      alarm_repeat_minutes: 240.0
 ```
 
-Most threshold alert rules are disabled by default even when the provider block exists in the
-tracked configs. `chlorine_tank` thresholds are usable days remaining, computed
-from the estimated true tank gallons minus the forecast reserve and the
-maintenance chlorine daily estimate when available; tank notifications include
-both usable days and usable gallons in the message. `ph` thresholds are pH
-units, `orp` thresholds are mV, and `filter_flow_loss` thresholds are raw
-standardized flow-loss percent. The filter alert is disabled by default; when
-enabled, it repeats at `warning_repeat_minutes` while the latched latest test
-remains above threshold, even if that test is old. A new clean standardized
-test clears the condition. Messages include test age, for example,
-`Clean filter soon: standardized flow loss is 15.8% (last hydraulic test: 2 days ago).`
-The freeze-temperature-unavailable warning is enabled at the alert-rule level
-by default (the overall notification provider must still be enabled) and uses
-its own repeat interval to avoid continuous messages.
-Warning thresholds are evaluated before caution thresholds. Each signal has a
-separate caution and warning repeat interval; the throttle key is signal plus
-severity, so pH or ORP values that bounce above and below threshold do not keep
-sending new notifications until the matching repeat interval has elapsed.
+Most rules are disabled by default even when the provider block exists in the
+tracked configs. Rules choose whether caution and/or alarm states notify and
+how often each level may repeat; they do not own numeric measurement
+thresholds. Those values come from the matching `monitoring.limits` entry and
+are shown read-only in Settings for context.
 
-The Config page has direct `Pushover app token` and `Pushover user key` fields
+`chlorine_tank_days_remaining` uses usable days remaining, computed from the
+estimated true tank gallons minus the forecast reserve and the maintenance
+chlorine daily estimate when available. Filter notifications use the latest
+standardized flow-loss test and include its age. A clean standardized test
+clears the condition. The freeze-temperature-unavailable rule remains a
+non-measurement alarm rule because it reports loss of all configured freeze
+temperature sources.
+
+Alarm boundaries are evaluated before caution boundaries. Each rule has a
+separate caution and alarm repeat interval; the throttle key is signal plus
+status level, so a value that moves among ranges does not bypass the matching
+cooldown.
+
+The Settings page has direct `Pushover app token` and `Pushover user key` fields
 that round-trip like other config fields. Leave them blank to use
 `app_token_env` and `user_key_env` instead.
 
@@ -1409,7 +1482,7 @@ acquisition:
       - ph_temp
 ```
 
-The Config page has a `pH Sensor Config` section. Turning the sensor on or off
+The Sensors & Calibration Settings card has a pH sensor section. Turning the sensor on or off
 writes `enable_modbus_ph_sensor` and also adds or removes `raw_ph` and
 `ph_temp` from the Pi chemistry acquisition group. Restart the service after
 changing this setting so hardware drivers are rebuilt.
@@ -1423,7 +1496,7 @@ python -m poolctl.tools.modbus_bringup \
   --ph-slave-id 0x04
 ```
 
-The same Config page has low-point and high-point pH calibration buttons. Enter
+The same Settings card has low-point and high-point pH calibration buttons. Enter
 the buffer pH value, then press the matching button while the probe is in that
 buffer. The server writes DFRobot's two-register calibration command starting at
 register `0x0120`, using `1` for the low point, `2` for the high point, and
@@ -1508,6 +1581,23 @@ python -m poolctl.web.server \
 
 Do not run this on the same port while `poolctl.service` is active.
 
+The tracked Windows profile uses the generic `45.0, -90.0` location and
+includes canonical examples of all four Schedule-page modes: morning Dosing,
+a three-hour Low window ending at sunset, one hour of High beginning at sunset,
+and a fixed-time Vacuum window. YAML continues to express those modes through
+`pump_speed`, `booster`, and `allow_dosing`; it does not introduce a second
+`mode` source of truth. This exercises offline solar resolution and makes the
+sunrise, sunset, and solar-relative windows visible without local setup. Change
+Pool & Site in Settings to preview the schedule for another location.
+
+For signals shared with the Pi profile, the Windows profile intentionally uses
+the same `monitoring.limits` and threshold-free `notifications.rules`.
+Windows-only simulated sensors may add their own canonical monitoring entries.
+
+The tracked Pi profile uses the same non-site-specific coordinates so it remains
+complete and testable, but an actual installation should override them in
+`configs/pi-local.yaml` before using solar-relative schedules or weather.
+
 ## Operational Notes
 
 - Keep `data/` out of Git. The SQLite database is local operational state.
@@ -1516,7 +1606,7 @@ Do not run this on the same port while `poolctl.service` is active.
 - Stop the service before manually using the RS485 port.
 - If a Modbus port reports exclusive-lock errors, check for services such as
   `ModemManager` or any running `poolctl` process.
-- The Config page can update many values, but driver-level changes usually
+- The Settings page can update many values, but driver-level changes usually
   require a service restart.
 - The default Pi `pi-prod.yaml` starts with chlorination enabled but
   `daily_dose_oz: 0.0`, so installing the update does not start dosing until a
