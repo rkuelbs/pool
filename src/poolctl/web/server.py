@@ -28,7 +28,7 @@ from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from poolctl.app import ChlorineTankEstimate, PoolControllerApp, build_app_from_config
-from poolctl.config import DriverProfile, RuntimeConfig
+from poolctl.config import DriverProfile, RuntimeConfig, SiteConfig
 from poolctl.config_files import (
     config_write_path,
     load_config_with_overrides,
@@ -68,7 +68,7 @@ from poolctl.services.pump_timer import (
     schedule_timing_payload,
 )
 from poolctl.services.safety import SafetyConfig
-from poolctl.services.weather import WeatherPollResult
+from poolctl.services.weather import WeatherConfig, WeatherPollResult
 from poolctl.web.live import (
     EXTRA_HISTORY_IDS,
     build_history_payload,
@@ -333,6 +333,16 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
     event_ids: set[str]
     async_runtime: AsyncRuntime
 
+    def handle(self) -> None:
+        """Finish quietly when the browser abandons an in-flight response."""
+        try:
+            self._handle_connection()
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            self.close_connection = True
+
+    def _handle_connection(self) -> None:
+        super().handle()
+
     def do_GET(self) -> None:
         path = urlparse(self.path).path
 
@@ -404,6 +414,10 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             self._serve_runtime_config()
             return
 
+        if path == "/api/config/site":
+            self._serve_site_config()
+            return
+
         if path == "/api/config/pump_timer":
             self._serve_pump_timer_config()
             return
@@ -467,6 +481,10 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
 
         if path == "/api/config/runtime":
             self._serve_update_runtime_config()
+            return
+
+        if path == "/api/config/site":
+            self._serve_update_site_config()
             return
 
         if path == "/api/config/pump_timer":
@@ -770,6 +788,26 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
                 config_path=self.config_path,
                 local_config_path=self.local_config_path,
                 payload=payload,
+            )
+        except ValueError as error:
+            self._serve_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+            return
+
+        self._serve_json(result)
+
+    def _serve_site_config(self) -> None:
+        self._serve_json(serialize_site_config(self.app))
+
+    def _serve_update_site_config(self) -> None:
+        try:
+            payload = self._read_json_body()
+            result = self.async_runtime.run_serial(
+                apply_site_config_update_serial(
+                    app=self.app,
+                    config_path=self.config_path,
+                    local_config_path=self.local_config_path,
+                    payload=payload,
+                )
             )
         except ValueError as error:
             self._serve_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
@@ -2175,6 +2213,81 @@ def apply_runtime_config_update(
     }
 
 
+def serialize_site_config(app: PoolControllerApp) -> dict[str, Any]:
+    site = app.pump_timer_config.site
+    assert site is not None
+    return {
+        "timezone": site.timezone,
+        "latitude": site.latitude,
+        "longitude": site.longitude,
+        "location_source": site.location_source,
+    }
+
+
+def apply_site_config_update(
+    *,
+    app: PoolControllerApp,
+    config_path: Path,
+    local_config_path: Path | None = None,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    current_config = app.pump_timer_config
+    current_site = current_config.site
+    assert current_site is not None
+    site_mapping = {
+        "timezone": payload.get("timezone", current_site.timezone),
+        "latitude": payload.get("latitude", current_site.latitude),
+        "longitude": payload.get("longitude", current_site.longitude),
+    }
+    timer_payload = serialize_pump_timer_config(app)
+    proposed_config = PumpTimerConfig.from_mapping(
+        {
+            "site": site_mapping,
+            "pump_timer": {
+                "active_profile": current_config.active_profile,
+                "profiles": timer_payload["profiles"],
+            },
+        }
+    )
+    assert proposed_config.site is not None
+    proposed_weather_config = _weather_config_for_site(
+        config_path=config_path,
+        local_config_path=local_config_path,
+        site=proposed_config.site,
+    )
+
+    config_data = _load_config_write_mapping(config_path, local_config_path=local_config_path)
+    _write_canonical_site_config(
+        config_data,
+        site=proposed_config.site,
+        local_config_path=local_config_path,
+    )
+    _save_config_write_mapping(
+        config_path,
+        local_config_path=local_config_path,
+        data=config_data,
+    )
+
+    app.apply_pump_timer_config(proposed_config)
+    app.apply_weather_config(proposed_weather_config)
+    return serialize_site_config(app)
+
+
+async def apply_site_config_update_serial(
+    *,
+    app: PoolControllerApp,
+    config_path: Path,
+    local_config_path: Path | None,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    return apply_site_config_update(
+        app=app,
+        config_path=config_path,
+        local_config_path=local_config_path,
+        payload=payload,
+    )
+
+
 def serialize_pump_timer_config(app: PoolControllerApp) -> dict[str, Any]:
     config = app.pump_timer_config
     assert config.site is not None
@@ -2206,6 +2319,50 @@ def serialize_pump_timer_config(app: PoolControllerApp) -> dict[str, Any]:
     }
 
 
+def _site_config_mapping(site: SiteConfig) -> dict[str, Any]:
+    return {
+        "timezone": site.timezone,
+        "latitude": site.latitude,
+        "longitude": site.longitude,
+    }
+
+
+def _weather_config_for_site(
+    *,
+    config_path: Path,
+    local_config_path: Path | None,
+    site: SiteConfig,
+) -> WeatherConfig:
+    effective_data = _load_config_mapping(config_path, local_config_path=local_config_path)
+    effective_data["site"] = _site_config_mapping(site)
+    weather_data = effective_data.get("weather")
+    if isinstance(weather_data, dict):
+        weather_data.pop("latitude", None)
+        weather_data.pop("longitude", None)
+    return WeatherConfig.from_mapping(effective_data)
+
+
+def _write_canonical_site_config(
+    config_data: dict[str, Any],
+    *,
+    site: SiteConfig,
+    local_config_path: Path | None,
+) -> None:
+    config_data["site"] = _site_config_mapping(site)
+    weather_data = config_data.get("weather")
+    if isinstance(weather_data, dict):
+        weather_data.pop("latitude", None)
+        weather_data.pop("longitude", None)
+    if local_config_path is not None and not site.has_location:
+        # Explicit nulls prevent coordinates inherited from an older base
+        # config's weather block from reviving after a canonical site clear.
+        weather_data = config_data.setdefault("weather", {})
+        if not isinstance(weather_data, dict):
+            raise ValueError("weather must be a mapping in config")
+        weather_data["latitude"] = None
+        weather_data["longitude"] = None
+
+
 def apply_pump_timer_config_update(
     *,
     app: PoolControllerApp,
@@ -2214,10 +2371,11 @@ def apply_pump_timer_config_update(
     payload: dict[str, Any],
 ) -> dict[str, Any]:
     profiles_data = payload.get("profiles")
+    updates_site = "site" in payload
     if profiles_data is not None:
         if not isinstance(profiles_data, list):
             raise ValueError("profiles must be a list")
-        site_data = payload.get("site")
+        site_data = payload.get("site", {})
         if not isinstance(site_data, dict):
             raise ValueError("site must be a mapping")
         active_profile = payload.get("active_profile", app.pump_timer_config.active_profile)
@@ -2255,29 +2413,23 @@ def apply_pump_timer_config_update(
         }
 
     proposed_config = PumpTimerConfig.from_mapping(proposed_mapping)
+    persists_site = updates_site or profiles_data is None
+    proposed_weather_config = None
+    if updates_site:
+        assert proposed_config.site is not None
+        proposed_weather_config = _weather_config_for_site(
+            config_path=config_path,
+            local_config_path=local_config_path,
+            site=proposed_config.site,
+        )
     config_data = _load_config_write_mapping(config_path, local_config_path=local_config_path)
     assert proposed_config.site is not None
-    config_data["site"] = {
-        "timezone": proposed_config.site.timezone,
-        "latitude": proposed_config.site.latitude,
-        "longitude": proposed_config.site.longitude,
-    }
-    weather_data = config_data.get("weather")
-    if isinstance(weather_data, dict):
-        weather_data.pop("latitude", None)
-        weather_data.pop("longitude", None)
-    if (
-        local_config_path is not None
-        and proposed_config.site.latitude is None
-        and proposed_config.site.longitude is None
-    ):
-        # Explicit nulls prevent coordinates inherited from an older base
-        # config's weather block from reviving after a canonical site clear.
-        weather_data = config_data.setdefault("weather", {})
-        if not isinstance(weather_data, dict):
-            raise ValueError("weather must be a mapping in config")
-        weather_data["latitude"] = None
-        weather_data["longitude"] = None
+    if persists_site:
+        _write_canonical_site_config(
+            config_data,
+            site=proposed_config.site,
+            local_config_path=local_config_path,
+        )
     config_data["pump_timer"] = {
         "active_profile": proposed_config.active_profile,
         "profiles": [
@@ -2294,6 +2446,8 @@ def apply_pump_timer_config_update(
     _save_config_write_mapping(config_path, local_config_path=local_config_path, data=config_data)
 
     app.apply_pump_timer_config(proposed_config)
+    if proposed_weather_config is not None:
+        app.apply_weather_config(proposed_weather_config)
     return serialize_pump_timer_config(app)
 
 

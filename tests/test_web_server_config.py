@@ -34,6 +34,7 @@ from poolctl.web.server import (
     apply_pump_timer_config_update,
     apply_runtime_config_update,
     apply_safety_config_update,
+    apply_site_config_update,
     apply_timer_override_update,
     build_health_payload,
     list_chemical_additions,
@@ -50,6 +51,7 @@ from poolctl.web.server import (
     serialize_pump_timer_config,
     serialize_runtime_config,
     serialize_safety_config,
+    serialize_site_config,
     send_test_notification,
     start_chlorination_calibration,
     start_chlorination_prime,
@@ -101,6 +103,211 @@ def test_serialize_pump_timer_config() -> None:
             "allow_dosing": True,
         }
     ]
+
+
+def test_site_config_update_preserves_profiles_and_refreshes_weather(tmp_path: Path) -> None:
+    config = {
+        "runtime": {
+            "driver_profile": "simulated",
+            "enabled_sensor_groups": [],
+        },
+        "site": {
+            "timezone": "America/Chicago",
+            "latitude": 29.75,
+            "longitude": -95.36,
+        },
+        "pump_timer": {
+            "active_profile": "normal",
+            "profiles": [
+                {
+                    "name": "normal",
+                    "schedules": [
+                        {
+                            "name": "daylight",
+                            "timing": {
+                                "type": "daylight_fraction",
+                                "start_fraction": 0.1,
+                                "end_fraction": 0.9,
+                            },
+                            "pump_speed": "low",
+                            "booster": "off",
+                            "allow_dosing": True,
+                        }
+                    ],
+                }
+            ],
+        },
+        "weather": {"enabled": True, "poll_interval_s": 1800},
+    }
+    path = tmp_path / "pool.yaml"
+    path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    app = build_app_from_mapping(config, clock=make_clock())
+    original_profiles = serialize_pump_timer_config(app)["profiles"]
+
+    result = apply_site_config_update(
+        app=app,
+        config_path=path,
+        payload={
+            "timezone": "America/New_York",
+            "latitude": 30.25,
+            "longitude": -81.65,
+        },
+    )
+
+    assert result == {
+        "timezone": "America/New_York",
+        "latitude": 30.25,
+        "longitude": -81.65,
+        "location_source": "site",
+    }
+    assert serialize_site_config(app) == result
+    assert serialize_pump_timer_config(app)["profiles"] == original_profiles
+    assert app.pump_timer_config.active_profile == "normal"
+    assert app.weather_config.latitude == 30.25
+    assert app.weather_config.longitude == -81.65
+    assert app.weather_service is not None
+    assert app.weather_service.config == app.weather_config
+
+    saved = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert saved["site"] == {
+        "timezone": "America/New_York",
+        "latitude": 30.25,
+        "longitude": -81.65,
+    }
+    assert saved["pump_timer"] == config["pump_timer"]
+
+
+def test_site_config_update_writes_only_site_to_local_override(tmp_path: Path) -> None:
+    base_path = tmp_path / "pi-prod.yaml"
+    local_path = tmp_path / "pi-local.yaml"
+    base_data = {
+        **config_mapping(),
+        "site": {
+            "timezone": "America/Chicago",
+            "latitude": 29.75,
+            "longitude": -95.36,
+        },
+    }
+    base_path.write_text(yaml.safe_dump(base_data, sort_keys=False), encoding="utf-8")
+    base_before = base_path.read_text(encoding="utf-8")
+    app = build_app_from_mapping(base_data, clock=make_clock())
+
+    apply_site_config_update(
+        app=app,
+        config_path=base_path,
+        local_config_path=local_path,
+        payload={
+            "timezone": "UTC",
+            "latitude": 32.0,
+            "longitude": -97.0,
+        },
+    )
+
+    assert base_path.read_text(encoding="utf-8") == base_before
+    local_data = yaml.safe_load(local_path.read_text(encoding="utf-8"))
+    assert local_data == {
+        "site": {
+            "timezone": "UTC",
+            "latitude": 32.0,
+            "longitude": -97.0,
+        }
+    }
+    effective = load_config_with_overrides(base_path, local_path=local_path)
+    assert effective["pump_timer"] == base_data["pump_timer"]
+
+
+@pytest.mark.parametrize(
+    "payload, message",
+    [
+        ({"timezone": "Not/A_Timezone"}, "invalid timezone"),
+        ({"latitude": 40.0, "longitude": None}, "configured together"),
+        ({"latitude": 91.0, "longitude": 0.0}, "between -90 and 90"),
+    ],
+)
+def test_site_config_update_rejects_invalid_values_without_writing(
+    tmp_path: Path,
+    payload: dict[str, object],
+    message: str,
+) -> None:
+    path = tmp_path / "pool.yaml"
+    path.write_text(yaml.safe_dump(config_mapping(), sort_keys=False), encoding="utf-8")
+    before = path.read_text(encoding="utf-8")
+    app = build_app_from_mapping(config_mapping(), clock=make_clock())
+
+    with pytest.raises(ValueError, match=message):
+        apply_site_config_update(app=app, config_path=path, payload=payload)
+
+    assert path.read_text(encoding="utf-8") == before
+
+
+def test_profile_only_update_preserves_site_and_active_profile(tmp_path: Path) -> None:
+    config = {
+        "runtime": {
+            "driver_profile": "simulated",
+            "enabled_sensor_groups": [],
+        },
+        "site": {
+            "timezone": "America/Chicago",
+            "latitude": 29.75,
+            "longitude": -95.36,
+        },
+        "pump_timer": {
+            "active_profile": "normal",
+            "profiles": [{"name": "normal", "schedules": []}],
+        },
+    }
+    path = tmp_path / "pool.yaml"
+    path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    app = build_app_from_mapping(config, clock=make_clock())
+
+    result = apply_pump_timer_config_update(
+        app=app,
+        config_path=path,
+        payload={
+            "profiles": [
+                {"name": "normal", "schedules": []},
+                {"name": "vacation", "schedules": []},
+            ]
+        },
+    )
+
+    assert result["active_profile"] == "normal"
+    assert [profile["name"] for profile in result["profiles"]] == [
+        "normal",
+        "vacation",
+    ]
+    saved = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert saved["site"] == config["site"]
+
+
+def test_profile_only_update_cannot_remove_active_profile(tmp_path: Path) -> None:
+    config = {
+        "runtime": {
+            "driver_profile": "simulated",
+            "enabled_sensor_groups": [],
+        },
+        "site": {"timezone": "UTC"},
+        "pump_timer": {
+            "active_profile": "normal",
+            "profiles": [
+                {"name": "normal", "schedules": []},
+                {"name": "vacation", "schedules": []},
+            ],
+        },
+    }
+    path = tmp_path / "pool.yaml"
+    path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    before = path.read_text(encoding="utf-8")
+    app = build_app_from_mapping(config, clock=make_clock())
+
+    with pytest.raises(ValueError, match="active schedule profile"):
+        apply_pump_timer_config_update(
+            app=app,
+            config_path=path,
+            payload={"profiles": [{"name": "vacation", "schedules": []}]},
+        )
+
+    assert path.read_text(encoding="utf-8") == before
 
 
 def test_apply_pump_timer_update_updates_running_app_and_yaml(tmp_path: Path) -> None:
@@ -905,6 +1112,41 @@ def test_web_handler_serves_poolscope_logo(monkeypatch: pytest.MonkeyPatch) -> N
     assert served[0][1] == "image/png"
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        BrokenPipeError("client closed the pipe"),
+        ConnectionAbortedError(10053, "client aborted the connection"),
+        ConnectionResetError(10054, "client reset the connection"),
+    ],
+)
+def test_web_handler_ignores_expected_client_disconnects(
+    error: OSError,
+) -> None:
+    class AbandonedConnectionHandler(PoolCtlWebHandler):
+        def _handle_connection(self) -> None:
+            raise error
+
+    handler = object.__new__(AbandonedConnectionHandler)
+
+    handler.handle()
+
+    assert handler.close_connection is True
+
+
+def test_web_handler_preserves_unexpected_request_errors() -> None:
+    error = OSError(5, "unexpected request failure")
+
+    class FailingConnectionHandler(PoolCtlWebHandler):
+        def _handle_connection(self) -> None:
+            raise error
+
+    handler = object.__new__(FailingConnectionHandler)
+
+    with pytest.raises(OSError, match="unexpected request failure"):
+        handler.handle()
+
+
 def test_timer_override_update_sets_and_clears_runtime_override() -> None:
     app = build_app_from_mapping(config_mapping(), clock=make_clock())
 
@@ -1360,6 +1602,13 @@ def test_history_event_forms_use_local_datetime_inputs() -> None:
         assert 'id="labChlorineTankLevelGal" type="number"' in html
 
     config_html = (static_dir / "config.html").read_text(encoding="utf-8")
+    script = (static_dir / "app.js").read_text(encoding="utf-8")
+    assert ">Site Config</h2>" in config_html
+    assert 'id="siteTimezone"' in config_html
+    assert 'id="siteLatitude"' in config_html
+    assert 'id="siteLongitude"' in config_html
+    assert 'id="siteSave"' in config_html
+    assert 'fetch("/api/config/site"' in script
     assert 'id="pushoverAppToken" type="text"' in config_html
     assert 'id="pushoverUserKey" type="text"' in config_html
     assert "Caution below days" in config_html

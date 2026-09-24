@@ -736,11 +736,17 @@ def test_web_pages_use_poolscope_branding_and_live_logo() -> None:
         assert '<link rel="apple-touch-icon" href="/poolscope.png">' in markup
 
     live_markup = (static_dir / "live.html").read_text(encoding="utf-8")
+    schedule_markup = (static_dir / "schedule.html").read_text(encoding="utf-8")
     styles = (static_dir / "styles.css").read_text(encoding="utf-8")
     script = (static_dir / "app.js").read_text(encoding="utf-8")
     logo = static_dir / "poolscope.png"
 
     assert '<img class="brand-mark" src="/poolscope.png" alt="">' in live_markup
+    assert '<img class="brand-mark" src="/poolscope.png" alt="">' in schedule_markup
+    assert 'class="topbar schedule-product-header"' in schedule_markup
+    assert 'id="controllerBadge" class="status-pill is-offline"' in schedule_markup
+    assert 'id="headerProfile"' in schedule_markup
+    assert 'id="headerPumpMode"' in schedule_markup
     assert ".brand-mark::before" not in styles
     assert logo.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
     assert 'message: "PoolScope test notification"' in script
@@ -769,12 +775,52 @@ def test_schedule_editor_uses_operating_modes_and_preserves_drafts() -> None:
     assert "Legacy combination will normalize to" in script
     assert "Discard unsaved schedule changes and reload the saved schedule?" in script
     assert "profiles: normalizedTimerProfiles(timerConfigDraft.profiles)" in script
+    assert 'class="schedule-workspace"' in schedule_markup
+    assert 'class="dashboard-card schedule-settings-card schedule-profile-card"' in schedule_markup
+    assert 'class="dashboard-card schedule-editor-card"' in schedule_markup
+    assert 'class="dashboard-card schedule-preview-card"' in schedule_markup
+    assert ">Profile Selection</h2>" in schedule_markup
+    assert 'id="timerCurrentActiveProfile"' in schedule_markup
+    assert 'id="timerEditProfileLabel"' in schedule_markup
+    assert ">Profile Editor</h2>" in schedule_markup
+    assert 'id="timerTimezone"' not in schedule_markup
+    assert 'id="timerLatitude"' not in schedule_markup
+    assert 'id="timerLongitude"' not in schedule_markup
+    assert 'id="timerSaveStatus" class="schedule-save-status" role="status" aria-live="polite"' in schedule_markup
+    assert 'id="timerPreview" class="schedule-preview-list" role="status" aria-live="polite"' in schedule_markup
+    assert 'label.textContent = "Operating mode";' in script
+    assert '"Schedule name",\n    timerInput("name"' in script
+    assert 'fixed: "Fixed times"' in script
+    assert 'solar_anchor: "Solar anchor"' in script
+    assert 'daylight_fraction: "Daylight fraction"' in script
+    assert "function renderSchedulePreview(target, days)" in script
+    assert 'card.className = "schedule-preview-day";' in script
+    assert 'badge.className = `schedule-mode-badge is-${mode}`;' in script
+    assert 'target.classList.add("is-error");' in script
+
+    top_status_source = script[
+        script.index("async function refreshTopStatus") : script.index("function renderSafetyBadge")
+    ]
+    assert "setControllerConnectionState(true);" in top_status_source
+    assert "setControllerConnectionState(false);" in top_status_source
 
     poll_source = script[script.index("async function poll()") : script.index(
         'document.querySelectorAll("[data-command]")'
     )]
     assert "loadPumpTimerConfig" not in poll_source
-    assert 'grid-template-columns: 1.5fr 0.8fr 3fr 1.1fr 72px;' in styles
+    save_source = script[
+        script.index("async function savePumpTimerConfig()") : script.index(
+            "function setTimerStatus"
+        )
+    ]
+    assert "profiles: normalizedTimerProfiles(timerConfigDraft.profiles)" in save_source
+    assert "active_profile" not in save_source
+    assert "site:" not in save_source
+    assert "The active profile cannot be removed" in script
+    assert ".schedule-workspace" in styles
+    assert 'grid-template-columns: minmax(0, 2fr) minmax(330px, 0.82fr);' in styles
+    assert '.schedule-page .timer-row[data-mode="dosing"]::before' in styles
+    assert "@media (max-width: 680px)" in styles
 
 
 def test_history_payload_can_filter_to_validated_measurements(tmp_path: Path) -> None:

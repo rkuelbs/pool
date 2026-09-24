@@ -197,9 +197,13 @@ error; leaving weather disabled skips it cleanly without creating observations
 for a fake location.
 
 The dashboard Config and Schedule forms save to the local override when the
-server is started with `--local-config`. This lets `git pull` update
-`configs/pi-prod.yaml` without conflicting with daily schedule and dosing edits
-made on the Pi.
+server is started with `--local-config`. Site timezone and coordinates are
+maintained under **Site Config** on the Config page; the Schedule page saves
+only profile definitions. This lets `git pull` update `configs/pi-prod.yaml`
+without conflicting with daily schedule and dosing edits made on the Pi.
+`GET /api/config/site` reads the effective canonical site block and
+`POST /api/config/site` validates, persists, and applies it to schedule
+resolution and weather polling without a restart.
 
 Important sections:
 
@@ -315,6 +319,16 @@ a warning and is normalized to the selected mode only when schedules are saved.
 The underlying YAML, API, overlap rules, and controller schedule model are not
 changed by this UI translation.
 
+The Schedule page uses an editor-first workspace. **Profile Selection** chooses
+the profile to view or edit and provides add/remove actions; it also shows the
+currently active profile as read-only context. The active profile and the final
+remaining profile cannot be removed. **Profile Editor** names the selected
+profile, presents each operating window as an individually labeled card, and
+keeps save/reload feedback visible with the editor. The three-day resolved
+preview shows the last saved configuration, including sunrise/sunset, resolved
+window times, operating modes, and resolution warnings. Unsaved editor changes
+do not appear in that preview until they are saved.
+
 Use named profiles for seasonal operating plans, such as daylight-oriented
 summer circulation/dosing, fall vacuum windows, and pre-sunrise winter
 filtration. The Schedule page creates and edits profiles. On the Live page,
@@ -335,6 +349,9 @@ The web server/API is the intended remote interface. There is no separate
 message bus or staged runtime mode. The app builder always wires the scheduler,
 acquisition, logging, SafetyGate, chlorination controller, FC-demand estimator,
 weather service, and notification service from the active config.
+Browser navigation or refresh can abandon an in-flight response; expected
+broken-pipe, aborted-connection, and reset-connection errors are closed quietly,
+while unrelated request-handler failures continue to surface normally.
 
 `runtime.enabled_actuators` describes which outputs are physically installed.
 `runtime.enabled_sensor_groups` selects acquisition groups from the YAML. Service
@@ -444,14 +461,15 @@ commands, configuration keys, and systemd services retain the `poolctl` name.
   navigation, calendar/time jump, CSV export, water-test and chemical-addition
   entry with local date/time pickers, and single-axis or multi-axis scaling
   depending on selected signal ranges.
-- Schedule: site coordinates, named profiles, fixed/solar/daylight timing, a
-  four-mode operating selector, and a three-day resolved preview. The editor
-  loads saved configuration once instead of replacing in-progress edits during
-  status polling; **Reload Saved** explicitly discards a draft after confirmation.
-- Config: forms for runtime hardware profile, safety, chlorination, filter
-  loading, FC demand, acquisition, logging, pressure analog input calibration,
-  pH sensor enable/calibration, notifications, and diagnostic dosing-pump
-  prime/calibration tests.
+- Schedule: profile selection and editing, fixed/solar/daylight timing, a
+  four-mode operating selector, and a three-day resolved preview. Profile
+  activation remains on Live. The editor loads saved configuration once instead
+  of replacing in-progress edits during status polling; **Reload Saved**
+  explicitly discards a draft after confirmation.
+- Config: forms for site timezone/coordinates, runtime hardware profile, safety,
+  chlorination, filter loading, FC demand, acquisition, logging, pressure analog
+  input calibration, pH sensor enable/calibration, notifications, and diagnostic
+  dosing-pump prime/calibration tests.
 
 Some config changes apply live. Others write YAML and require restart because
 drivers or long-lived services must be rebuilt.

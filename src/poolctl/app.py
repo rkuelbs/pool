@@ -718,6 +718,12 @@ class PoolControllerApp:
         object.__setattr__(self, "schedule_resolution_last_signature", None)
         object.__setattr__(self, "schedule_resolution_pending_trigger", trigger)
 
+    def apply_weather_config(self, config: WeatherConfig) -> None:
+        """Apply updated canonical site coordinates to weather polling."""
+        service = WeatherService(config) if config.enabled else None
+        object.__setattr__(self, "weather_config", config)
+        object.__setattr__(self, "weather_service", service)
+
     def _persist_current_schedule_resolution(self, now: datetime) -> None:
         if self.pump_timer is None or self.measurement_logger is None:
             return

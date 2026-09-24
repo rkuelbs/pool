@@ -9,23 +9,34 @@
     <link rel="stylesheet" href="/styles.css">
   </head>
   <body data-page="schedule">
-    <main class="shell">
-      <header class="topbar">
-        <div>
-          <h1>PoolScope</h1>
-          <p id="runtimeLine">Live view</p>
-        </div>
-        <div class="status-strip">
-          <div class="badge-row">
-            <span id="safetyBadge" class="badge">Starting</span>
-            <span id="chlorineSupplyBadge" class="badge unknown">Usable chlorine remaining -- gallons, -- days</span>
-            <span id="cpuTempBadge" class="badge hidden">CPU Temp: --</span>
+    <main class="shell schedule-shell">
+      <header class="topbar schedule-product-header">
+        <div class="brand-lockup">
+          <img class="brand-mark" src="/poolscope.png" alt="">
+          <div>
+            <span class="eyebrow">Pool automation</span>
+            <h1>PoolScope</h1>
+            <p id="runtimeLine">Connecting to controller</p>
           </div>
-          <span id="cpuLoadLine" class="timestamp hidden">CPU Load: --</span>
-          <span id="cpuFanLine" class="timestamp hidden">CPU Fan: --</span>
-          <span id="loopTimingLine" class="timestamp">Loop: --</span>
-          <span id="updatedAt" class="timestamp">--</span>
-          <span id="healthLine" class="timestamp">--</span>
+        </div>
+        <div class="header-status" aria-label="Controller summary">
+          <div class="header-status-pills">
+            <span id="controllerBadge" class="status-pill is-offline">
+              <span class="status-dot" aria-hidden="true"></span>
+              <span id="controllerStatusText">Controller offline</span>
+            </span>
+            <span id="safetyBadge" class="status-pill is-neutral">Safety starting</span>
+          </div>
+          <dl class="header-facts">
+            <div>
+              <dt>Schedule</dt>
+              <dd id="headerProfile">--</dd>
+            </div>
+            <div>
+              <dt>Pump</dt>
+              <dd id="headerPumpMode">--</dd>
+            </div>
+          </dl>
         </div>
       </header>
       <nav class="page-nav" aria-label="Dashboard pages">
@@ -61,52 +72,112 @@
         <div id="historyStatus" class="history-status">--</div>
       </section>
 
-      <section id="pumpTimerPanel" class="history-panel" aria-label="Pump timer schedules" data-view-section="schedule">
-        <div class="history-header">
-          <h2>Pump Timer Config</h2>
-          <div class="history-controls">
-            <button id="timerAddProfile" type="button">Add Profile</button>
-            <button id="timerRemoveProfile" type="button">Remove Profile</button>
-            <button id="timerAddRow" type="button">Add Schedule</button>
+      <section id="pumpTimerPanel" class="schedule-page" aria-labelledby="schedulePageHeading" data-view-section="schedule">
+        <header class="schedule-intro">
+          <div>
+            <span class="eyebrow">Schedule builder</span>
+            <h2 id="schedulePageHeading">Plan your pool's operating day</h2>
+            <p>Manage seasonal profiles, solar-aware timing, and the pump mode for every operating window.</p>
           </div>
+          <div id="timerLayerStatus" class="status-pill schedule-layer-status" role="status">Checking schedule support</div>
+        </header>
+
+        <div class="schedule-workspace">
+          <div class="schedule-editor-column">
+            <section class="dashboard-card schedule-settings-card schedule-profile-card" aria-labelledby="scheduleSettingsHeading">
+              <div class="section-heading compact">
+                <div>
+                  <span class="eyebrow">Profiles</span>
+                  <h2 id="scheduleSettingsHeading">Profile Selection</h2>
+                </div>
+              </div>
+              <p class="section-note">Choose a profile to view or edit. Activate profiles from the Live page; the active profile cannot be removed.</p>
+              <div class="schedule-profile-selection">
+                <label class="schedule-profile-picker">View/edit profile
+                  <select id="timerEditProfile"></select>
+                </label>
+                <div class="schedule-active-profile">
+                  <span class="timer-field-label">Currently active</span>
+                  <strong id="timerCurrentActiveProfile">--</strong>
+                  <a href="/live">Change on Live</a>
+                </div>
+                <div class="schedule-profile-actions">
+                  <button id="timerAddProfile" class="button-secondary" type="button">Add Profile</button>
+                  <button id="timerRemoveProfile" class="button-danger-secondary" type="button">Remove Profile</button>
+                </div>
+              </div>
+            </section>
+
+            <section class="dashboard-card schedule-editor-card" aria-labelledby="scheduleWindowsHeading">
+              <div class="section-heading schedule-editor-heading">
+                <div>
+                  <span class="eyebrow">Operating windows</span>
+                  <h2 id="scheduleWindowsHeading">Profile Editor</h2>
+                  <p class="profile-editor-name">Editing: <strong id="timerEditProfileLabel">--</strong></p>
+                </div>
+                <button id="timerAddRow" class="button-secondary schedule-add-button" type="button">Add Schedule</button>
+              </div>
+              <div class="timer-grid-head sr-only">
+                <span>Name</span>
+                <span>Enabled</span>
+                <span>Timing</span>
+                <span>Mode</span>
+                <span>Action</span>
+              </div>
+              <div id="timerRows" class="timer-rows"></div>
+              <p class="schedule-help-note">
+                <strong>Daylight fractions:</strong> 0 is sunrise, 0.5 is daylight midpoint, and 1 is sunset. Values below 0 run before sunrise; values above 1 run after sunset.
+              </p>
+              <footer class="schedule-save-bar">
+                <div>
+                  <strong>Schedule changes</strong>
+                  <p id="timerSaveStatus" class="schedule-save-status" role="status" aria-live="polite">--</p>
+                </div>
+                <div class="timer-actions">
+                  <button id="timerReload" type="button">Reload Saved</button>
+                  <button id="timerSave" class="button-primary" type="button">Save Schedules</button>
+                </div>
+              </footer>
+            </section>
+          </div>
+
+          <aside class="dashboard-card schedule-preview-card" aria-labelledby="schedulePreviewHeading">
+            <div class="section-heading compact">
+              <div>
+                <span class="eyebrow">Saved configuration</span>
+                <h2 id="schedulePreviewHeading">Next three days</h2>
+              </div>
+              <button id="timerPreviewReload" class="button-secondary" type="button">Refresh</button>
+            </div>
+            <p class="section-note">This preview reflects the last saved schedule, including resolved solar times.</p>
+            <div id="timerPreview" class="schedule-preview-list" role="status" aria-live="polite">Loading resolved schedule...</div>
+          </aside>
         </div>
-        <div id="timerLayerStatus" class="history-status">--</div>
-        <div class="config-grid">
-          <label>Timezone
-            <input id="timerTimezone" type="text" placeholder="America/Chicago">
-          </label>
-          <label>Latitude
-            <input id="timerLatitude" type="number" min="-90" max="90" step="0.000001" placeholder="required for solar timing">
-          </label>
-          <label>Longitude
-            <input id="timerLongitude" type="number" min="-180" max="180" step="0.000001" placeholder="required for solar timing">
-          </label>
-          <label>Active Profile
-            <select id="timerActiveProfile"></select>
-          </label>
-          <label>Edit Profile
-            <select id="timerEditProfile"></select>
-          </label>
-        </div>
-        <div class="timer-grid-head">
-          <span>Name</span>
-          <span>Enabled</span>
-          <span>Timing</span>
-          <span>Mode</span>
-          <span>Action</span>
-        </div>
-        <div id="timerRows" class="timer-rows"></div>
-        <p class="history-status">Daylight fractions are decimals: 0 = sunrise, 0.5 = daylight midpoint, and 1 = sunset. Negative values run before sunrise; values above 1 run after sunset.</p>
-        <div class="timer-actions">
-          <button id="timerReload" type="button">Reload Saved</button>
-          <button id="timerSave" type="button">Save Schedules</button>
-        </div>
-        <div id="timerSaveStatus" class="history-status">--</div>
-        <div class="history-header">
-          <h2>Resolved Preview</h2>
-          <button id="timerPreviewReload" type="button">Refresh Preview</button>
-        </div>
-        <div id="timerPreview" class="timeline-list">--</div>
+
+        <details class="dashboard-card engineering-panel schedule-engineering-panel">
+          <summary>
+            <span>
+              <span class="eyebrow">Secondary detail</span>
+              <strong>Engineering &amp; controller status</strong>
+            </span>
+            <span>Expand</span>
+          </summary>
+          <div class="engineering-grid">
+            <section>
+              <h3>Chemistry supply</h3>
+              <span id="chlorineSupplyBadge" class="badge unknown">Usable chlorine remaining -- gallons, -- days</span>
+            </section>
+            <section>
+              <h3>Controller runtime</h3>
+              <span id="cpuTempBadge" class="badge hidden">CPU Temp: --</span>
+              <p id="cpuLoadLine" class="timestamp hidden">CPU Load: --</p>
+              <p id="cpuFanLine" class="timestamp hidden">CPU Fan: --</p>
+              <p id="loopTimingLine" class="timestamp">Loop: --</p>
+              <p id="updatedAt" class="timestamp">Updated: --</p>
+              <p id="healthLine" class="timestamp">Health: --</p>
+            </section>
+          </div>
+        </details>
       </section>
 
       <section class="history-panel" aria-label="Runtime config" data-view-section="config">

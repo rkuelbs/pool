@@ -112,6 +112,29 @@
         <div id="runtimeStatus" class="history-status">--</div>
       </section>
 
+      <section class="history-panel" aria-label="Site config" data-view-section="config">
+        <div class="history-header">
+          <h2>Site Config</h2>
+          <button id="siteReload" type="button">Reload</button>
+        </div>
+        <p class="config-note">Timezone and coordinates are shared by solar schedules and weather. Latitude and longitude must be configured together.</p>
+        <div class="config-grid">
+          <label>Timezone
+            <input id="siteTimezone" type="text" placeholder="America/Chicago" autocomplete="off">
+          </label>
+          <label>Latitude
+            <input id="siteLatitude" type="number" min="-90" max="90" step="0.000001" placeholder="Required for solar timing">
+          </label>
+          <label>Longitude
+            <input id="siteLongitude" type="number" min="-180" max="180" step="0.000001" placeholder="Required for solar timing">
+          </label>
+        </div>
+        <div class="timer-actions">
+          <button id="siteSave" type="button">Save Site</button>
+        </div>
+        <div id="siteStatus" class="history-status">--</div>
+      </section>
+
       <section class="history-panel" aria-label="Safety config" data-view-section="config">
         <div class="history-header">
           <h2>Safety Config</h2>
