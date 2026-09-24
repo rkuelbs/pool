@@ -47,6 +47,10 @@ def make_clock() -> SimulatedClock:
 
 def live_config() -> dict[str, object]:
     return {
+        "pool": {
+            "name": "Test Pool",
+            "volume_gal": 12000.0,
+        },
         "runtime": {
             "driver_profile": "simulated",
             "enabled_actuators": [
@@ -141,6 +145,7 @@ async def test_build_live_snapshot_includes_runtime_sensors_and_actuators() -> N
 
     snapshot = await build_live_snapshot(app)
 
+    assert snapshot["pool"]["name"] == "Test Pool"
     assert snapshot["runtime"]["driver_profile"] == "simulated"
     assert SensorId.PUMP_OUTPUT_PSI.value in snapshot["sensors"]
     assert snapshot["sensors"][SensorId.PUMP_OUTPUT_PSI.value]["unit"] == "psi"
@@ -690,6 +695,8 @@ def test_live_dashboard_preserves_control_hooks_and_product_sections() -> None:
     assert 'aria-label="Usable chlorine supply, last 30 days"' in markup
     assert "openSupplementalChlorineConfirmation(inputId)" in script
     assert 'fetch("/api/live"' in script
+    assert 'const poolName = payload.pool ? String(payload.pool.name || "").trim() : "";' in script
+    assert 'runtimeLine.textContent = poolName || `${profile.replaceAll("_", " ")} controller`;' in script
     assert "fetch(`/api/history?${shortKpiParams.toString()}`" in script
     assert "const LIVE_SHORT_KPI_HISTORY_HOURS = 24;" in script
     assert "const LIVE_LONG_KPI_HISTORY_HOURS = 24 * 30;" in script
@@ -728,6 +735,7 @@ def test_web_pages_use_poolscope_branding_and_live_logo() -> None:
         "settings.html": "PoolScope Settings",
     }
 
+    product_headers = []
     for page_name, title in page_titles.items():
         markup = (static_dir / page_name).read_text(encoding="utf-8")
         assert f"<title>{title}</title>" in markup
@@ -735,6 +743,21 @@ def test_web_pages_use_poolscope_branding_and_live_logo() -> None:
         assert "<h1>poolctl</h1>" not in markup
         assert '<link rel="icon" type="image/png" href="/poolscope.png">' in markup
         assert '<link rel="apple-touch-icon" href="/poolscope.png">' in markup
+        assert '<img class="brand-mark" src="/poolscope.png" alt="">' in markup
+        assert 'class="topbar product-header"' in markup
+        assert 'id="controllerBadge" class="status-pill is-offline"' in markup
+        assert 'id="safetyBadge" class="status-pill is-neutral"' in markup
+        assert 'id="headerProfile"' in markup
+        assert 'id="headerPumpMode"' in markup
+        header = re.search(
+            r'<header class="topbar product-header">.*?</header>',
+            markup,
+            re.DOTALL,
+        )
+        assert header is not None
+        product_headers.append(header.group(0))
+
+    assert len(set(product_headers)) == 1
 
     live_markup = (static_dir / "live.html").read_text(encoding="utf-8")
     schedule_markup = (static_dir / "schedule.html").read_text(encoding="utf-8")
@@ -742,12 +765,8 @@ def test_web_pages_use_poolscope_branding_and_live_logo() -> None:
     settings_script = (static_dir / "settings.js").read_text(encoding="utf-8")
     logo = static_dir / "poolscope.png"
 
-    assert '<img class="brand-mark" src="/poolscope.png" alt="">' in live_markup
-    assert '<img class="brand-mark" src="/poolscope.png" alt="">' in schedule_markup
-    assert 'class="topbar schedule-product-header"' in schedule_markup
-    assert 'id="controllerBadge" class="status-pill is-offline"' in schedule_markup
-    assert 'id="headerProfile"' in schedule_markup
-    assert 'id="headerPumpMode"' in schedule_markup
+    assert 'class="shell product-shell live-shell"' in live_markup
+    assert 'class="shell product-shell schedule-shell"' in schedule_markup
     assert ".brand-mark::before" not in styles
     assert logo.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
     assert 'message: "PoolScope Settings test notification"' in settings_script
@@ -779,8 +798,10 @@ def test_settings_page_uses_collapsible_consumer_tiles_and_canonical_ranges() ->
     assert markup.count("<details") >= 10
     assert 'id="chlorineSupplyBadge"' not in markup
     assert 'id="safetyBadge"' in markup
-    assert 'id="loopTimingLine"' in markup
-    assert 'id="healthLine"' in markup
+    assert 'id="controllerBadge"' in markup
+    assert 'id="headerProfile"' in markup
+    assert 'id="headerPumpMode"' in markup
+    assert markup.index('id="restartBadge"') > markup.index("</header>")
     assert 'id="monitoringPrimaryRows"' in markup
     assert "These ranges control status colors throughout PoolScope" in markup
     assert 'data-settings-link="status-ranges"' in markup
@@ -800,6 +821,53 @@ def test_settings_page_uses_collapsible_consumer_tiles_and_canonical_ranges() ->
     assert "async function requestServiceRestart()" in script
     assert 'settingsPost("/api/system/restart", {})' in script
     assert ".status-pill.hidden" in styles
+    settings_page_rule = re.search(r"\.settings-page \{([^}]*)\}", styles)
+    settings_heading_rule = re.search(r"\.settings-heading \{([^}]*)\}", styles)
+    assert settings_page_rule is not None
+    assert settings_heading_rule is not None
+    assert "padding: 0 0 var(--space-6);" in settings_page_rule.group(1)
+    assert "margin: 0 0 var(--space-6);" in settings_heading_rule.group(1)
+
+    health_source = app_script[
+        app_script.index("async function refreshHealth") : app_script.index(
+            "function renderLiveCards"
+        )
+    ]
+    assert health_source.index('document.getElementById("healthLine")') < health_source.index(
+        'fetch("/api/health"'
+    )
+    assert "if (!line)" in health_source
+    assert 'document.getElementById("healthLine").textContent' not in health_source
+
+
+def test_history_chart_uses_rendered_width_for_drawing_hover_and_resize() -> None:
+    static_dir = Path(__file__).parents[1] / "src" / "poolctl" / "web" / "static"
+    script = (static_dir / "app.js").read_text(encoding="utf-8")
+    styles = (static_dir / "styles.css").read_text(encoding="utf-8")
+
+    draw_source = script[
+        script.index("function drawHistoryChartSeries") : script.index(
+            "function appendHistorySeriesTrace"
+        )
+    ]
+    hover_source = script[
+        script.index("function installHistoryHover") : script.index(
+            "function nearestPoint"
+        )
+    ]
+
+    assert "const bounds = chart.getBoundingClientRect();" in draw_source
+    assert "const width = Math.max(320, Math.round(bounds.width || 720));" in draw_source
+    assert 'chart.setAttribute("viewBox", `0 0 ${width} ${height}`);' in draw_source
+    assert "historyChartRenderState = { series, windowInfo };" in draw_source
+    assert "* axis.width;" in hover_source
+    assert "* 720;" not in hover_source
+    assert "function initializeHistoryChartResizeHandling()" in hover_source
+    assert "drawHistoryChartSeries(historyChartRenderState.series" in hover_source
+    assert "initializeHistoryChartResizeHandling();" in script
+    history_chart_rule = re.search(r"\.history-chart \{([^}]*)\}", styles)
+    assert history_chart_rule is not None
+    assert "width: 100%;" in history_chart_rule.group(1)
 
 
 def test_schedule_editor_uses_operating_modes_and_preserves_drafts() -> None:

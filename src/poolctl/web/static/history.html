@@ -9,23 +9,34 @@
     <link rel="stylesheet" href="/styles.css">
   </head>
   <body data-page="history">
-    <main class="shell">
-      <header class="topbar">
-        <div>
-          <h1>PoolScope</h1>
-          <p id="runtimeLine">Live view</p>
-        </div>
-        <div class="status-strip">
-          <div class="badge-row">
-            <span id="safetyBadge" class="badge">Starting</span>
-            <span id="chlorineSupplyBadge" class="badge unknown">Usable chlorine remaining -- gallons, -- days</span>
-            <span id="cpuTempBadge" class="badge hidden">CPU Temp: --</span>
+    <main class="shell product-shell history-shell">
+      <header class="topbar product-header">
+        <div class="brand-lockup">
+          <img class="brand-mark" src="/poolscope.png" alt="">
+          <div>
+            <span class="eyebrow">Pool automation</span>
+            <h1>PoolScope</h1>
+            <p id="runtimeLine">Connecting to controller</p>
           </div>
-          <span id="cpuLoadLine" class="timestamp hidden">CPU Load: --</span>
-          <span id="cpuFanLine" class="timestamp hidden">CPU Fan: --</span>
-          <span id="loopTimingLine" class="timestamp">Loop: --</span>
-          <span id="updatedAt" class="timestamp">--</span>
-          <span id="healthLine" class="timestamp">--</span>
+        </div>
+        <div class="header-status" aria-label="Controller summary">
+          <div class="header-status-pills">
+            <span id="controllerBadge" class="status-pill is-offline">
+              <span class="status-dot" aria-hidden="true"></span>
+              <span id="controllerStatusText">Controller offline</span>
+            </span>
+            <span id="safetyBadge" class="status-pill is-neutral">Safety starting</span>
+          </div>
+          <dl class="header-facts">
+            <div>
+              <dt>Schedule</dt>
+              <dd id="headerProfile">--</dd>
+            </div>
+            <div>
+              <dt>Pump</dt>
+              <dd id="headerPumpMode">--</dd>
+            </div>
+          </dl>
         </div>
       </header>
       <nav class="page-nav" aria-label="Dashboard pages">

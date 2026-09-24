@@ -513,6 +513,9 @@ notification service can repeat a throttled Pushover warning for this condition.
 
 The web dashboard is branded **PoolScope**. Internal Python packages, console
 commands, configuration keys, and systemd services retain the `poolctl` name.
+Live, History, Schedule, and Settings share the same responsive product header,
+configured pool name, controller/safety indicators, active schedule, pump mode,
+and navigation.
 
 - Live: responsive consumer-style operating dashboard with controller/safety,
   active-profile, and pump-mode status in the header; the controller-resolved
@@ -529,16 +532,16 @@ commands, configuration keys, and systemd services retain the `poolctl` name.
   selectable series, hover readouts, automatic rollup resolution, past-window
   navigation, calendar/time jump, CSV export, water-test and chemical-addition
   entry with local date/time pickers, and single-axis or multi-axis scaling
-  depending on selected signal ranges.
+  depending on selected signal ranges. The chart uses the full available width
+  and keeps its hover position aligned when the browser is resized.
 - Schedule: profile selection and editing, fixed/solar/daylight timing, a
   four-mode operating selector, and a three-day resolved preview. Profile
   activation remains on Live. The editor loads saved configuration once instead
   of replacing in-progress edits during status polling; **Reload Saved**
   explicitly discards a draft after confirmation.
-- Config: forms for site timezone/coordinates, runtime hardware profile, safety,
-  chlorination, filter loading, FC demand, acquisition, logging, pressure analog
-  input calibration, pH sensor enable/calibration, notifications, and diagnostic
-  dosing-pump prime/calibration tests.
+- Settings: collapsible consumer-oriented tiles for Pool & Site, Status Ranges,
+  Chlorination, Free Chlorine Control, Filter & Flow, Notifications, Safety &
+  Freeze, Sensors & Calibration, Acquisition & Logging, and Hardware & Runtime.
 
 Some config changes apply live. Others write YAML and require restart because
 drivers or long-lived services must be rebuilt.

@@ -941,20 +941,20 @@ h2 {
   width: 1px;
 }
 
-body[data-page="live"] {
+body[data-page] {
   background:
     radial-gradient(circle at 8% 0%, rgba(18, 167, 184, 0.08), transparent 28rem),
     var(--page-background);
   color: var(--text-primary);
 }
 
-body[data-page="live"] .live-shell {
+.product-shell {
   margin: 0 auto;
   max-width: 1480px;
   padding: var(--space-5);
 }
 
-body[data-page="live"] .live-product-header {
+.product-header {
   align-items: center;
   margin: 0 0 var(--space-4);
   max-width: none;
@@ -985,14 +985,14 @@ body[data-page="live"] .live-product-header {
   text-transform: uppercase;
 }
 
-body[data-page="live"] h1 {
+.product-header h1 {
   color: var(--text-primary);
   font-size: 26px;
   letter-spacing: -0.035em;
   line-height: 1.1;
 }
 
-body[data-page="live"] #runtimeLine {
+.product-header #runtimeLine {
   color: var(--text-secondary);
   margin-top: 3px;
 }
@@ -1087,14 +1087,14 @@ body[data-page="live"] #runtimeLine {
   margin: 0;
 }
 
-body[data-page="live"] .page-nav {
+.product-shell > .page-nav {
   border-bottom: 1px solid var(--border-color);
   gap: var(--space-5);
   margin: 0 0 var(--space-5);
   overflow-x: auto;
 }
 
-body[data-page="live"] .page-nav a {
+.product-shell > .page-nav a {
   border-bottom: 2px solid transparent;
   color: var(--text-secondary);
   font-size: 13px;
@@ -1102,7 +1102,7 @@ body[data-page="live"] .page-nav a {
   white-space: nowrap;
 }
 
-body[data-page="live"] .page-nav a.active {
+.product-shell > .page-nav a.active {
   border-bottom-color: var(--primary-accent);
   color: var(--text-primary);
 }
@@ -1575,7 +1575,7 @@ body[data-page="live"] .page-nav a.active {
 .action-panel input:focus-visible,
 .action-panel select:focus-visible,
 .confirmation-dialog button:focus-visible,
-body[data-page="live"] .page-nav a:focus-visible {
+.product-shell > .page-nav a:focus-visible {
   outline: 3px solid rgba(7, 139, 155, 0.2);
   outline-offset: 2px;
 }
@@ -2048,57 +2048,6 @@ body[data-page="live"] .page-nav a:focus-visible {
 
 .engineering-grid .hidden {
   display: none;
-}
-
-body[data-page="schedule"] {
-  background:
-    radial-gradient(circle at 8% 0%, rgba(18, 167, 184, 0.08), transparent 28rem),
-    var(--page-background);
-  color: var(--text-primary);
-}
-
-body[data-page="schedule"] .schedule-shell {
-  margin: 0 auto;
-  max-width: 1480px;
-  padding: var(--space-5);
-}
-
-body[data-page="schedule"] .schedule-product-header {
-  align-items: center;
-  margin: 0 0 var(--space-4);
-  max-width: none;
-}
-
-body[data-page="schedule"] h1 {
-  color: var(--text-primary);
-  font-size: 26px;
-  letter-spacing: -0.035em;
-  line-height: 1.1;
-}
-
-body[data-page="schedule"] #runtimeLine {
-  color: var(--text-secondary);
-  margin-top: 3px;
-}
-
-body[data-page="schedule"] .page-nav {
-  border-bottom: 1px solid var(--border-color);
-  gap: var(--space-5);
-  margin: 0 0 var(--space-5);
-  overflow-x: auto;
-}
-
-body[data-page="schedule"] .page-nav a {
-  border-bottom: 2px solid transparent;
-  color: var(--text-secondary);
-  font-size: 13px;
-  padding: 2px 0 11px;
-  white-space: nowrap;
-}
-
-body[data-page="schedule"] .page-nav a.active {
-  border-bottom-color: var(--primary-accent);
-  color: var(--text-primary);
 }
 
 .schedule-page {
@@ -2719,21 +2668,6 @@ body[data-page="schedule"] #timerSave:hover:not(:disabled) {
 }
 
 @media (max-width: 680px) {
-  body[data-page="schedule"] .schedule-shell {
-    padding: var(--space-3);
-  }
-
-  body[data-page="schedule"] .schedule-product-header {
-    align-items: flex-start;
-    flex-direction: row;
-    gap: var(--space-3);
-  }
-
-  body[data-page="schedule"] .page-nav {
-    gap: var(--space-4);
-    margin-bottom: var(--space-4);
-  }
-
   .schedule-intro {
     align-items: flex-start;
     flex-direction: column;
@@ -2786,19 +2720,6 @@ body[data-page="schedule"] #timerSave:hover:not(:disabled) {
 }
 
 @media (max-width: 420px) {
-  .schedule-product-header .brand-lockup .eyebrow,
-  .schedule-product-header #runtimeLine {
-    display: none;
-  }
-
-  body[data-page="schedule"] h1 {
-    font-size: 22px;
-  }
-
-  .schedule-product-header .header-facts {
-    display: none;
-  }
-
   .schedule-profile-actions,
   .schedule-editor-heading {
     align-items: stretch;
@@ -2831,22 +2752,10 @@ body[data-page="schedule"] #timerSave:hover:not(:disabled) {
 }
 
 /* Settings */
-.settings-shell {
-  background:
-    radial-gradient(circle at 8% 0%, rgba(18, 167, 184, 0.09), transparent 28rem),
-    var(--page-background);
-}
-
-.settings-shell .page-nav {
-  margin-left: auto;
-  margin-right: auto;
-  max-width: 1320px;
-}
-
 .settings-page {
   margin: 0 auto;
   max-width: 1180px;
-  padding: var(--space-3) 0 var(--space-6);
+  padding: 0 0 var(--space-6);
 }
 
 .settings-heading {
@@ -2854,7 +2763,7 @@ body[data-page="schedule"] #timerSave:hover:not(:disabled) {
   display: flex;
   gap: var(--space-5);
   justify-content: space-between;
-  margin: var(--space-5) 0 var(--space-6);
+  margin: 0 0 var(--space-6);
 }
 
 .settings-heading h2 {
@@ -3407,11 +3316,11 @@ body[data-page="schedule"] #timerSave:hover:not(:disabled) {
 }
 
 @media (max-width: 680px) {
-  body[data-page="live"] .live-shell {
+  .product-shell {
     padding: var(--space-3);
   }
 
-  body[data-page="live"] .live-product-header {
+  .product-header {
     align-items: flex-start;
     flex-direction: row;
     gap: var(--space-3);
@@ -3450,7 +3359,7 @@ body[data-page="schedule"] #timerSave:hover:not(:disabled) {
     font-size: 11px;
   }
 
-  body[data-page="live"] .page-nav {
+  .product-shell > .page-nav {
     gap: var(--space-4);
     margin-bottom: var(--space-4);
   }
@@ -3504,12 +3413,12 @@ body[data-page="schedule"] #timerSave:hover:not(:disabled) {
 }
 
 @media (max-width: 420px) {
-  .live-product-header .brand-lockup .eyebrow,
-  .live-product-header #runtimeLine {
+  .product-header .brand-lockup .eyebrow,
+  .product-header #runtimeLine {
     display: none;
   }
 
-  body[data-page="live"] h1 {
+  .product-header h1 {
     font-size: 22px;
   }
 

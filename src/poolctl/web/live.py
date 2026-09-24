@@ -241,6 +241,9 @@ async def build_live_snapshot(app: PoolControllerApp) -> dict[str, Any]:
         }
     return {
         "observed_at": tick.observed_at.isoformat(),
+        "pool": {
+            "name": app.pool_config.name,
+        },
         "runtime": {
             "driver_profile": app.runtime_config.driver_profile.value,
         },

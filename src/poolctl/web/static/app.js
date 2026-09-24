@@ -319,6 +319,8 @@ let historyLoading = false;
 let lastHistoryLoadedAt = 0;
 let lastHistoryKey = "";
 let historyUntilMs = null;
+let historyChartRenderState = null;
+let historyChartResizeTimer = null;
 let timerConfigLoading = false;
 let timerConfigSaving = false;
 let timerConfigDraft = null;
@@ -918,8 +920,9 @@ function render(payload) {
 function renderTopStatus(payload) {
   const runtimeLine = document.getElementById("runtimeLine");
   if (runtimeLine) {
+    const poolName = payload.pool ? String(payload.pool.name || "").trim() : "";
     const profile = payload.runtime ? String(payload.runtime.driver_profile || "controller") : "controller";
-    runtimeLine.textContent = `${profile.replaceAll("_", " ")} controller`;
+    runtimeLine.textContent = poolName || `${profile.replaceAll("_", " ")} controller`;
   }
   const updatedAt = document.getElementById("updatedAt");
   if (updatedAt) {
@@ -1423,6 +1426,10 @@ function renderConfigDebugInfo(payload) {
 }
 
 async function refreshHealth(force) {
+  const line = document.getElementById("healthLine");
+  if (!line) {
+    return;
+  }
   const now = Date.now();
   if (healthLoading) {
     return;
@@ -1434,7 +1441,6 @@ async function refreshHealth(force) {
   try {
     const response = await fetch("/api/health", { cache: "no-store" });
     const payload = await parseApiResponse(response, "health API failed");
-    const line = document.getElementById("healthLine");
     const modbusErrors = Object.values((payload.modbus && payload.modbus.ports) || {}).reduce(
       (sum, item) => sum + Number(item.error_count || 0),
       0,
@@ -1448,7 +1454,7 @@ async function refreshHealth(force) {
     line.textContent = `Health: ${payload.status} | Modbus errors: ${modbusErrors} | ${notifyState}`;
     lastHealthLoadedAt = now;
   } catch (error) {
-    document.getElementById("healthLine").textContent = `Health error: ${error.message}`;
+    line.textContent = `Health error: ${error.message}`;
   } finally {
     healthLoading = false;
   }
@@ -2591,11 +2597,16 @@ function normalizeHistorySeries(payload) {
 function drawHistoryChartSeries(series, windowInfo = null) {
   const chart = document.getElementById("historyChart");
   const status = document.getElementById("historyStatus");
+  historyChartRenderState = { series, windowInfo };
   chart.replaceChildren();
+  chart.onpointermove = null;
+  chart.onpointerleave = null;
   const colorMap = selectedHistoryColorMap();
 
-  const width = 720;
-  const height = 260;
+  const bounds = chart.getBoundingClientRect();
+  const width = Math.max(320, Math.round(bounds.width || 720));
+  const height = Math.max(180, Math.round(bounds.height || 260));
+  chart.setAttribute("viewBox", `0 0 ${width} ${height}`);
   const axisSpacing = 44;
   const chartSeries = series
     .map((entry, seriesIndex) => {
@@ -2795,6 +2806,7 @@ function drawHistoryChartSeries(series, windowInfo = null) {
   }
 
   installHistoryHover(chart, series, {
+    width,
     minTime,
     maxTime,
     margin,
@@ -2944,9 +2956,9 @@ function installHistoryHover(chart, series, axis) {
   hoverLine.style.display = "none";
   chart.appendChild(hoverLine);
 
-  chart.addEventListener("mousemove", (event) => {
+  chart.onpointermove = (event) => {
     const rect = chart.getBoundingClientRect();
-    const x = ((event.clientX - rect.left) / rect.width) * 720;
+    const x = ((event.clientX - rect.left) / rect.width) * axis.width;
     if (x < axis.margin.left || x > axis.margin.left + axis.plotWidth) {
       hoverLine.style.display = "none";
       return;
@@ -2963,10 +2975,21 @@ function installHistoryHover(chart, series, axis) {
       .filter((row) => row !== null);
     const lines = nearestRows.map((row) => `${row.label}: ${row.point.display}`);
     status.textContent = `${new Date(timestamp).toLocaleString()} | ${lines.join(" | ")}`;
-  });
+  };
 
-  chart.addEventListener("mouseleave", () => {
+  chart.onpointerleave = () => {
     hoverLine.style.display = "none";
+  };
+}
+
+function initializeHistoryChartResizeHandling() {
+  window.addEventListener("resize", () => {
+    window.clearTimeout(historyChartResizeTimer);
+    historyChartResizeTimer = window.setTimeout(() => {
+      if (historyChartRenderState) {
+        drawHistoryChartSeries(historyChartRenderState.series, historyChartRenderState.windowInfo);
+      }
+    }, 100);
   });
 }
 
@@ -5512,6 +5535,7 @@ function initializeForPage() {
     return;
   }
   if (PAGE_MODE === "history") {
+    initializeHistoryChartResizeHandling();
     initializeHistoryControls();
     initializeFaultTimelineControls();
     initializeLabTestControls();

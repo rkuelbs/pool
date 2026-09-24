@@ -142,6 +142,10 @@ function renderPoolConfig(payload) {
   settingsPool = payload;
   settingsSetValue("poolName", payload.name);
   settingsSetValue("poolVolumeGal", payload.volume_gal);
+  const headerName = document.getElementById("runtimeLine");
+  if (headerName && payload.name) {
+    headerName.textContent = payload.name;
+  }
   updatePoolSiteSummary();
 }
 

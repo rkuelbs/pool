@@ -9,27 +9,34 @@
     <link rel="stylesheet" href="/styles.css">
   </head>
   <body data-page="settings">
-    <main class="shell settings-shell">
-      <header class="topbar live-product-header">
+    <main class="shell product-shell settings-shell">
+      <header class="topbar product-header">
         <div class="brand-lockup">
           <img class="brand-mark" src="/poolscope.png" alt="">
           <div>
             <span class="eyebrow">Pool automation</span>
             <h1>PoolScope</h1>
-            <p id="runtimeLine">Controller settings</p>
+            <p id="runtimeLine">Connecting to controller</p>
           </div>
         </div>
         <div class="header-status" aria-label="Controller summary">
           <div class="header-status-pills">
+            <span id="controllerBadge" class="status-pill is-offline">
+              <span class="status-dot" aria-hidden="true"></span>
+              <span id="controllerStatusText">Controller offline</span>
+            </span>
             <span id="safetyBadge" class="status-pill is-neutral">Safety starting</span>
-            <span id="restartBadge" class="status-pill is-neutral hidden">Restart required</span>
           </div>
-          <span id="cpuTempBadge" class="hidden"></span>
-          <span id="cpuLoadLine" class="hidden"></span>
-          <span id="cpuFanLine" class="hidden"></span>
-          <span id="loopTimingLine" class="timestamp">Loop: --</span>
-          <span id="updatedAt" class="timestamp">--</span>
-          <span id="healthLine" class="timestamp">--</span>
+          <dl class="header-facts">
+            <div>
+              <dt>Schedule</dt>
+              <dd id="headerProfile">--</dd>
+            </div>
+            <div>
+              <dt>Pump</dt>
+              <dd id="headerPumpMode">--</dd>
+            </div>
+          </dl>
         </div>
       </header>
       <nav class="page-nav" aria-label="Dashboard pages">
@@ -47,6 +54,7 @@
             <p>Manage your pool, automation, alerts, and installed hardware.</p>
           </div>
           <div class="settings-actions">
+            <span id="restartBadge" class="status-pill is-neutral hidden">Restart required</span>
             <button id="settingsReloadSaved" type="button" class="button-secondary">Reload Saved</button>
             <button id="configRestartService" type="button">Restart PoolScope</button>
           </div>
