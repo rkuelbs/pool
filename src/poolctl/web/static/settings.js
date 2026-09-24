@@ -858,6 +858,25 @@ async function saveRelaySettings() {
   }
 }
 
+async function requestServiceRestart() {
+  if (!window.confirm("Restart PoolScope now? The dashboard will be briefly unavailable.")) {
+    return;
+  }
+  const button = settingsElement("configRestartService");
+  button.disabled = true;
+  settingsSetStatus("configSyncStatus", "Restarting PoolScope…");
+  try {
+    const payload = await settingsPost("/api/system/restart", {});
+    settingsSetStatus(
+      "configSyncStatus",
+      payload.message || "Restart requested. PoolScope should return in a few seconds.",
+    );
+  } catch (error) {
+    button.disabled = false;
+    settingsSetStatus("configSyncStatus", error.message);
+  }
+}
+
 async function refreshSettingsMeta(force = false) {
   const now = Date.now();
   if (!force && now - settingsLastMetaLoad < 5000) {
@@ -894,7 +913,7 @@ async function reloadAllSettings() {
   }
   settingsLoading = true;
   settingsSetStatus("configSyncStatus", "Loading saved settings…");
-  await Promise.all([
+  const results = await Promise.allSettled([
     loadPoolConfig(),
     loadSettingsSite(),
     loadMonitoringConfig(),
@@ -907,6 +926,11 @@ async function reloadAllSettings() {
     loadOrpSettings(),
     loadRelaySettings(),
   ]);
+  results.forEach((result) => {
+    if (result.status === "rejected") {
+      console.error("Settings section failed to load", result.reason);
+    }
+  });
   settingsLoading = false;
   settingsDirty = false;
   await refreshSettingsMeta(true);
@@ -916,6 +940,14 @@ function settingsBind(id, eventName, handler) {
   const node = settingsElement(id);
   if (node) {
     node.addEventListener(eventName, handler);
+  }
+}
+
+function initializeSettingsControlGroup(name, initializer) {
+  try {
+    initializer();
+  } catch (error) {
+    console.error(`Unable to initialize ${name} settings controls`, error);
   }
 }
 
@@ -961,10 +993,14 @@ function initializeSettingsPage() {
   settingsBind("relaySave", "click", saveRelaySettings);
   settingsBind("relayReload", "click", loadRelaySettings);
 
-  initializeSafetyControls();
-  initializeAcquisitionControls();
-  initializeLoggingControls();
-  initializeAnalogControls();
-  initializePhSensorControls();
+  // Start the primary card load before optional advanced-control initialization.
+  // A missing or stale advanced control must not leave every card stuck on Loading.
   void reloadAllSettings();
+  [
+    ["safety", initializeSafetyControls],
+    ["acquisition", initializeAcquisitionControls],
+    ["logging", initializeLoggingControls],
+    ["analog input", initializeAnalogControls],
+    ["pH sensor", initializePhSensorControls],
+  ].forEach(([name, initializer]) => initializeSettingsControlGroup(name, initializer));
 }

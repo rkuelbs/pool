@@ -1026,6 +1026,10 @@ body[data-page="live"] #runtimeLine {
   padding: 5px 10px;
 }
 
+.status-pill.hidden {
+  display: none;
+}
+
 .status-dot {
   background: #9aadB1;
   border-radius: 50%;

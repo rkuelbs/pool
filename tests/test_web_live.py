@@ -777,6 +777,10 @@ def test_settings_page_uses_collapsible_consumer_tiles_and_canonical_ranges() ->
     assert positions == sorted(positions)
     assert markup.count('class="settings-card"') == 10
     assert markup.count("<details") >= 10
+    assert 'id="chlorineSupplyBadge"' not in markup
+    assert 'id="safetyBadge"' in markup
+    assert 'id="loopTimingLine"' in markup
+    assert 'id="healthLine"' in markup
     assert 'id="monitoringPrimaryRows"' in markup
     assert "These ranges control status colors throughout PoolScope" in markup
     assert 'data-settings-link="status-ranges"' in markup
@@ -787,6 +791,15 @@ def test_settings_page_uses_collapsible_consumer_tiles_and_canonical_ranges() ->
     assert "caution_below" in script
     assert "warning_below" not in script
     assert 'fetch("/api/config/monitoring"' in app_script
+    settings_init = script[script.index("function initializeSettingsPage()") :]
+    assert settings_init.index("void reloadAllSettings();") < settings_init.index(
+        '["safety", initializeSafetyControls]'
+    )
+    assert "Promise.allSettled" in script
+    assert "initializeSettingsControlGroup" in script
+    assert "async function requestServiceRestart()" in script
+    assert 'settingsPost("/api/system/restart", {})' in script
+    assert ".status-pill.hidden" in styles
 
 
 def test_schedule_editor_uses_operating_modes_and_preserves_drafts() -> None:
