@@ -522,6 +522,36 @@ h2 {
   margin-top: 8px;
 }
 
+.history-sensor-category {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  grid-column: 1 / -1;
+  padding: 6px 8px;
+}
+
+.history-sensor-category > summary {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.history-sensor-category > summary small {
+  color: var(--muted);
+  max-width: 70%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sensor-checklist-category {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  margin-top: 8px;
+}
+
 .sensor-checklist label {
   align-items: center;
   border: 1px solid var(--line);
@@ -1269,6 +1299,27 @@ body[data-page] {
   stroke-width: 1;
 }
 
+.sparkline-axis {
+  stroke: #d8e3e5;
+  stroke-width: 0.6;
+}
+
+.sparkline-axis-label,
+.sparkline-axis-tick,
+.sparkline-clipped-label {
+  fill: #60757a;
+  font-size: 6px;
+}
+
+.sparkline-axis-tick {
+  font-size: 5px;
+}
+
+.sparkline-clipped-label {
+  fill: #a05b00;
+  font-weight: 700;
+}
+
 .dashboard-main-grid {
   display: grid;
   gap: var(--space-4);
@@ -1468,6 +1519,12 @@ body[data-page] {
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 2.25;
+}
+
+.live-trend-test-marker {
+  fill: #fff;
+  stroke: var(--primary-accent);
+  stroke-width: 2;
 }
 
 .live-trend-area {

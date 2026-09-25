@@ -19,6 +19,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from poolctl.config import (
+    DisplayConfig,
     DriverProfile,
     MonitoringConfig,
     PoolConfig,
@@ -87,6 +88,8 @@ from poolctl.services.flow_estimation import (
     estimate_flows,
 )
 from poolctl.services.notifications import (
+    CPU_TEMPERATURE_HIGH_RULE,
+    FREEZE_PROTECTION_ACTIVE_RULE,
     NotificationMessage,
     NotificationResult,
     NotificationService,
@@ -437,6 +440,7 @@ class PoolControllerApp:
     runtime_config: RuntimeConfig
     pool_config: PoolConfig
     monitoring_config: MonitoringConfig
+    display_config: DisplayConfig
     safety_config: SafetyConfig
     acquisition_config: AcquisitionConfig
     pump_timer_config: PumpTimerConfig
@@ -463,6 +467,7 @@ class PoolControllerApp:
     notifications_config: NotificationsConfig = field(default_factory=NotificationsConfig)
     notification_service: NotificationService | None = None
     notification_alert_last_sent_at: dict[str, datetime] = field(default_factory=dict)
+    notification_runtime_state: dict[str, dict[str, Any]] = field(default_factory=dict)
     relay_safety_config: RelaySafetyConfig = RelaySafetyConfig()
     relay_startup_safe_off_done: bool = False
     relay_last_reconciled_at: datetime | None = None
@@ -676,6 +681,11 @@ class PoolControllerApp:
                 control_measurements=control_measurements,
                 observed_at=self.clock.now(),
                 daily_dose_oz=chlorine_supply_daily_dose,
+                failed_sensor_ids=frozenset(
+                    failure.sensor_id
+                    for failure in acquisition.failures
+                    if failure.sensor_id is not None
+                ),
             ),
             freeze_status=self.router.safety_gate.freeze_status(self.clock.now()),
         )
@@ -772,6 +782,10 @@ class PoolControllerApp:
         """Apply shared dashboard and notification status limits."""
         object.__setattr__(self, "monitoring_config", config)
 
+    def apply_display_config(self, config: DisplayConfig) -> None:
+        """Apply display-only dashboard settings without changing control behavior."""
+        object.__setattr__(self, "display_config", config)
+
     def apply_fc_demand_config(self, config: FcDemandConfig) -> None:
         """
         Apply updated FC-demand estimator settings to the running app.
@@ -783,7 +797,6 @@ class PoolControllerApp:
         Apply updated notification settings to the running app.
         """
         object.__setattr__(self, "notifications_config", config)
-        object.__setattr__(self, "notification_alert_last_sent_at", {})
         object.__setattr__(
             self,
             "notification_service",
@@ -1290,8 +1303,20 @@ class PoolControllerApp:
         control_measurements: Iterable[Measurement],
         observed_at: datetime,
         daily_dose_oz: float,
+        failed_sensor_ids: frozenset[SensorId] = frozenset(),
     ) -> dict[SensorId, Measurement]:
         measurements = dict(latest_measurements)
+        for sensor_id in (SensorId.RAW_PH, SensorId.RAW_ORP, SensorId.CPU_TEMP):
+            measurement = measurements.get(sensor_id)
+            if (
+                sensor_id in failed_sensor_ids
+                or not self._notification_measurement_is_current(
+                    sensor_id=sensor_id,
+                    measurement=measurement,
+                    observed_at=observed_at,
+                )
+            ):
+                measurements.pop(sensor_id, None)
         for measurement in control_measurements:
             measurements[measurement.sensor_id] = measurement
 
@@ -1337,6 +1362,44 @@ class PoolControllerApp:
             )
         return measurements
 
+    def _notification_measurement_is_current(
+        self,
+        *,
+        sensor_id: SensorId,
+        measurement: Measurement | None,
+        observed_at: datetime,
+    ) -> bool:
+        if measurement is None or measurement.quality != Quality.GOOD:
+            return False
+        group = next(
+            (
+                candidate
+                for candidate in self.acquisition_config.groups
+                if sensor_id in candidate.sensor_ids
+            ),
+            None,
+        )
+        if group is None:
+            return True
+        max_age_s = max(15.0, 3.0 * group.read_interval_s)
+        if (observed_at - measurement.observed_at).total_seconds() > max_age_s:
+            return False
+        if group.requires_pump_flow:
+            pump_state = self.router.actuator_states.get(ActuatorId.PUMP_MOTOR)
+            if pump_state is None or pump_state == ActuatorState.OFF:
+                return False
+            pump_started_at = self.router.state_started_at.get(ActuatorId.PUMP_MOTOR)
+            if (
+                group.min_pump_on_seconds > 0
+                and (
+                    pump_started_at is None
+                    or (observed_at - pump_started_at).total_seconds()
+                    < group.min_pump_on_seconds
+                )
+            ):
+                return False
+        return True
+
     def _run_notification_alerts(
         self,
         *,
@@ -1359,21 +1422,39 @@ class PoolControllerApp:
             last_sent_at=self.notification_alert_last_sent_at,
             freeze_status=freeze_status,
         )
-        if not alerts:
-            return ()
-
         updated_last_sent_at = dict(self.notification_alert_last_sent_at)
         results: list[NotificationResult] = []
         for alert in alerts:
-            results.append(
-                service.send(
-                    NotificationMessage(
-                        title=self.notifications_config.default_title,
-                        message=alert.message(),
-                    )
+            result = service.send(
+                NotificationMessage(
+                    title=self.notifications_config.default_title,
+                    message=alert.message(),
                 )
             )
-            updated_last_sent_at[alert.throttle_key] = now
+            results.append(result)
+            if result.sent:
+                updated_last_sent_at[alert.throttle_key] = now
+                self._persist_notification_state(
+                    alert.throttle_key,
+                    {"last_sent_at": now.isoformat()},
+                    now=now,
+                )
+
+        freeze_result = self._freeze_activation_notification(
+            service=service,
+            freeze_status=freeze_status,
+            now=now,
+        )
+        if freeze_result is not None:
+            results.append(freeze_result)
+
+        cpu_result = self._cpu_temperature_notification(
+            service=service,
+            measurement=measurements.get(SensorId.CPU_TEMP),
+            now=now,
+        )
+        if cpu_result is not None:
+            results.append(cpu_result)
 
         object.__setattr__(
             self,
@@ -1381,6 +1462,162 @@ class PoolControllerApp:
             updated_last_sent_at,
         )
         return tuple(results)
+
+    def _freeze_activation_notification(
+        self,
+        *,
+        service: NotificationService,
+        freeze_status: Mapping[str, Any] | None,
+        now: datetime,
+    ) -> NotificationResult | None:
+        rule = self.notifications_config.rules[FREEZE_PROTECTION_ACTIVE_RULE]
+        if freeze_status is None:
+            return None
+        active = freeze_status.get("active") is True
+        previous = self.notification_runtime_state.get(FREEZE_PROTECTION_ACTIVE_RULE)
+        was_active = previous is not None and previous.get("active") is True
+        state = {**(previous or {}), "active": active, "initialized": True}
+        if not active:
+            state["activation_pending"] = False
+            self._persist_notification_state(FREEZE_PROTECTION_ACTIVE_RULE, state, now=now)
+            return None
+        if not was_active:
+            state["activation_pending"] = rule.enabled and rule.notify_alarm
+            state.pop("last_attempt_at", None)
+        if not rule.enabled or not rule.notify_alarm:
+            state["activation_pending"] = False
+            self._persist_notification_state(FREEZE_PROTECTION_ACTIVE_RULE, state, now=now)
+            return None
+        if state.get("activation_pending") is not True:
+            self._persist_notification_state(FREEZE_PROTECTION_ACTIVE_RULE, state, now=now)
+            return None
+        last_attempt = _metadata_datetime(state.get("last_attempt_at"))
+        if (
+            last_attempt is not None
+            and now - last_attempt < timedelta(minutes=rule.alarm_repeat_minutes)
+        ):
+            self._persist_notification_state(FREEZE_PROTECTION_ACTIVE_RULE, state, now=now)
+            return None
+
+        value = freeze_status.get("active_temperature")
+        unit = freeze_status.get("active_unit")
+        source = freeze_status.get("active_source")
+        measured_at = freeze_status.get("active_measurement_at")
+        if isinstance(value, int | float) and isinstance(unit, str):
+            source_text = f" from {source}" if isinstance(source, str) else ""
+            time_text = f" at {measured_at}" if isinstance(measured_at, str) else ""
+            message = (
+                f"Freeze protection became active at {float(value):.1f} {unit}"
+                f"{source_text}{time_text}."
+            )
+        else:
+            reason = freeze_status.get("fail_safe_reason") or freeze_status.get("observation")
+            message = (
+                "Freeze protection became active without a valid temperature; "
+                f"the controller is using its fail-safe condition ({reason or 'temperature unavailable'})."
+            )
+        result = service.send(
+            NotificationMessage(
+                title=self.notifications_config.default_title,
+                message=message,
+            )
+        )
+        state["last_attempt_at"] = now.isoformat()
+        if result.sent:
+            state["last_sent_at"] = now.isoformat()
+            state["activation_pending"] = False
+        self._persist_notification_state(FREEZE_PROTECTION_ACTIVE_RULE, state, now=now)
+        return result
+
+    def _cpu_temperature_notification(
+        self,
+        *,
+        service: NotificationService,
+        measurement: Measurement | None,
+        now: datetime,
+    ) -> NotificationResult | None:
+        rule = self.notifications_config.rules[CPU_TEMPERATURE_HIGH_RULE]
+        state = dict(self.notification_runtime_state.get(CPU_TEMPERATURE_HIGH_RULE, {}))
+        active = state.get("active") is True
+        if not rule.enabled or not rule.notify_alarm or rule.threshold_deg_c is None:
+            if state:
+                state.update({"active": False, "pending_since": None})
+                self._persist_notification_state(CPU_TEMPERATURE_HIGH_RULE, state, now=now)
+            return None
+        if measurement is None or measurement.quality != Quality.GOOD:
+            return None
+
+        value_c = float(measurement.value)
+        if measurement.unit == "degF":
+            value_c = (value_c - 32.0) * 5.0 / 9.0
+        elif measurement.unit != "degC":
+            return None
+        threshold = rule.threshold_deg_c
+        if active and value_c <= threshold - rule.hysteresis_deg_c:
+            state.update({"active": False, "pending_since": None})
+            self._persist_notification_state(CPU_TEMPERATURE_HIGH_RULE, state, now=now)
+            return None
+        if value_c < threshold:
+            if state.get("pending_since") is not None:
+                state["pending_since"] = None
+                self._persist_notification_state(CPU_TEMPERATURE_HIGH_RULE, state, now=now)
+            return None
+
+        pending_since = _metadata_datetime(state.get("pending_since"))
+        if not active and pending_since is None:
+            state["pending_since"] = now.isoformat()
+            self._persist_notification_state(CPU_TEMPERATURE_HIGH_RULE, state, now=now)
+            return None
+        if (
+            not active
+            and pending_since is not None
+            and (now - pending_since).total_seconds() < rule.debounce_seconds
+        ):
+            return None
+
+        last_sent = _metadata_datetime(state.get("last_sent_at"))
+        repeat_due = (
+            last_sent is None
+            or now - last_sent >= timedelta(minutes=rule.alarm_repeat_minutes)
+        )
+        state.update({"active": True, "pending_since": None})
+        if not repeat_due:
+            self._persist_notification_state(CPU_TEMPERATURE_HIGH_RULE, state, now=now)
+            return None
+        result = service.send(
+            NotificationMessage(
+                title=self.notifications_config.default_title,
+                message=(
+                    f"High CPU temperature: {value_c:.1f} degC is above the "
+                    f"configured {threshold:.1f} degC threshold "
+                    f"(measured {measurement.observed_at.isoformat()})."
+                ),
+            )
+        )
+        if result.sent:
+            state["last_sent_at"] = now.isoformat()
+        self._persist_notification_state(CPU_TEMPERATURE_HIGH_RULE, state, now=now)
+        return result
+
+    def _persist_notification_state(
+        self,
+        state_key: str,
+        state: Mapping[str, Any],
+        *,
+        now: datetime,
+    ) -> None:
+        normalized_state = dict(state)
+        if self.notification_runtime_state.get(state_key) == normalized_state:
+            return
+        updated = dict(self.notification_runtime_state)
+        updated[state_key] = normalized_state
+        object.__setattr__(self, "notification_runtime_state", updated)
+        if self.measurement_logger is not None:
+            self.measurement_logger.save_notification_state(
+                state_key,
+                state,
+                updated_at=now,
+            )
 
     def active_timer_override(self) -> TimerOverrideState | None:
         state = self.timer_override
@@ -2215,10 +2452,8 @@ class PoolControllerApp:
     ) -> tuple[Measurement, ...]:
         observed_at = self.clock.now() if observed_at is None else observed_at
         result = tuple(measurements)
-        level_sensor = self.safety_config.chlorine_tank.level_sensor
+        level_sensor = SensorId.CHLORINE_TANK_LEVEL_GAL
         if any(measurement.sensor_id == level_sensor for measurement in result):
-            return result
-        if level_sensor != SensorId.CHLORINE_TANK_LEVEL_GAL:
             return result
 
         tank_measurement = self.chlorine_tank_level_measurement(
@@ -3316,6 +3551,7 @@ def build_app_from_mapping(
     runtime_config = RuntimeConfig.from_mapping(data)
     pool_config = PoolConfig.from_mapping(data)
     monitoring_config = MonitoringConfig.from_mapping(data)
+    display_config = DisplayConfig.from_mapping(data)
     safety_config = SafetyConfig.from_mapping(data)
     acquisition_config = _filter_acquisition_config(
         AcquisitionConfig.from_mapping(data),
@@ -3407,6 +3643,15 @@ def build_app_from_mapping(
     pump_timer.prime(built_clock.now())
     chlorination_controller = ChlorinationController(chlorination_config)
     measurement_logger = MeasurementLogger(measurement_logging_config)
+    persisted_notification_state = measurement_logger.notification_state()
+    persisted_last_sent: dict[str, datetime] = {}
+    for state_key, state in persisted_notification_state.items():
+        raw_last_sent = state.get("last_sent_at")
+        if isinstance(raw_last_sent, str):
+            try:
+                persisted_last_sent[state_key] = datetime.fromisoformat(raw_last_sent)
+            except ValueError:
+                pass
     filter_loading_estimator = FilterLoadingEstimator(
         flow_estimation_config.filter_loading,
         pump_pressure_model=flow_estimation_config.pump_pressure_model,
@@ -3424,6 +3669,7 @@ def build_app_from_mapping(
         runtime_config=runtime_config,
         pool_config=pool_config,
         monitoring_config=monitoring_config,
+        display_config=display_config,
         safety_config=safety_config,
         acquisition_config=acquisition_config,
         pump_timer_config=pump_timer_config,
@@ -3448,6 +3694,8 @@ def build_app_from_mapping(
         weather_service=weather_service,
         notifications_config=notifications_config,
         notification_service=notification_service,
+        notification_alert_last_sent_at=persisted_last_sent,
+        notification_runtime_state=persisted_notification_state,
         relay_safety_config=relay_safety_config,
     )
 

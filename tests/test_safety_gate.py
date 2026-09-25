@@ -7,10 +7,11 @@ loss-of-prime, and freeze-protection safety rules.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 
-from poolctl.domain.models import SensorId
-from poolctl.services.safety import SafetyConfig, load_safety_config
+from poolctl.domain.models import Measurement, Quality, SensorId
+from poolctl.services.safety import SafetyConfig, SafetyGate, SafetySnapshot, load_safety_config
 
 
 def test_load_safety_config_from_yaml(tmp_path: Path) -> None:
@@ -113,3 +114,47 @@ def test_freeze_config_accepts_legacy_on_threshold_keys() -> None:
     assert config.freeze_protection.enabled is True
     assert config.freeze_protection.low_speed_on_below_temp == 36.0
     assert config.freeze_protection.high_speed_on_below_temp == 34.0
+
+
+def test_chlorine_interlock_ignores_legacy_sensor_selection() -> None:
+    now = datetime(2026, 5, 21, 12, 0, tzinfo=timezone.utc)
+    config = SafetyConfig.from_mapping(
+        {
+            "chlorine_tank": {
+                "level_sensor": "tank_level",
+                "capacity_gal": 15.0,
+                "inhibit_below_gal": 1.5,
+                "reenable_at_gal": 2.0,
+            }
+        }
+    )
+    gate = SafetyGate(config)
+    snapshot = SafetySnapshot(
+        now=now,
+        actuator_states={},
+        state_started_at={},
+        measurements={
+            SensorId.TANK_LEVEL: Measurement(
+                sensor_id=SensorId.TANK_LEVEL,
+                observed_at=now,
+                value=0.0,
+                unit="gal",
+                quality=Quality.GOOD,
+            ),
+            SensorId.CHLORINE_TANK_LEVEL_GAL: Measurement(
+                sensor_id=SensorId.CHLORINE_TANK_LEVEL_GAL,
+                observed_at=now,
+                value=5.0,
+                unit="gal",
+                quality=Quality.GOOD,
+            ),
+        },
+    )
+
+    status = gate._update_chlorine_tank_status(snapshot)  # noqa: SLF001
+
+    assert config.chlorine_tank.level_sensor == SensorId.CHLORINE_TANK_LEVEL_GAL
+    assert config.chlorine_tank.capacity_gal == 15.0
+    assert status["supply_source"] == "tank_estimator"
+    assert status["tank_level_gal"] == 5.0
+    assert status["dosing_inhibited"] is False

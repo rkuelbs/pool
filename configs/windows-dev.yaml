@@ -104,7 +104,7 @@ safety:
     min_run_seconds: 600
     threshold_unit: degF
   chlorine_tank:
-    level_sensor: chlorine_tank_level_gal
+    capacity_gal: null
     low_warning_gal: 2.0
     inhibit_below_gal: 1.5
     reenable_at_gal: 2.0
@@ -161,6 +161,21 @@ notifications:
       notify_alarm: true
       caution_repeat_minutes: 1440.0
       alarm_repeat_minutes: 240.0
+    freeze_protection_active:
+      enabled: false
+      notify_caution: false
+      notify_alarm: true
+      caution_repeat_minutes: 1440.0
+      alarm_repeat_minutes: 240.0
+    cpu_temperature_high:
+      enabled: false
+      notify_caution: false
+      notify_alarm: true
+      caution_repeat_minutes: 1440.0
+      alarm_repeat_minutes: 240.0
+      threshold_deg_c: 75.0
+      hysteresis_deg_c: 5.0
+      debounce_seconds: 60.0
 acquisition:
   groups:
     pressures:
@@ -281,6 +296,20 @@ monitoring:
       caution_below: 0.0
       caution_above: 75.0
       alarm_above: 90.0
+display:
+  live_kpi_charts:
+    chlorine_supply:
+      window_hours: 168
+      unit: gal
+      auto_y: true
+    flow:
+      window_hours: 24
+      unit: gpm
+      auto_y: true
+    filter_loss:
+      window_hours: 720
+      unit: percent
+      auto_y: true
 calcium_saturation_index:
   enabled: true
   temp_sensor_id: water_temp

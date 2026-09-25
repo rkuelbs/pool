@@ -132,13 +132,15 @@ class ChlorineTankSafetyConfig:
     dosing can resume.
     """
 
-    level_sensor: SensorId = SensorId.CHLORINE_TANK_LEVEL_GAL
+    capacity_gal: float | None = None
     low_warning_gal: float = 2.0
     inhibit_below_gal: float = 1.5
     reenable_at_gal: float = 2.0
     forecast_reserve_gal: float = 2.0
 
     def __post_init__(self) -> None:
+        if self.capacity_gal is not None and self.capacity_gal <= 0:
+            raise ValueError("chlorine_tank.capacity_gal must be > 0 when configured")
         if self.low_warning_gal < 0:
             raise ValueError("chlorine_tank.low_warning_gal must be >= 0")
         if self.inhibit_below_gal < 0:
@@ -151,6 +153,11 @@ class ChlorineTankSafetyConfig:
             raise ValueError(
                 "chlorine_tank.inhibit_below_gal must be <= reenable_at_gal"
             )
+
+    @property
+    def level_sensor(self) -> SensorId:
+        """Deprecated compatibility view; inventory always comes from the estimator."""
+        return SensorId.CHLORINE_TANK_LEVEL_GAL
 
 
 @dataclass(frozen=True)
@@ -261,11 +268,7 @@ class SafetyConfig:
                 ),
             ),
             chlorine_tank=ChlorineTankSafetyConfig(
-                level_sensor=_sensor_id_value(
-                    chlorine_tank_data,
-                    "level_sensor",
-                    ChlorineTankSafetyConfig().level_sensor,
-                ),
+                capacity_gal=_optional_float_value(chlorine_tank_data, "capacity_gal"),
                 low_warning_gal=_float_value(
                     chlorine_tank_data,
                     "low_warning_gal",
@@ -471,6 +474,11 @@ class SafetyGate:
             "hold_remaining_s": hold_remaining_s,
             "observation": self._freeze_observation,
             **selection_payload,
+            "active_measurement_at": (
+                selection.measurement.observed_at.isoformat()
+                if selection.measurement is not None
+                else None
+            ),
             "primary_stale_or_unavailable": not selection.primary.available,
             "fallback_stale_or_unavailable": not selection.fallback.available,
             "fail_safe": self._freeze_fail_safe,
@@ -658,7 +666,7 @@ class SafetyGate:
 
     def _update_chlorine_tank_status(self, snapshot: SafetySnapshot) -> dict[str, Any]:
         tank = self.config.chlorine_tank
-        measurement = snapshot.raw_measurement(tank.level_sensor)
+        measurement = snapshot.raw_measurement(SensorId.CHLORINE_TANK_LEVEL_GAL)
         tank_level_gal: float | None = None
         if measurement is not None and measurement.quality == Quality.GOOD:
             try:
@@ -717,7 +725,9 @@ class SafetyGate:
     ) -> dict[str, Any]:
         tank = self.config.chlorine_tank
         return {
-            "level_sensor": tank.level_sensor.value,
+            "supply_source": "tank_estimator",
+            "level_sensor": SensorId.CHLORINE_TANK_LEVEL_GAL.value,
+            "capacity_gal": tank.capacity_gal,
             "tank_level_gal": (
                 round(tank_level_gal, 4) if tank_level_gal is not None else None
             ),
@@ -1105,6 +1115,15 @@ def _float_value(data: Mapping[str, Any], key: str, default: float) -> float:
     if not isinstance(value, int | float):
         raise ValueError(f"{key} must be a number")
 
+    return float(value)
+
+
+def _optional_float_value(data: Mapping[str, Any], key: str) -> float | None:
+    value = data.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, int | float):
+        raise ValueError(f"{key} must be a number or null")
     return float(value)
 
 

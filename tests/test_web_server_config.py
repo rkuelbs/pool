@@ -16,7 +16,9 @@ import yaml  # type: ignore[import-untyped]
 
 from poolctl.app import build_app_from_mapping
 from poolctl.config_files import load_config_with_overrides
+from poolctl.domain.models import Measurement, SensorId
 from poolctl.services.clock import SimulatedClock
+from poolctl.web.live import measurement_status
 from poolctl.web.server import (
     PoolCtlWebHandler,
     add_chemical_addition,
@@ -26,6 +28,7 @@ from poolctl.web.server import (
     apply_acquisition_config_update,
     apply_active_schedule_profile_update,
     apply_chlorination_config_update,
+    apply_display_config_update,
     apply_filter_loading_config_update,
     apply_fc_demand_config_update,
     apply_logging_config_update,
@@ -48,6 +51,7 @@ from poolctl.web.server import (
     serialize_monitoring_config,
     serialize_analog_input_config,
     serialize_chlorination_config,
+    serialize_display_config,
     serialize_fc_demand_config,
     serialize_filter_loading_config,
     serialize_ph_sensor_config,
@@ -145,6 +149,102 @@ def test_monitoring_update_is_canonical_and_applies_live(tmp_path: Path) -> None
         "caution_above": 11.0,
         "alarm_above": 16.0,
     }
+
+
+def test_display_update_persists_windows_units_and_fixed_axis(tmp_path: Path) -> None:
+    config = config_mapping()
+    path = tmp_path / "pool.yaml"
+    path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    app = build_app_from_mapping(config, clock=make_clock())
+
+    payload = {
+        "live_kpi_charts": {
+            "chlorine_supply": {
+                "window_hours": 336,
+                "unit": "gal",
+                "auto_y": False,
+                "y_min": 1.0,
+                "y_max": 12.0,
+            },
+            "flow": {
+                "window_hours": 12,
+                "unit": "gpm",
+                "auto_y": True,
+                "y_min": None,
+                "y_max": None,
+            },
+            "filter_loss": {
+                "window_hours": 1440,
+                "unit": "percent",
+                "auto_y": True,
+                "y_min": None,
+                "y_max": None,
+            },
+        }
+    }
+    result = apply_display_config_update(
+        app=app,
+        config_path=path,
+        payload=payload,
+    )
+
+    assert result["applied_live"] is True
+    assert serialize_display_config(app)["live_kpi_charts"] == payload["live_kpi_charts"]
+    saved = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert saved["display"] == payload
+
+
+def test_monitoring_save_reloads_effective_local_override_and_reclassifies(
+    tmp_path: Path,
+) -> None:
+    base = config_mapping()
+    base["live_view"] = {
+        "sensor_limits": {
+            "raw_ph": {
+                "caution_min": 7.3,
+                "normal_min": 7.4,
+                "normal_max": 7.6,
+                "caution_max": 7.7,
+            }
+        }
+    }
+    base_path = tmp_path / "pool.yaml"
+    local_path = tmp_path / "pool-local.yaml"
+    base_path.write_text(yaml.safe_dump(base, sort_keys=False), encoding="utf-8")
+    local_path.write_text("{}\n", encoding="utf-8")
+    app = build_app_from_mapping(
+        load_config_with_overrides(base_path, local_path=local_path),
+        clock=make_clock(),
+    )
+    reading = Measurement(
+        sensor_id=SensorId.RAW_PH,
+        observed_at=app.clock.now(),
+        value=7.2,
+        unit="pH",
+    )
+    assert measurement_status(SensorId.RAW_PH, reading, app.monitoring_config) == "alarm"
+
+    result = apply_monitoring_config_update(
+        app=app,
+        config_path=base_path,
+        local_config_path=local_path,
+        payload={
+            "limits": {
+                "raw_ph": {
+                    "alarm_below": 6.8,
+                    "caution_below": 7.0,
+                    "caution_above": 8.0,
+                    "alarm_above": 8.2,
+                }
+            }
+        },
+    )
+
+    assert result["limits"]["raw_ph"]["caution_above"] == 8.0
+    assert app.monitoring_config.limit_for(SensorId.RAW_PH).caution_above == 8.0
+    assert measurement_status(SensorId.RAW_PH, reading, app.monitoring_config) == "normal"
+    saved_local = yaml.safe_load(local_path.read_text(encoding="utf-8"))
+    assert saved_local["monitoring"]["limits"]["raw_ph"]["caution_above"] == 8.0
 
 
 def test_settings_meta_reports_persisted_restart_required_change(tmp_path: Path) -> None:
@@ -1687,19 +1787,64 @@ def test_chlorine_tank_refill_and_level_tests_update_estimate_and_audit(
     assert listed["chlorine_tank"]["estimate"]["level_gal"] == 10.75
 
 
-def test_history_event_forms_use_local_datetime_inputs() -> None:
+def test_chlorine_tank_refill_is_capacity_checked_and_idempotent(tmp_path: Path) -> None:
+    config = config_mapping()
+    config["logging"] = {"database_path": str(tmp_path / "tank-capacity.sqlite3")}
+    config["safety"] = {
+        "chlorine_tank": {
+            "capacity_gal": 12.0,
+            "low_warning_gal": 2.0,
+            "inhibit_below_gal": 1.5,
+            "reenable_at_gal": 2.0,
+        }
+    }
+    app = build_app_from_mapping(config, clock=make_clock())
+    add_lab_test(
+        app=app,
+        payload={
+            "sampled_at": "2026-05-21T10:00:00+00:00",
+            "chlorine_tank_level_gal": 10.0,
+        },
+        source="local_gui",
+    )
+    payload = {
+        "request_id": "refill-request-1",
+        "added_at": "2026-05-21T11:00:00+00:00",
+        "amount_gal": 2.0,
+    }
+
+    first = add_chlorine_tank_refill(app=app, payload=payload, source="local_gui")
+    duplicate = add_chlorine_tank_refill(app=app, payload=payload, source="local_gui")
+
+    assert first["amount_added_gal"] == 2.0
+    assert first["resulting_level_gal"] == 12.0
+    assert first["capacity_gal"] == 12.0
+    assert duplicate["deduplicated"] is True
+    listed = list_chlorine_tank_refills(app, hours=24 * 30, limit=10)
+    assert len(listed["chlorine_tank_refills"]) == 1
+    with pytest.raises(ValueError, match="would exceed"):
+        add_chlorine_tank_refill(
+            app=app,
+            payload={
+                "added_at": "2026-05-21T12:00:00+00:00",
+                "amount_gal": 0.1,
+            },
+            source="local_gui",
+        )
+
+
+def test_history_is_view_only_and_live_keeps_event_entry() -> None:
     static_dir = Path(__file__).parents[1] / "src" / "poolctl" / "web" / "static"
     history_html = (static_dir / "history.html").read_text(encoding="utf-8")
+    live_html = (static_dir / "live.html").read_text(encoding="utf-8")
 
-    assert 'id="labSampledAt" type="datetime-local"' in history_html
-    assert 'id="chemicalAddedAt" type="datetime-local"' in history_html
-    assert 'id="labChlorineTankLevelGal" type="number"' in history_html
-    assert 'id="chlorineTankRefillAmountGal" type="number"' in history_html
-
-    for page_name in ("live.html", "schedule.html"):
-        html = (static_dir / page_name).read_text(encoding="utf-8")
-        assert 'id="labSampledAt" type="datetime-local"' in html
-        assert 'id="labChlorineTankLevelGal" type="number"' in html
+    assert 'id="labTestSave"' not in history_html
+    assert 'id="chemicalAdditionSave"' not in history_html
+    assert 'id="chlorineTankRefillSave"' not in history_html
+    assert 'id="labSampledAt" type="datetime-local"' in live_html
+    assert 'id="chemicalAddedAt" type="datetime-local"' in live_html
+    assert 'id="labChlorineTankLevelGal" type="number"' in live_html
+    assert 'id="chlorineTankRefillAmountGal" type="number"' in live_html
 
     settings_html = (static_dir / "settings.html").read_text(encoding="utf-8")
     script = (static_dir / "settings.js").read_text(encoding="utf-8")

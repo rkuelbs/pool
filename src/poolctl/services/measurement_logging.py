@@ -34,7 +34,7 @@ from poolctl.services.weather import WEATHER_FIELDS, WeatherObservation
 # 1 hour, and 1 day. Raw measurement rows are still stored separately.
 ROLLUP_BUCKET_SECONDS = (60, 3600, 86400)
 DEFAULT_CONTROL_MEASUREMENT_INTERVAL_S = 30.0
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -200,6 +200,41 @@ class MeasurementLogger:
         if row is None:
             return 0
         return int(row["value"])
+
+    def notification_state(self) -> dict[str, dict[str, Any]]:
+        """Return persisted notification transition/cooldown state."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT state_key, state_json FROM notification_state"
+            ).fetchall()
+        result: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            try:
+                value = json.loads(str(row["state_json"]))
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                result[str(row["state_key"])] = value
+        return result
+
+    def save_notification_state(
+        self,
+        state_key: str,
+        state: Mapping[str, Any],
+        *,
+        updated_at: datetime,
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO notification_state (state_key, state_json, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(state_key) DO UPDATE SET
+                    state_json = excluded.state_json,
+                    updated_at = excluded.updated_at
+                """,
+                (state_key, json.dumps(dict(state), sort_keys=True), updated_at.isoformat()),
+            )
 
     def log_measurements(self, measurements: tuple[Measurement, ...]) -> int:
         if not measurements:
@@ -519,7 +554,7 @@ class MeasurementLogger:
         with self._connect() as connection:
             connection.execute(
                 """
-                INSERT OR REPLACE INTO chlorine_tank_refills (
+                INSERT OR IGNORE INTO chlorine_tank_refills (
                     id,
                     added_at,
                     entered_at,
@@ -539,6 +574,18 @@ class MeasurementLogger:
                 ),
             )
         return refill.id
+
+    def chlorine_tank_refill_by_id(self, refill_id: str) -> ChlorineTankRefill | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id, added_at, entered_at, amount_gal, notes, metadata_json
+                FROM chlorine_tank_refills
+                WHERE id = ?
+                """,
+                (refill_id,),
+            ).fetchone()
+        return None if row is None else _chlorine_tank_refill_from_row(row)
 
     def log_chlorine_delivery(
         self,
@@ -1206,6 +1253,15 @@ class MeasurementLogger:
                 CREATE TABLE IF NOT EXISTS schema_metadata (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS notification_state (
+                    state_key TEXT PRIMARY KEY,
+                    state_json TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
                 """

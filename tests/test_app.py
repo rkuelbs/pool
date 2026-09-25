@@ -2453,7 +2453,7 @@ async def test_tick_computes_csi_from_valid_live_temp_ph_and_latest_sparse_lab_v
 
 
 @pytest.mark.asyncio
-async def test_tick_sends_notification_alerts_with_repeat_throttle() -> None:
+async def test_tick_sends_notification_alerts_with_repeat_throttle(tmp_path: Path) -> None:
     clock = make_clock()
     ph_sensor = FixedSensor(
         name="ph_sensor",
@@ -2507,6 +2507,7 @@ async def test_tick_sends_notification_alerts_with_repeat_throttle() -> None:
                 }
             }
         },
+        "logging": {"database_path": str(tmp_path / "notifications.sqlite3")},
     }
     app = build_app_from_mapping(config, clock=clock, sensor_drivers=[ph_sensor])
     notifications = CapturingNotificationService()
@@ -2530,7 +2531,9 @@ async def test_tick_sends_notification_alerts_with_repeat_throttle() -> None:
 
 
 @pytest.mark.asyncio
-async def test_tick_notifies_and_throttles_fail_safe_freeze_temperature_loss() -> None:
+async def test_tick_notifies_and_throttles_fail_safe_freeze_temperature_loss(
+    tmp_path: Path,
+) -> None:
     clock = make_clock()
     config = {
         **simulated_runtime_config(),
@@ -2553,6 +2556,7 @@ async def test_tick_notifies_and_throttles_fail_safe_freeze_temperature_loss() -
                 }
             },
         },
+        "logging": {"database_path": str(tmp_path / "notifications.sqlite3")},
     }
     app = build_app_from_mapping(
         config,

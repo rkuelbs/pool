@@ -33,7 +33,8 @@ The project is intentionally layered:
   oversampling, and rolling boxcar filters.
 - Standardized filter-loading estimates based on qualifying high-speed
   pump-output pressure tests.
-- SQLite logging for measurements, weather, test results, and chemical additions.
+- SQLite logging for measurements, weather, test results, chemical additions,
+  and notification edge/cooldown state.
 - Live web GUI, mobile-friendly live list view, config forms, schedule editor,
   test result entry, chemical addition entry, and history charts.
 - Raspberry Pi CPU temperature, CPU load, and CPU fan RPM live display and
@@ -240,11 +241,16 @@ Important sections:
 - `monitoring.limits`: canonical user-visible normal/caution/alarm boundaries
   shared by dashboard KPIs, history bands, filter/tank status, and notification
   evaluation.
+- `display.live_kpi_charts`: per-card Live chart windows, canonical display
+  units, and automatic or fixed y-axis bounds. These settings affect display
+  queries only, not sampling, retention, control, or safety.
 - `weather`: Open-Meteo enablement, units, and polling settings; location comes
   from `site`.
 - `notifications`: push notification provider settings and optional state rules
   for usable chlorine tank days remaining, pH, ORP, filter flow loss, and total
-  freeze-temperature loss. Numeric measurement thresholds are not stored here.
+  freeze-temperature loss, plus edge-triggered freeze activation and debounced
+  high CPU temperature. Generic measurement thresholds are not stored here;
+  the CPU rule owns its explicitly Celsius system-telemetry threshold.
   Pushover keys can be entered on the Settings page or supplied through
   environment variables.
 
@@ -255,7 +261,7 @@ older bookmarks. The page uses collapsible, responsive cards organized around
 pool-owner concepts:
 
 - Pool Settings: Pool & Site, Status Ranges, Chlorination, Free Chlorine
-  Control, Filter & Flow, and Notifications.
+  Control, Filter & Flow, Notifications, and Display & Dashboard.
 - Advanced: Safety & Freeze, Sensors & Calibration, Acquisition & Logging, and
   Hardware & Runtime.
 
@@ -274,15 +280,23 @@ Safety interlocks remain under `safety` even where a number resembles a visible
 status limit: an interlock changes equipment behavior, while a monitoring limit
 only classifies and reports state.
 
-The shared classifier emits `normal`, `caution`, `alarm`, `invalid`, or
-`unknown`. Alarm boundaries take precedence over caution boundaries, and
+The shared threshold classifier emits `normal`, `caution`, `alarm`, `invalid`,
+or `unknown`. Alarm boundaries take precedence over caution boundaries, and
 configured boundaries are inclusive. One-sided limits are valid. Missing
 measurements are unknown; non-finite or explicitly bad measurements are
 invalid. Dashboard KPI colors, history status bands, filter/tank indicators,
-and notification evaluation all consume this same classification.
+and notification evaluation all consume this same classification. Live
+measurement availability is separate: circulation-dependent measurements can
+be `pump_off`, `settling`, `stale`, or `sensor_failure`. A valid measurement
+without an alert threshold, such as water temperature by default, is still a
+current usable reading; it does not need to be mislabeled as `Normal` merely to
+avoid an unknown threshold state.
 
 Existing installations migrate during configuration normalization without
-changing their configured numeric values. Legacy `fc_demand.pool_volume_gal`
+changing their configured numeric values. Settings saves are applied from the
+newly reloaded, merged base-plus-local effective configuration, so the value
+shown after a save is the same value used by the runtime. Legacy
+`fc_demand.pool_volume_gal`
 and `fc_demand.chlorine_strength_percent`, `live_view.sensor_limits`,
 notification `alerts` thresholds, and filter yellow/red flow-loss fields may
 still be read when the canonical value is absent. A canonical value in the
@@ -500,6 +514,16 @@ fresh `orp_temp`; both raw probe-temperature signals remain visible and logged
 for diagnostics. The generic `temp` signal remains available to simulation but
 is not the production Water Temperature card input.
 
+Live availability follows that selected source independently of monitoring
+threshold configuration. A fresh valid primary or fallback value displays as a
+current reading even when `monitoring.limits.water_temp` is absent. When no
+source is usable, the payload reports whether the reason is pump-off
+inactivity, circulation settling, stale data, or a sensor failure and may show
+the last valid value and timestamp as historical context. Historical context is
+display-only and is never accepted as a current control, dosing, notification,
+or safety prerequisite. A known sensor fault remains visible even while the
+pump is off.
+
 Freeze protection uses the same selection and freshness semantics. The default
 `max_temperature_age_seconds: 3600` matches the intentionally slow/off-cycle
 chemistry refresh cadence. Status exposes the configured primary/fallback,
@@ -522,26 +546,34 @@ and navigation.
   Schedule timeline above six primary KPI cards for water temperature, pH, ORP,
   estimated flow, filter flow loss, and usable chlorine inventory; aligned
   seven-day trend strips for water temperature, pH, ORP, and tested free
-  chlorine; collapsible chemical-addition, chlorination, and complete water-test
-  entry panels; pump, booster, and active-profile controls; and an exception-first
-  attention list. Supplemental chlorine
+  chlorine; collapsible chemical-addition, tank-refill, chlorination, and
+  complete water-test entry panels; pump, booster, and active-profile controls;
+  and an exception-first attention list. Tank refills record the amount added
+  separately from the resulting estimated tank level, validate against the
+  optional configured capacity, and use an idempotency token to prevent a
+  repeated browser submission. Supplemental chlorine
   requires a review/confirmation step before the existing command is sent.
   Detailed hydraulics, chlorination/FC-demand, CPU, health, and runtime-loop
   information remains available in the collapsed engineering status section.
-- History: measurement/weather/test-result/chemical-addition charts with
-  selectable series, hover readouts, automatic rollup resolution, past-window
-  navigation, calendar/time jump, CSV export, water-test and chemical-addition
-  entry with local date/time pickers, and single-axis or multi-axis scaling
-  depending on selected signal ranges. The chart uses the full available width
-  and keeps its hover position aligned when the browser is resized.
+- History: a viewing-only measurement/weather/test-result/chemical-addition
+  workspace with selectable series grouped into collapsible Chemistry, Manual
+  tests, Pump and hydraulics, Weather, and System diagnostics categories;
+  hover readouts, automatic rollup resolution, past-window navigation,
+  calendar/time jump, CSV export, and single-axis or multi-axis scaling
+  depending on selected signal ranges. Selected series remain named in a
+  collapsed category summary. Raw supported diagnostics remain available, but
+  the obsolete analog pH-voltage selector is not offered. Existing historical
+  data is not deleted. Operational water-test and chemical-addition entry stays
+  on Live, with tank refill entry under Live -> Chemicals.
 - Schedule: profile selection and editing, fixed/solar/daylight timing, a
   four-mode operating selector, and a three-day resolved preview. Profile
   activation remains on Live. The editor loads saved configuration once instead
   of replacing in-progress edits during status polling; **Reload Saved**
   explicitly discards a draft after confirmation.
 - Settings: collapsible consumer-oriented tiles for Pool & Site, Status Ranges,
-  Chlorination, Free Chlorine Control, Filter & Flow, Notifications, Safety &
-  Freeze, Sensors & Calibration, Acquisition & Logging, and Hardware & Runtime.
+  Chlorination, Free Chlorine Control, Filter & Flow, Notifications, Display &
+  Dashboard, Safety & Freeze, Sensors & Calibration, Acquisition & Logging, and
+  Hardware & Runtime.
 
 Some config changes apply live. Others write YAML and require restart because
 drivers or long-lived services must be rebuilt.
@@ -549,16 +581,21 @@ drivers or long-lived services must be rebuilt.
 The Live page continues to poll `GET /api/live` for current state and commands
 the existing timer, actuator, profile, chlorination-config, and supplemental-dose
 endpoints; the browser does not bypass controller safety routing. The existing
-`GET /api/history` API supplies validated 24-hour water/pH/ORP/flow history,
-30-day filter-loss and chlorine-tank history, and the aligned seven-day strip
-charts. The Flow card integrates its logged GPM samples into an approximate
-24-hour gallon total. The Filter card uses a 30-day sparkline with a seven-day
-change summary. The Chlorine Supply card charts usable gallons (estimated tank
-level minus the configured forecast reserve) over 30 days and summarizes seven
-days of logged dosing delivery. No separate UI storage is used for these
-summaries. Chemical-addition event markers remain available on the aligned
-strips, and configured pH/ORP alert ranges from
-`GET /api/config/notifications` provide subtle chart bands. The Schedule
+`GET /api/history` API supplies validated data for the configured chart windows.
+Defaults are 24 hours for Flow, 30 days for Filter Loss, and 7 days for Chlorine
+Supply. The selected window is printed beside each chart's x-axis, and useful
+date/time ticks remain visible. The Flow card integrates its logged GPM samples
+over its selected window. The Filter card compares the oldest and newest valid
+samples in its selected window and labels the result as a percentage-point
+change; it reports insufficient history instead of inventing a baseline. The
+Chlorine Supply card charts usable gallons (estimated tank level minus the
+configured forecast reserve) and summarizes exactly seven days of logged
+dosing delivery in US gallons, converting stored fluid ounces at 128 fl oz per
+US gallon. No separate UI storage is used for these summaries. Fixed y-axis
+bounds show a clipping warning if actual values lie outside the configured
+range. Chemical-addition event markers remain available on the aligned strips,
+and configured pH/ORP alert ranges from `GET /api/config/monitoring` provide
+subtle chart bands. The Schedule
 timeline uses `schedule.today` from the live payload, including already-resolved
 windows and sunrise/sunset, rather than reimplementing schedule or astronomy
 calculations in JavaScript. The payload also includes the controller-resolved
@@ -584,6 +621,13 @@ selected range. The chart uses one y-axis when selected traces have similar
 ranges and centers; otherwise it gives traces separate color-matched axes.
 Lab tests and chemical additions are plotted as point/event series rather than
 continuous sensor streams.
+
+For `FC (tested)` only, the history API also returns the most recent valid real
+test before the requested start as context. When a valid first test exists
+inside the window and neither record declares an intentional/invalid gap, the
+browser interpolates the line to the left chart boundary and clips it there.
+Only real tests receive markers and tooltips. The boundary value is never saved
+or used by FC control, and no line is extrapolated without the supporting pair.
 
 Most physical sensors are already logged at their acquisition group's
 `log_interval_s`. Some controller-state values, such as `Dosing duty cycle` and
@@ -719,18 +763,30 @@ Changing `daily_dose_oz` from the dashboard applies the new duty cycle going
 forward. The controller does not try to make up for earlier parts of the day.
 When a chlorine tank level test has been entered, the dashboard estimates
 remaining tank gallons from that baseline minus logged dosing delivery plus any
-recorded tank refills. Tank level tests and refill records use the true tank
-level. Tank safety uses the independent `low_warning_gal`, `inhibit_below_gal`,
-and `reenable_at_gal` thresholds. Supply forecasting separately subtracts
-`forecast_reserve_gal` (2 gallons by default) to calculate usable gallons and
-days remaining; that forecast reserve is not the dosing inhibit threshold. The
-top status strip displays `Usable
-chlorine remaining X gallons, Y days`, where usable gallons subtract the 2
-gallon reserve from the true estimated level. Days are computed from the
-FC-demand maintenance dose when one is available; otherwise they use the current
-chlorination daily dose. Its normal/caution/alarm colors use the canonical
-`monitoring.limits.chlorine_tank_days_remaining` boundaries. If no tank level
-or nonzero daily dose is available, the indicator stays neutral.
+recorded tank refills. This estimator is the authoritative inventory source for
+the supply tile, refill workflow, alerts, and chlorine interlock; there is no
+analog tank-sensor selection in this workflow. Tank level tests, refills,
+`low_warning_gal`, `inhibit_below_gal`, `reenable_at_gal`, optional
+`capacity_gal`, and `forecast_reserve_gal` are all US gallons. A legacy
+`level_sensor` key remains readable but is ignored and is removed on the next
+Safety settings save. Unknown/uninitialized inventory fails the dosing
+interlock closed instead of fabricating a sensor value or disabling protection.
+
+Supply forecasting separately subtracts `forecast_reserve_gal` (2 gallons by
+default) to calculate usable gallons and estimated days remaining; that
+forecast reserve is not the dosing inhibit threshold. The top status strip
+displays `Usable chlorine remaining X gallons, Y days`, where usable gallons
+subtract the reserve from the true estimated level. Days are computed from the
+FC-demand maintenance dose when one is available; otherwise they use the
+current chlorination daily dose. Their normal/caution/alarm colors use the
+day-valued canonical `monitoring.limits.chlorine_tank_days_remaining`
+boundaries. Gallon interlocks and day-based forecast alerts are deliberately
+independent and explicitly labeled. If consumption is zero or unavailable,
+the UI says the days estimate is unavailable rather than presenting a
+misleading value. If tank capacity has not yet been configured, refill entry is
+allowed with a warning so existing installations retain their workflow; after
+capacity is set, a refill that would put the estimate above capacity is
+rejected.
 The Chlorination Settings card has diagnostic dosing-pump buttons:
 
 - `Prime Dosing Pump 30s`: runs the dosing pump continuously for 30 seconds.
@@ -886,7 +942,7 @@ safety:
     fallback_temperature_sensor: orp_temp
     max_temperature_age_seconds: 3600
   chlorine_tank:
-    level_sensor: chlorine_tank_level_gal
+    capacity_gal: null
     low_warning_gal: 2.0
     inhibit_below_gal: 1.5
     reenable_at_gal: 2.0
@@ -1162,6 +1218,21 @@ notifications:
       notify_alarm: true
       caution_repeat_minutes: 1440.0
       alarm_repeat_minutes: 240.0
+    freeze_protection_active:
+      enabled: false
+      notify_caution: false
+      notify_alarm: true
+      caution_repeat_minutes: 1440.0
+      alarm_repeat_minutes: 240.0
+    cpu_temperature_high:
+      enabled: false
+      notify_caution: false
+      notify_alarm: true
+      caution_repeat_minutes: 1440.0
+      alarm_repeat_minutes: 240.0
+      threshold_deg_c: 75.0
+      hysteresis_deg_c: 5.0
+      debounce_seconds: 60.0
 ```
 
 Most rules are disabled by default even when the provider block exists in the
@@ -1178,10 +1249,26 @@ clears the condition. The freeze-temperature-unavailable rule remains a
 non-measurement alarm rule because it reports loss of all configured freeze
 temperature sources.
 
+`freeze_protection_active` is edge-triggered from SafetyGate's actual freeze
+state. It sends once when protection changes from inactive to active, including
+the selected temperature, units, source, and measurement timestamp when
+available. If fail-safe activation has no valid temperature, the message states
+that condition. `cpu_temperature_high` uses the acquired CPU temperature in
+degrees Celsius and requires the configured debounce period above
+`threshold_deg_c`; it clears only below `threshold_deg_c - hysteresis_deg_c`.
+Missing or stale CPU telemetry does not create a high-temperature event.
+Notification edge, debounce, and last-send state is stored in SQLite so a
+controller restart does not repeat an unchanged activation. These notification
+rules never change freeze protection or any other control decision.
+
 Alarm boundaries are evaluated before caution boundaries. Each rule has a
 separate caution and alarm repeat interval; the throttle key is signal plus
 status level, so a value that moves among ranges does not bypass the matching
-cooldown.
+cooldown. pH and ORP rules accept only fresh, GOOD readings after circulation
+settling; pump-off, settling, stale, and failed readings neither create nor
+repeat chemical threshold violations. The dashboard may continue to show the
+last valid historical value, but it is never substituted for the current
+notification input.
 
 The Settings page has direct `Pushover app token` and `Pushover user key` fields
 that round-trip like other config fields. Leave them blank to use
@@ -1310,36 +1397,44 @@ BACKUP_KEEP_COUNT=720 \
 ./deploy/systemd/install-pi-services.sh
 ```
 
-For this config-schema update, discard the old local override rather than
-merging it. Back it up outside the repository, update, create a fresh local file
-from the minimal example, and manually re-enter only current site values:
+For the KPI, threshold, tank-estimator, and notification update documented
+above, preserve the live database and `configs/pi-local.yaml`. Make an external
+backup, inspect local tracked-file edits before pulling, and use the normal
+update path:
 
 ```bash
 cd /home/pool/projects/pool
-mv configs/pi-local.yaml ~/pi-local.yaml.pre-consistency-cleanup
+if [ -f configs/pi-local.yaml ]; then
+  cp configs/pi-local.yaml ~/pi-local.yaml.pre-dashboard-update
+fi
+sqlite3 data/pi-prod.sqlite3 ".backup '$HOME/pi-prod.pre-dashboard-update.sqlite3'"
+git status --short
 git pull --ff-only
-cp configs/pi-local.example.yaml configs/pi-local.yaml
-nano configs/pi-local.yaml
+source venv/bin/activate
+python -m pip install -e ".[raspberrypi]"
+python -m pip check
+sudo systemctl restart poolctl.service
+sudo systemctl status poolctl.service --no-pager
 ```
 
-Re-enter the real pump schedule and every `allow_dosing` flag, calibrated
-chlorine-pump oz/min, FC pool volume, FC target, FC-demand mode, site-specific
-maximum daily dose, measured filter `clean_flow_gpm` (`Qclean`), local weather
-latitude/longitude, hardware paths/slave IDs that differ from production
-defaults, and notification environment/settings. A local schedules list
-replaces the entire tracked list. Do not copy retired keys wholesale from the
-backup.
+No dependency, unit-template, or installer change is required for this update,
+so do not rerun `install-pi-services.sh` solely for it. On first start the
+SQLite schema adds the notification-state table in place; measurement, lab,
+chemical-addition, calibration, and refill history remain intact. Config
+normalization reads existing legacy threshold fields and the old tank
+`level_sensor` field compatibly. The server continues to write Settings changes
+to the local override and now reapplies the reloaded merged effective config,
+so do not replace that override with the tracked example. After restart, verify
+Status Ranges in Settings, optionally enter the physical tank capacity in US
+gallons under Safety & Freeze, configure Display & Dashboard chart bounds, and
+leave the new freeze-active and high-CPU notification rules disabled until the
+desired behavior has been reviewed.
 
-If you also have old local Pi edits in tracked `configs/pi-prod.yaml`, preserve
-their values separately, restore the tracked base file, and then pull:
-
-```bash
-git restore configs/pi-prod.yaml
-git pull --ff-only
-```
-
-Do not run `git reset --hard` unless you are certain there is nothing local you
-want to keep.
+If `git status --short` shows site-specific edits in tracked
+`configs/pi-prod.yaml`, copy those values to `configs/pi-local.yaml` before
+restoring the tracked file and pulling. A local schedules list replaces the
+entire tracked list. Do not use `git reset --hard`; it can destroy production
+configuration.
 
 ## Raspberry Pi Services
 

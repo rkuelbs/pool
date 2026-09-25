@@ -82,15 +82,15 @@ def test_measurement_logger_records_schema_version(tmp_path: Path) -> None:
     database_path = tmp_path / "measurements.sqlite3"
     logger = MeasurementLogger(MeasurementLoggingConfig(database_path=database_path))
 
-    assert logger.schema_version() == 2
+    assert logger.schema_version() == 3
     with sqlite3.connect(database_path) as connection:
         user_version = connection.execute("PRAGMA user_version").fetchone()[0]
         metadata_version = connection.execute(
             "SELECT value FROM schema_metadata WHERE key = 'schema_version'"
         ).fetchone()[0]
 
-    assert user_version == 2
-    assert metadata_version == "2"
+    assert user_version == 3
+    assert metadata_version == "3"
 
 
 def test_measurement_logger_persists_resolved_schedule_snapshot(tmp_path: Path) -> None:

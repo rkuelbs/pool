@@ -107,12 +107,19 @@ class NotificationRuleConfig:
     notify_alarm: bool = True
     caution_repeat_minutes: float = 1440.0
     alarm_repeat_minutes: float = 240.0
+    threshold_deg_c: float | None = None
+    hysteresis_deg_c: float = 5.0
+    debounce_seconds: float = 60.0
 
     def __post_init__(self) -> None:
         if self.caution_repeat_minutes <= 0:
             raise ValueError("caution_repeat_minutes must be > 0")
         if self.alarm_repeat_minutes <= 0:
             raise ValueError("alarm_repeat_minutes must be > 0")
+        if self.hysteresis_deg_c < 0:
+            raise ValueError("hysteresis_deg_c must be >= 0")
+        if self.debounce_seconds < 0:
+            raise ValueError("debounce_seconds must be >= 0")
 
     @classmethod
     def from_mapping(
@@ -127,6 +134,9 @@ class NotificationRuleConfig:
             "notify_alarm",
             "caution_repeat_minutes",
             "alarm_repeat_minutes",
+            "threshold_deg_c",
+            "hysteresis_deg_c",
+            "debounce_seconds",
         }
         unknown = set(data) - supported
         if unknown:
@@ -152,16 +162,40 @@ class NotificationRuleConfig:
                 "alarm_repeat_minutes",
                 default.alarm_repeat_minutes,
             ),
+            threshold_deg_c=_optional_float_value(
+                data,
+                "threshold_deg_c",
+                default.threshold_deg_c,
+            ),
+            hysteresis_deg_c=_float_value(
+                data,
+                "hysteresis_deg_c",
+                default.hysteresis_deg_c,
+            ),
+            debounce_seconds=_float_value(
+                data,
+                "debounce_seconds",
+                default.debounce_seconds,
+            ),
         )
 
     def as_payload(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "enabled": self.enabled,
             "notify_caution": self.notify_caution,
             "notify_alarm": self.notify_alarm,
             "caution_repeat_minutes": self.caution_repeat_minutes,
             "alarm_repeat_minutes": self.alarm_repeat_minutes,
         }
+        if self.threshold_deg_c is not None:
+            payload.update(
+                {
+                    "threshold_deg_c": self.threshold_deg_c,
+                    "hysteresis_deg_c": self.hysteresis_deg_c,
+                    "debounce_seconds": self.debounce_seconds,
+                }
+            )
+        return payload
 
 
 NUMERIC_NOTIFICATION_SIGNALS = (
@@ -171,6 +205,8 @@ NUMERIC_NOTIFICATION_SIGNALS = (
     SensorId.FILTER_FLOW_LOSS_PERCENT,
 )
 FREEZE_TEMPERATURE_UNAVAILABLE_RULE = "freeze_temperature_unavailable"
+FREEZE_PROTECTION_ACTIVE_RULE = "freeze_protection_active"
+CPU_TEMPERATURE_HIGH_RULE = "cpu_temperature_high"
 
 
 def default_notification_rules() -> dict[str, NotificationRuleConfig]:
@@ -185,6 +221,17 @@ def default_notification_rules() -> dict[str, NotificationRuleConfig]:
         FREEZE_TEMPERATURE_UNAVAILABLE_RULE: NotificationRuleConfig(
             enabled=True,
             notify_caution=False,
+        ),
+        FREEZE_PROTECTION_ACTIVE_RULE: NotificationRuleConfig(
+            enabled=False,
+            notify_caution=False,
+        ),
+        CPU_TEMPERATURE_HIGH_RULE: NotificationRuleConfig(
+            enabled=False,
+            notify_caution=False,
+            threshold_deg_c=75.0,
+            hysteresis_deg_c=5.0,
+            debounce_seconds=60.0,
         ),
     }
 

@@ -275,6 +275,97 @@ class MonitoringConfig:
         return self.limits.get(sensor_id)
 
 
+LIVE_KPI_CHART_UNITS = {
+    "chlorine_supply": "gal",
+    "flow": "gpm",
+    "filter_loss": "percent",
+}
+
+
+@dataclass(frozen=True)
+class LiveKpiChartConfig:
+    """Display-only settings for one Live KPI chart."""
+
+    window_hours: float
+    unit: str
+    auto_y: bool = True
+    y_min: float | None = None
+    y_max: float | None = None
+
+    def __post_init__(self) -> None:
+        if not 1.0 <= self.window_hours <= 24.0 * 365.0:
+            raise ValueError("chart window_hours must be between 1 and 8760")
+        if not self.auto_y and self.y_min is None and self.y_max is None:
+            raise ValueError("fixed chart scaling requires y_min or y_max")
+        if self.y_min is not None and self.y_max is not None and self.y_min >= self.y_max:
+            raise ValueError("chart y_min must be less than y_max")
+
+    def as_mapping(self) -> dict[str, Any]:
+        return {
+            "window_hours": self.window_hours,
+            "auto_y": self.auto_y,
+            "y_min": self.y_min,
+            "y_max": self.y_max,
+            "unit": self.unit,
+        }
+
+
+def default_live_kpi_charts() -> dict[str, LiveKpiChartConfig]:
+    return {
+        "chlorine_supply": LiveKpiChartConfig(window_hours=168.0, unit="gal"),
+        "flow": LiveKpiChartConfig(window_hours=24.0, unit="gpm"),
+        "filter_loss": LiveKpiChartConfig(window_hours=720.0, unit="percent"),
+    }
+
+
+@dataclass(frozen=True)
+class DisplayConfig:
+    """Dashboard presentation settings; never used by control or safety logic."""
+
+    live_kpi_charts: dict[str, LiveKpiChartConfig]
+
+    @classmethod
+    def from_mapping(cls, data: Mapping[str, Any]) -> DisplayConfig:
+        display_data = _mapping_value(data, "display", default={})
+        raw_charts = _mapping_value(display_data, "live_kpi_charts", default={})
+        defaults = default_live_kpi_charts()
+        unknown = set(raw_charts) - set(defaults)
+        if unknown:
+            raise ValueError(
+                "display.live_kpi_charts contains unsupported charts: "
+                + ", ".join(sorted(str(item) for item in unknown))
+            )
+        charts: dict[str, LiveKpiChartConfig] = {}
+        for chart_key, default in defaults.items():
+            raw = raw_charts.get(chart_key, {})
+            if not isinstance(raw, Mapping):
+                raise ValueError(f"display.live_kpi_charts.{chart_key} must be a mapping")
+            unit = raw.get("unit", default.unit)
+            if unit != LIVE_KPI_CHART_UNITS[chart_key]:
+                raise ValueError(
+                    f"display.live_kpi_charts.{chart_key}.unit must be "
+                    f"{LIVE_KPI_CHART_UNITS[chart_key]}"
+                )
+            auto_y = raw.get("auto_y", default.auto_y)
+            if not isinstance(auto_y, bool):
+                raise ValueError(f"display.live_kpi_charts.{chart_key}.auto_y must be true or false")
+            charts[chart_key] = LiveKpiChartConfig(
+                window_hours=_float_value(raw, "window_hours", default.window_hours),
+                auto_y=auto_y,
+                y_min=_optional_number(raw.get("y_min"), f"display.live_kpi_charts.{chart_key}.y_min"),
+                y_max=_optional_number(raw.get("y_max"), f"display.live_kpi_charts.{chart_key}.y_max"),
+                unit=str(unit),
+            )
+        return cls(live_kpi_charts=charts)
+
+    def as_mapping(self) -> dict[str, Any]:
+        return {
+            "live_kpi_charts": {
+                key: chart.as_mapping() for key, chart in self.live_kpi_charts.items()
+            }
+        }
+
+
 def load_runtime_config(path: str | Path) -> RuntimeConfig:
     with Path(path).open("r", encoding="utf-8") as config_file:
         data = yaml.safe_load(config_file) or {}

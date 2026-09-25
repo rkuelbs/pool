@@ -58,6 +58,16 @@
 #       caution_above: 10
 #       alarm_above: 15
 #
+# safety:
+#   chlorine_tank:
+#     capacity_gal: <physical tank capacity in US gallons>
+#
+# display:
+#   live_kpi_charts:
+#     chlorine_supply: {window_hours: 168, unit: gal, auto_y: true}
+#     flow: {window_hours: 24, unit: gpm, auto_y: true}
+#     filter_loss: {window_hours: 720, unit: percent, auto_y: true}
+#
 # weather:
 #   enabled: true  # coordinates come from the shared site block
 #
@@ -67,6 +77,9 @@
 # Notification secrets should remain in environment variables or the existing
 # protected secret source. Local YAML may enable notifications and choose the
 # environment-variable names, but should not contain Pushover token/key values.
+# Freeze-activation and high-CPU-temperature rules are configured under
+# notifications.rules. CPU thresholds are in degrees Celsius; the shipped rule
+# is disabled at 75 C with 5 C hysteresis and a 60-second debounce.
 #
 # Older ownership keys remain readable and are normalized safely, but new edits
 # should use only the canonical locations documented above. Saving through

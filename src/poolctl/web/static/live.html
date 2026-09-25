@@ -117,7 +117,7 @@
             <div class="kpi-reading"><strong id="liveFilterFlowLoss">--</strong><span id="liveFilterUnit">%</span></div>
             <p id="liveFilterStatus" class="kpi-status">Awaiting a standardized test</p>
             <svg id="liveSparkFilter" class="kpi-sparkline" viewBox="0 0 180 44" aria-label="Filter flow loss, last 30 days"></svg>
-            <p id="liveFilterTrend" class="kpi-trend">7-day trend unavailable</p>
+            <p id="liveFilterTrend" class="kpi-trend">30-day comparison unavailable</p>
           </article>
 
           <article class="kpi-card" id="liveTankCard">
@@ -127,7 +127,7 @@
             </div>
             <div class="kpi-reading"><strong id="liveTankDaysLine">--</strong><span id="liveTankUnit">gal</span></div>
             <p id="liveTankLevelLine" class="kpi-status">Days remaining unavailable</p>
-            <svg id="liveSparkTank" class="kpi-sparkline" viewBox="0 0 180 44" aria-label="Usable chlorine supply, last 30 days"></svg>
+            <svg id="liveSparkTank" class="kpi-sparkline" viewBox="0 0 180 44" aria-label="Usable chlorine supply, past 7 days"></svg>
             <p id="liveTankTrend" class="kpi-trend">7-day dose unavailable</p>
           </article>
         </section>
@@ -168,6 +168,23 @@
                 </div>
                 <button id="chemicalAdditionSave" class="button-primary action-save" type="button">Add chemical</button>
                 <p id="chemicalAdditionStatus" class="action-status" role="status">Ready</p>
+              </section>
+
+              <section class="live-form-section" aria-labelledby="chlorineTankRefillHeading">
+                <div class="control-section-heading">
+                  <h3 id="chlorineTankRefillHeading">Refill chlorine tank</h3>
+                  <span>Inventory estimator</span>
+                </div>
+                <div class="live-form-grid">
+                  <label>Added at <input id="chlorineTankRefillAddedAt" type="datetime-local" step="60"></label>
+                  <label>Amount added <span class="input-with-unit"><input id="chlorineTankRefillAmountGal" type="number" step="0.01" min="0" inputmode="decimal"><span>gal</span></span></label>
+                  <label>Notes <input id="chlorineTankRefillNotes" type="text"></label>
+                </div>
+                <button id="chlorineTankRefillSave" class="button-primary action-save" type="button">Record refill</button>
+                <button id="chlorineTankRefillReload" class="button-secondary" type="button">Refresh inventory</button>
+                <p id="chlorineTankRefillStatus" class="action-status" role="status">Ready</p>
+                <p id="chlorineTankEstimateStatus" class="action-status">Estimated tank level: --</p>
+                <div id="chlorineTankRefillList" class="timeline-list compact-list">--</div>
               </section>
 
               <section class="live-form-section dose-control" aria-labelledby="liveChlorinationHeading">

@@ -145,6 +145,17 @@ python -m pip install -e ".[raspberrypi]"
 sudo systemctl restart poolctl.service
 ```
 
+The dashboard/threshold/tank-estimator/notification update is a code-only
+update: it adds no Python dependency and does not change a unit template. Keep
+`configs/pi-local.yaml` and the live SQLite database in place, make external
+backups of both before pulling, run the editable install and `pip check`, then
+restart `poolctl.service`. The application creates its new notification-state
+table in the existing database on startup without replacing measurement,
+calibration, refill, test, or chemical-addition history. Do not rerun the
+installer solely for this update. Existing legacy threshold and tank-sensor
+configuration remains readable; a subsequent Settings save writes the current
+canonical form to the configured local override.
+
 ## Status and Logs
 
 ```bash

@@ -8,8 +8,9 @@ into dictionaries with display strings, colors, status flags, and history data.
 
 from __future__ import annotations
 
-import math
+from collections.abc import Mapping
 from datetime import datetime, timedelta
+import math
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -197,6 +198,104 @@ async def build_live_snapshot(app: PoolControllerApp) -> dict[str, Any]:
     )
     if chlorine_tank_measurement is not None:
         snapshot_measurements[chlorine_tank_measurement.sensor_id] = chlorine_tank_measurement
+    sensor_payloads: dict[str, dict[str, Any]] = {}
+    failures_by_sensor = {
+        failure.sensor_id: failure
+        for failure in tick.acquisition.failures
+        if failure.sensor_id is not None
+    }
+    for sensor_id, measurement in snapshot_measurements.items():
+        group = _acquisition_group_for_sensor(app, sensor_id, measurement)
+        availability = _measurement_availability(
+            app,
+            measurement,
+            group=group,
+            now=tick.observed_at,
+            failed=sensor_id in failures_by_sensor,
+        )
+        last_valid = None
+        if availability["state"] != "current":
+            last_valid = _last_valid_measurement_payload(
+                app,
+                sensor_id,
+                before=tick.observed_at,
+                exclude_id=measurement.id,
+            )
+        failure = failures_by_sensor.get(sensor_id)
+        sensor_payloads[sensor_id.value] = measurement_payload(
+            sensor_id,
+            measurement,
+            app.monitoring_config,
+            availability=availability,
+            last_valid=last_valid,
+            fault=(
+                {
+                    "message": failure.error,
+                    "observed_at": failure.observed_at.isoformat(),
+                    "driver": failure.driver_name,
+                }
+                if failure is not None
+                else None
+            ),
+        )
+    for sensor_id in (SensorId.WATER_TEMP, SensorId.RAW_PH, SensorId.RAW_ORP):
+        if sensor_id.value in sensor_payloads:
+            continue
+        group = _acquisition_group_for_sensor(app, sensor_id, None)
+        failure = failures_by_sensor.get(sensor_id)
+        if sensor_id == SensorId.WATER_TEMP and failure is None:
+            for source_id in (
+                app.safety_config.freeze_protection.primary_temperature_sensor,
+                app.safety_config.freeze_protection.fallback_temperature_sensor,
+            ):
+                if source_id in failures_by_sensor:
+                    failure = failures_by_sensor[source_id]
+                    break
+        availability = _missing_measurement_availability(
+            app,
+            group=group,
+            now=tick.observed_at,
+            failed=failure is not None,
+        )
+        sensor_payloads[sensor_id.value] = {
+            "sensor_id": sensor_id.value,
+            "label": SENSOR_LABELS.get(sensor_id, sensor_id.value),
+            "value": None,
+            "unit": None,
+            "display": "--",
+            "quality": None,
+            "status": "invalid",
+            "status_label": SENSOR_STATUS_LABELS["invalid"],
+            "limits": sensor_limits_payload(sensor_id, app.monitoring_config),
+            "kind": None,
+            "observed_at": None,
+            "metadata": {},
+            "availability": availability,
+            "threshold": {
+                "configured": app.monitoring_config.limit_for(sensor_id) is not None,
+                "state": None,
+                "label": (
+                    "Not evaluated"
+                    if app.monitoring_config.limit_for(sensor_id) is not None
+                    else "Not configured"
+                ),
+            },
+            "last_valid": _last_valid_measurement_payload(
+                app,
+                sensor_id,
+                before=tick.observed_at,
+                exclude_id="",
+            ),
+            "fault": (
+                {
+                    "message": failure.error,
+                    "observed_at": failure.observed_at.isoformat(),
+                    "driver": failure.driver_name,
+                }
+                if failure is not None
+                else None
+            ),
+        }
     daily_dose_oz = chlorine_supply_daily_dose_oz(
         chlorination_status=tick.chlorination_status,
         fc_demand_status=tick.fc_demand_status,
@@ -247,14 +346,8 @@ async def build_live_snapshot(app: PoolControllerApp) -> dict[str, Any]:
         "runtime": {
             "driver_profile": app.runtime_config.driver_profile.value,
         },
-        "sensors": {
-            sensor_id.value: measurement_payload(
-                sensor_id,
-                measurement,
-                app.monitoring_config,
-            )
-            for sensor_id, measurement in snapshot_measurements.items()
-        },
+        "display": app.display_config.as_mapping(),
+        "sensors": sensor_payloads,
         "actuators": {
             actuator_id.value: {
                 "label": ACTUATOR_LABELS.get(actuator_id, actuator_id.value),
@@ -584,12 +677,88 @@ def build_history_series_payload(
         token_id = str(sensor_token)
         lab_spec = LAB_HISTORY_SERIES.get(token_id)
         if lab_spec is not None:
-            lab_points = app.measurement_logger.lab_value_history(
-                field=str(lab_spec["field"]),
-                since=since,
-                until=window_until,
-                limit=limit,
-            )
+            context_before: dict[str, Any] | None = None
+            if token_id == "lab_free_chlorine":
+                tests = app.measurement_logger.lab_test_history(
+                    since=since,
+                    until=window_until,
+                    limit=limit,
+                )
+                lab_points = tuple(
+                    (test.sampled_at, float(test.free_chlorine))
+                    for test in tests
+                    if test.free_chlorine is not None
+                    and _valid_lab_value_for_interpolation(test.metadata, "free_chlorine")
+                )
+                preceding_tests = app.measurement_logger.lab_test_history(
+                    until=since - timedelta(microseconds=1),
+                    limit=100,
+                )
+                preceding = next(
+                    (
+                        test
+                        for test in reversed(preceding_tests)
+                        if test.free_chlorine is not None
+                    ),
+                    None,
+                )
+                first_valid_test = next(
+                    (
+                        test
+                        for test in tests
+                        if test.free_chlorine is not None
+                        and _valid_lab_value_for_interpolation(
+                            test.metadata,
+                            "free_chlorine",
+                        )
+                    ),
+                    None,
+                )
+                invalid_or_gap_before_first = (
+                    first_valid_test is not None
+                    and any(
+                        test.sampled_at <= first_valid_test.sampled_at
+                        and test.free_chlorine is not None
+                        and (
+                            not _valid_lab_value_for_interpolation(
+                                test.metadata,
+                                "free_chlorine",
+                            )
+                            or _lab_interpolation_gap(test.metadata)
+                        )
+                        for test in tests
+                    )
+                )
+                if (
+                    preceding is not None
+                    and preceding.free_chlorine is not None
+                    and first_valid_test is not None
+                    and _valid_lab_value_for_interpolation(
+                        preceding.metadata,
+                        "free_chlorine",
+                    )
+                    and not _lab_interpolation_gap(preceding.metadata)
+                    and not _lab_interpolation_gap(first_valid_test.metadata)
+                    and not invalid_or_gap_before_first
+                ):
+                    context_before = _lab_history_point_payload(
+                        sensor_id=token_id,
+                        label=str(lab_spec["label"]),
+                        observed_at=preceding.sampled_at,
+                        value=float(preceding.free_chlorine),
+                        unit=str(lab_spec["unit"]),
+                        decimals=int(lab_spec["decimals"]),
+                        monitoring_config=app.monitoring_config,
+                        status_sensor_id=lab_spec.get("status_sensor_id"),
+                    )
+                    context_before["context_only"] = True
+            else:
+                lab_points = app.measurement_logger.lab_value_history(
+                    field=str(lab_spec["field"]),
+                    since=since,
+                    until=window_until,
+                    limit=limit,
+                )
             points = [
                 _lab_history_point_payload(
                     sensor_id=token_id,
@@ -603,14 +772,16 @@ def build_history_series_payload(
                 )
                 for observed_at, value in lab_points
             ]
-            series.append(
-                {
-                    "sensor_id": token_id,
-                    "label": str(lab_spec["label"]),
-                    "bucket_seconds": None,
-                    "points": points,
-                }
-            )
+            lab_series: dict[str, Any] = {
+                "sensor_id": token_id,
+                "label": str(lab_spec["label"]),
+                "bucket_seconds": None,
+                "points": points,
+            }
+            if token_id == "lab_free_chlorine":
+                lab_series["actual_markers"] = True
+                lab_series["context_before"] = context_before
+            series.append(lab_series)
             continue
 
         chemical_spec = CHEMICAL_ADDITION_HISTORY_SERIES.get(token_id)
@@ -690,6 +861,21 @@ def build_history_series_payload(
     }
 
 
+def _valid_lab_value_for_interpolation(metadata: Mapping[str, Any], field: str) -> bool:
+    return not (
+        metadata.get("valid") is False
+        or metadata.get("invalid") is True
+        or metadata.get(f"{field}_valid") is False
+    )
+
+
+def _lab_interpolation_gap(metadata: Mapping[str, Any]) -> bool:
+    return any(
+        metadata.get(key) is True
+        for key in ("intentional_gap", "gap_before", "gap_after", "disable_interpolation")
+    )
+
+
 def history_bucket_seconds(
     *,
     hours: float,
@@ -720,8 +906,25 @@ def measurement_payload(
     sensor_id: SensorId,
     measurement: Measurement,
     monitoring_config: MonitoringConfig,
+    *,
+    availability: dict[str, Any] | None = None,
+    last_valid: dict[str, Any] | None = None,
+    fault: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    status = measurement_status(sensor_id, measurement, monitoring_config)
+    availability = availability or {
+        "state": "current" if measurement.quality == Quality.GOOD else "unavailable",
+        "label": "Current" if measurement.quality == Quality.GOOD else "Reading unavailable",
+        "current": measurement.quality == Quality.GOOD,
+        "reason": None,
+        "age_seconds": None,
+    }
+    threshold_configured = monitoring_config.limit_for(sensor_id) is not None
+    status = (
+        measurement_status(sensor_id, measurement, monitoring_config)
+        if availability["current"]
+        else "invalid"
+    )
+    threshold_state = status if threshold_configured and availability["current"] else None
 
     return {
         "sensor_id": sensor_id.value,
@@ -736,6 +939,181 @@ def measurement_payload(
         "kind": measurement.kind.value,
         "observed_at": measurement.observed_at.isoformat(),
         "metadata": measurement.metadata,
+        "availability": availability,
+        "threshold": {
+            "configured": threshold_configured,
+            "state": threshold_state,
+            "label": (
+                SENSOR_STATUS_LABELS.get(threshold_state, "Not evaluated")
+                if threshold_state is not None
+                else "Not evaluated" if threshold_configured else "Not configured"
+            ),
+        },
+        "last_valid": last_valid,
+        "fault": fault,
+    }
+
+
+def _acquisition_group_for_sensor(
+    app: PoolControllerApp,
+    sensor_id: SensorId,
+    measurement: Measurement | None,
+) -> Any:
+    lookup_id = sensor_id
+    if sensor_id == SensorId.WATER_TEMP:
+        raw_source = (
+            measurement.metadata.get("active_source")
+            if measurement is not None
+            else app.safety_config.freeze_protection.primary_temperature_sensor.value
+        )
+        try:
+            lookup_id = SensorId(str(raw_source))
+        except ValueError:
+            lookup_id = SensorId.PH_TEMP
+    for group in app.acquisition_config.groups:
+        if lookup_id in group.sensor_ids:
+            return group
+    return None
+
+
+def _missing_measurement_availability(
+    app: PoolControllerApp,
+    *,
+    group: Any,
+    now: datetime,
+    failed: bool,
+) -> dict[str, Any]:
+    if group is not None and group.requires_pump_flow:
+        pump_state = app.router.actuator_states.get(ActuatorId.PUMP_MOTOR)
+        if pump_state is None or pump_state.value != "on":
+            return {
+                "state": "pump_off",
+                "label": "Pump off",
+                "current": False,
+                "reason": "pump_not_running",
+                "age_seconds": None,
+            }
+        started_at = app.router.state_started_at.get(ActuatorId.PUMP_MOTOR)
+        if (
+            started_at is None
+            or (now - started_at).total_seconds() < group.min_pump_on_seconds
+        ):
+            return {
+                "state": "settling",
+                "label": "Water settling",
+                "current": False,
+                "reason": "pump_not_running_long_enough",
+                "age_seconds": None,
+            }
+    return {
+        "state": "sensor_failure" if failed else "unavailable",
+        "label": "Sensor problem" if failed else "Reading unavailable",
+        "current": False,
+        "reason": "acquisition_failed" if failed else "measurement_missing",
+        "age_seconds": None,
+    }
+
+
+def _measurement_availability(
+    app: PoolControllerApp,
+    measurement: Measurement,
+    *,
+    group: Any,
+    now: datetime,
+    failed: bool = False,
+) -> dict[str, Any]:
+    age_seconds = max(0.0, (now - measurement.observed_at).total_seconds())
+    reason = measurement.metadata.get("validity_reason")
+    if group is not None and group.requires_pump_flow:
+        pump_state = app.router.actuator_states.get(ActuatorId.PUMP_MOTOR)
+        if pump_state is None or pump_state.value != "on":
+            state, label, reason = "pump_off", "Pump off", "pump_not_running"
+        else:
+            started_at = app.router.state_started_at.get(ActuatorId.PUMP_MOTOR)
+            pump_on_seconds = (
+                max(0.0, (now - started_at).total_seconds())
+                if started_at is not None
+                else 0.0
+            )
+            if pump_on_seconds < group.min_pump_on_seconds:
+                state, label, reason = (
+                    "settling",
+                    "Water settling",
+                    "pump_not_running_long_enough",
+                )
+            else:
+                state = label = ""
+        if reason == "pump_speed_not_valid":
+            state, label = "settling", "Pump speed not valid"
+        if state:
+            return {
+                "state": state,
+                "label": label,
+                "current": False,
+                "reason": reason,
+                "age_seconds": age_seconds,
+            }
+    freshness_seconds = (
+        max(15.0, group.read_interval_s * 3.0) if group is not None else None
+    )
+    if freshness_seconds is not None and age_seconds > freshness_seconds:
+        return {
+            "state": "stale",
+            "label": "Stale reading",
+            "current": False,
+            "reason": "measurement_stale",
+            "age_seconds": age_seconds,
+        }
+    if failed:
+        return {
+            "state": "sensor_failure",
+            "label": "Sensor problem",
+            "current": False,
+            "reason": "acquisition_failed",
+            "age_seconds": age_seconds,
+        }
+    if measurement.quality != Quality.GOOD:
+        return {
+            "state": "sensor_failure" if reason not in {"pump_not_running", "pump_not_running_long_enough"} else "unavailable",
+            "label": "Sensor problem" if reason else "Reading unavailable",
+            "current": False,
+            "reason": reason or "invalid_quality",
+            "age_seconds": age_seconds,
+        }
+    return {
+        "state": "current",
+        "label": "Current",
+        "current": True,
+        "reason": None,
+        "age_seconds": age_seconds,
+    }
+
+
+def _last_valid_measurement_payload(
+    app: PoolControllerApp,
+    sensor_id: SensorId,
+    *,
+    before: datetime,
+    exclude_id: str,
+) -> dict[str, Any] | None:
+    if app.measurement_logger is None:
+        return None
+    records = app.measurement_logger.history(
+        sensor_id=sensor_id,
+        until=before,
+        limit=2,
+        qualities=(Quality.GOOD,),
+    )
+    candidates = [record.to_measurement() for record in records if record.measurement_id != exclude_id]
+    if not candidates:
+        return None
+    historical = candidates[-1]
+    return {
+        "value": historical.value,
+        "unit": historical.unit,
+        "display": format_measurement(historical),
+        "observed_at": historical.observed_at.isoformat(),
+        "historical": True,
     }
 
 

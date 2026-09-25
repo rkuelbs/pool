@@ -34,6 +34,7 @@ from poolctl.app import (
     build_app_from_config,
 )
 from poolctl.config import (
+    DisplayConfig,
     DriverProfile,
     MonitoringConfig,
     PoolConfig,
@@ -452,6 +453,10 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
             self._serve_monitoring_config()
             return
 
+        if path == "/api/config/display":
+            self._serve_json(serialize_display_config(self.app))
+            return
+
         if path == "/api/config/pump_timer":
             self._serve_pump_timer_config()
             return
@@ -539,6 +544,21 @@ class PoolCtlWebHandler(BaseHTTPRequestHandler):
 
         if path == "/api/config/monitoring":
             self._serve_update_monitoring_config()
+            return
+
+        if path == "/api/config/display":
+            try:
+                payload = self._read_json_body()
+                result = apply_display_config_update(
+                    app=self.app,
+                    config_path=self.config_path,
+                    local_config_path=self.local_config_path,
+                    payload=payload,
+                )
+            except ValueError as error:
+                self._serve_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+                return
+            self._serve_json(result)
             return
 
         if path == "/api/config/pump_timer":
@@ -2183,6 +2203,46 @@ def add_chlorine_tank_refill(
         local_timezone_name=app.pump_timer_config.timezone,
     ).isoformat()
     amount_gal = _positive_float(raw.get("amount_gal"), "amount_gal")
+    request_id = raw.get("request_id")
+    if request_id is not None:
+        if not isinstance(request_id, str) or not request_id.strip():
+            raise ValueError("request_id must be a non-empty string")
+        if len(request_id) > 128:
+            raise ValueError("request_id must be at most 128 characters")
+        request_id = request_id.strip()
+        existing = app.measurement_logger.chlorine_tank_refill_by_id(request_id)
+        if existing is not None:
+            estimate = app.chlorine_tank_estimate(observed_at=existing.added_at)
+            return {
+                "saved": True,
+                "deduplicated": True,
+                "amount_added_gal": existing.amount_gal,
+                "resulting_level_gal": estimate.level_gal if estimate is not None else None,
+                "capacity_gal": app.safety_config.chlorine_tank.capacity_gal,
+                "warning": None,
+                "chlorine_tank_refill": _chlorine_tank_refill_payload(existing),
+                "chlorine_tank": {
+                    "estimate": _chlorine_tank_estimate_payload(estimate),
+                },
+            }
+
+    estimate_before = app.chlorine_tank_estimate(
+        observed_at=datetime.fromisoformat(added_at)
+    )
+    capacity_gal = app.safety_config.chlorine_tank.capacity_gal
+    if capacity_gal is not None and amount_gal > capacity_gal:
+        raise ValueError(
+            f"amount_gal cannot exceed the configured {capacity_gal:g} gal tank capacity"
+        )
+    if (
+        capacity_gal is not None
+        and estimate_before is not None
+        and estimate_before.level_gal + amount_gal > capacity_gal + 1e-9
+    ):
+        raise ValueError(
+            "resulting estimated tank level would exceed the configured "
+            f"{capacity_gal:g} gal capacity"
+        )
 
     metadata = raw.get("metadata", {})
     if not isinstance(metadata, dict):
@@ -2191,6 +2251,9 @@ def add_chlorine_tank_refill(
     raw["added_at"] = added_at
     raw["entered_at"] = app.clock.now().isoformat()
     raw["amount_gal"] = amount_gal
+    raw.pop("request_id", None)
+    if request_id is not None:
+        raw["id"] = request_id
     raw["notes"] = _optional_string(raw.get("notes"))
     raw["metadata"] = {
         **metadata,
@@ -2209,13 +2272,27 @@ def add_chlorine_tank_refill(
         source="chlorine_tank_refill",
         extra_metadata={"refill_id": refill.id},
     )
+    resulting_estimate = app.chlorine_tank_estimate(observed_at=refill.added_at)
+    warning = None
+    if capacity_gal is None:
+        warning = "Tank capacity is not configured; capacity validation was limited."
+    elif estimate_before is None:
+        warning = (
+            "Tank inventory was uninitialized; the refill was recorded but the resulting "
+            "level remains unknown until a tank-level test initializes the estimator."
+        )
     return {
         "saved": True,
+        "deduplicated": False,
+        "amount_added_gal": refill.amount_gal,
+        "resulting_level_gal": (
+            resulting_estimate.level_gal if resulting_estimate is not None else None
+        ),
+        "capacity_gal": capacity_gal,
+        "warning": warning,
         "chlorine_tank_refill": _chlorine_tank_refill_payload(refill),
         "chlorine_tank": {
-            "estimate": _chlorine_tank_estimate_payload(
-                app.chlorine_tank_estimate(observed_at=refill.added_at)
-            ),
+            "estimate": _chlorine_tank_estimate_payload(resulting_estimate),
         },
     }
 
@@ -2596,8 +2673,43 @@ def apply_monitoring_config_update(
         local_config_path=local_config_path,
         data=config_data,
     )
-    app.apply_monitoring_config(proposed)
+    effective = MonitoringConfig.from_mapping(
+        _load_config_mapping(config_path, local_config_path=local_config_path)
+    )
+    app.apply_monitoring_config(effective)
     return {"updated": True, **serialize_monitoring_config(app)}
+
+
+def serialize_display_config(app: PoolControllerApp) -> dict[str, Any]:
+    return {
+        **app.display_config.as_mapping(),
+        "applied_live": True,
+    }
+
+
+def apply_display_config_update(
+    *,
+    app: PoolControllerApp,
+    config_path: Path,
+    local_config_path: Path | None = None,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    proposed = DisplayConfig.from_mapping({"display": payload})
+    config_data = _load_config_write_mapping(
+        config_path,
+        local_config_path=local_config_path,
+    )
+    config_data["display"] = proposed.as_mapping()
+    _save_config_write_mapping(
+        config_path,
+        local_config_path=local_config_path,
+        data=config_data,
+    )
+    effective = DisplayConfig.from_mapping(
+        _load_config_mapping(config_path, local_config_path=local_config_path)
+    )
+    app.apply_display_config(effective)
+    return {"updated": True, **serialize_display_config(app)}
 
 
 def serialize_pump_timer_config(app: PoolControllerApp) -> dict[str, Any]:
@@ -2875,7 +2987,7 @@ def serialize_safety_config(app: PoolControllerApp) -> dict[str, Any]:
             "threshold_unit": config.freeze_protection.threshold_unit.value,
         },
         "chlorine_tank": {
-            "level_sensor": config.chlorine_tank.level_sensor.value,
+            "capacity_gal": config.chlorine_tank.capacity_gal,
             "low_warning_gal": config.chlorine_tank.low_warning_gal,
             "inhibit_below_gal": config.chlorine_tank.inhibit_below_gal,
             "reenable_at_gal": config.chlorine_tank.reenable_at_gal,

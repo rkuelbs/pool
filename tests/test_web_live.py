@@ -25,7 +25,9 @@ from poolctl.domain.models import (
     Quality,
     SensorId,
 )
+from poolctl.drivers.base import SensorReadError
 from poolctl.services.clock import SimulatedClock
+from poolctl.services.pump_timer import PumpTimerOverride
 from poolctl.services.weather import WeatherObservation
 from poolctl.web.live import (
     build_history_payload,
@@ -139,9 +141,33 @@ class FixedSensor:
         )
 
 
+class FailAfterFirstSensor(FixedSensor):
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__(**kwargs)  # type: ignore[arg-type]
+        self._read_count = 0
+
+    async def read(self) -> Measurement:
+        self._read_count += 1
+        if self._read_count > 1:
+            raise SensorReadError("probe timeout")
+        return await super().read()
+
+
 @pytest.mark.asyncio
 async def test_build_live_snapshot_includes_runtime_sensors_and_actuators() -> None:
-    app = build_app_from_mapping(live_config(), clock=make_clock())
+    clock = make_clock()
+    pressure = FixedSensor(
+        name="pressure",
+        sensor_id=SensorId.PUMP_OUTPUT_PSI,
+        clock=clock,
+        value=5.0,
+        unit="psi",
+    )
+    app = build_app_from_mapping(
+        live_config(),
+        clock=clock,
+        sensor_drivers=[pressure],
+    )
 
     snapshot = await build_live_snapshot(app)
 
@@ -409,6 +435,12 @@ async def test_live_snapshot_uses_canonical_ph_then_orp_water_temperature() -> N
     water = snapshot["sensors"][SensorId.WATER_TEMP.value]
     assert water["value"] == 82.0
     assert water["metadata"]["active_source"] == SensorId.PH_TEMP.value
+    assert water["availability"]["state"] == "current"
+    assert water["threshold"] == {
+        "configured": False,
+        "state": None,
+        "label": "Not configured",
+    }
 
     acquisition = config["acquisition"]
     assert isinstance(acquisition, dict)
@@ -422,6 +454,121 @@ async def test_live_snapshot_uses_canonical_ph_then_orp_water_temperature() -> N
     fallback = fallback_snapshot["sensors"][SensorId.WATER_TEMP.value]
     assert fallback["value"] == 81.0
     assert fallback["metadata"]["active_source"] == SensorId.ORP_TEMP.value
+
+    runtime = config["runtime"]
+    assert isinstance(runtime, dict)
+    runtime["enabled_sensor_groups"] = []
+    unavailable_app = build_app_from_mapping(config, clock=clock, sensor_drivers=[])
+    unavailable = (await build_live_snapshot(unavailable_app))["sensors"]["water_temp"]
+    assert unavailable["value"] is None
+    assert unavailable["availability"]["state"] == "unavailable"
+
+
+@pytest.mark.asyncio
+async def test_circulation_dependent_kpi_distinguishes_off_settling_and_history(
+    tmp_path: Path,
+) -> None:
+    clock = make_clock()
+    config = {
+        "runtime": {
+            "driver_profile": "simulated",
+            "enabled_actuators": ["pump_motor", "pump_motor_speed"],
+            "enabled_sensor_groups": ["chemistry_loop"],
+        },
+        "logging": {"database_path": str(tmp_path / "availability.sqlite3")},
+        "safety": {"timeouts": {"pump_prime_timeout_s": 600}},
+        "acquisition": {
+            "groups": {
+                "chemistry_loop": {
+                    "sensor_ids": ["raw_ph"],
+                    "read_interval_s": 1,
+                    "log_interval_s": 1,
+                    "requires_pump_flow": True,
+                    "min_pump_on_seconds": 60,
+                }
+            }
+        },
+    }
+    sensor = FixedSensor(
+        name="ph",
+        sensor_id=SensorId.RAW_PH,
+        clock=clock,
+        value=7.5,
+        unit="pH",
+    )
+    app = build_app_from_mapping(config, clock=clock, sensor_drivers=[sensor])
+
+    off = await build_live_snapshot(app)
+    assert off["sensors"]["raw_ph"]["availability"]["state"] == "pump_off"
+
+    app.set_timer_override(
+        PumpTimerOverride(
+            pump_motor=ActuatorState.ON,
+            pump_speed=ActuatorState.LOW,
+        ),
+        duration_s=600,
+    )
+    await clock.advance(1)
+    settling = await build_live_snapshot(app)
+    assert settling["sensors"]["raw_ph"]["availability"]["state"] == "settling"
+
+    await clock.advance(60)
+    current = await build_live_snapshot(app)
+    assert current["sensors"]["raw_ph"]["availability"]["state"] == "current"
+
+    app.set_timer_override(
+        PumpTimerOverride(
+            pump_motor=ActuatorState.OFF,
+            pump_speed=ActuatorState.LOW,
+        ),
+        duration_s=600,
+    )
+    await clock.advance(1)
+    historical = await build_live_snapshot(app)
+    ph = historical["sensors"]["raw_ph"]
+    assert ph["availability"]["state"] == "pump_off"
+    assert ph["last_valid"]["value"] == 7.5
+    assert ph["threshold"]["state"] is None
+
+
+@pytest.mark.asyncio
+async def test_stale_retained_reading_keeps_sensor_failure_visible(tmp_path: Path) -> None:
+    clock = make_clock()
+    config = {
+        "runtime": {
+            "driver_profile": "simulated",
+            "enabled_actuators": [],
+            "enabled_sensor_groups": ["chemistry_loop"],
+        },
+        "logging": {"database_path": str(tmp_path / "stale.sqlite3")},
+        "acquisition": {
+            "groups": {
+                "chemistry_loop": {
+                    "sensor_ids": ["raw_orp"],
+                    "read_interval_s": 1,
+                    "log_interval_s": 1,
+                    "requires_pump_flow": False,
+                }
+            }
+        },
+    }
+    sensor = FailAfterFirstSensor(
+        name="orp",
+        sensor_id=SensorId.RAW_ORP,
+        clock=clock,
+        value=720,
+        unit="mV",
+    )
+    app = build_app_from_mapping(config, clock=clock, sensor_drivers=[sensor])
+    first = await build_live_snapshot(app)
+    assert first["sensors"]["raw_orp"]["availability"]["state"] == "current"
+
+    await clock.advance(16)
+    second = await build_live_snapshot(app)
+    orp = second["sensors"]["raw_orp"]
+    assert orp["availability"]["state"] == "stale"
+    assert orp["fault"]["message"] == "probe timeout"
+    assert orp["threshold"]["state"] is None
 
 
 @pytest.mark.asyncio
@@ -669,6 +816,8 @@ def test_live_dashboard_preserves_control_hooks_and_product_sections() -> None:
         "labBorates",
         "labWaterTemp",
         "labChlorineTankLevelGal",
+        "chlorineTankRefillSave",
+        "chlorineTankRefillAmountGal",
         "liveTrendFc",
     }.issubset(element_ids)
     assert markup.count('class="kpi-card"') == 6
@@ -687,17 +836,21 @@ def test_live_dashboard_preserves_control_hooks_and_product_sections() -> None:
     assert 'data-live-trend="lab_free_chlorine"' in markup
     assert 'id="liveTrendsStatus" class="sr-only"' in markup
     assert '<option value="muriatic_acid" selected>' in markup
-    assert '<option value="muriatic_acid" selected>' in history_markup
+    assert 'id="chemicalAdditionSave"' not in history_markup
+    assert 'id="chlorineTankRefillSave"' not in history_markup
+    assert 'id="labTestSave"' not in history_markup
+    assert 'const HISTORY_CATEGORY_ORDER = [' in script
+    assert '"filter_loading_percent",' not in script
     assert '<h2 id="todayHeading">Schedule</h2>' in markup
     assert markup.index('class="dashboard-card today-card"') < markup.index('id="liveCardPanel"')
     assert markup.index('id="liveScheduleProfile"') > markup.index('id="liveControlsCard"')
     assert 'aria-label="Filter flow loss, last 30 days"' in markup
-    assert 'aria-label="Usable chlorine supply, last 30 days"' in markup
+    assert 'aria-label="Usable chlorine supply, past 7 days"' in markup
     assert "openSupplementalChlorineConfirmation(inputId)" in script
     assert 'fetch("/api/live"' in script
     assert 'const poolName = payload.pool ? String(payload.pool.name || "").trim() : "";' in script
     assert 'runtimeLine.textContent = poolName || `${profile.replaceAll("_", " ")} controller`;' in script
-    assert "fetch(`/api/history?${shortKpiParams.toString()}`" in script
+    assert "const kpiGroups = new Map();" in script
     assert "const LIVE_SHORT_KPI_HISTORY_HOURS = 24;" in script
     assert "const LIVE_LONG_KPI_HISTORY_HOURS = 24 * 30;" in script
     assert "const LIVE_TREND_HISTORY_HOURS = 168;" in script
@@ -705,6 +858,12 @@ def test_live_dashboard_preserves_control_hooks_and_product_sections() -> None:
     assert 'sensorId: "lab_free_chlorine"' in script
     assert "integratedFlowGallons(points, historyWindow)" in script
     assert "cumulativeCounterIncrease(chlorineDeliveryPoints)" in script
+    assert "(totalOunces / 128).toFixed(2)" in script
+    assert "percentage points over" in script
+    assert "definition.historyHours = hours" in script
+    assert "sparkline-clipped-label" in script
+    assert "fcLinePointsWithBoundary" in script
+    assert "actualMarkers" in script
     assert 'chart.getBoundingClientRect()' in script
     assert "const dosingWindows = Array.isArray(today.dosing_windows)" in script
     assert 'appendScheduleSegment(scheduleTrack, window, "dosing", "Dosing"' in script
@@ -790,11 +949,12 @@ def test_settings_page_uses_collapsible_consumer_tiles_and_canonical_ranges() ->
         "safety-freeze",
         "sensors-calibration",
         "acquisition-logging",
+        "display-dashboard",
         "hardware-runtime",
     ]
     positions = [markup.index(f'id="{card_id}"') for card_id in card_ids]
     assert positions == sorted(positions)
-    assert markup.count('class="settings-card"') == 10
+    assert markup.count('class="settings-card"') == 11
     assert markup.count("<details") >= 10
     assert 'id="chlorineSupplyBadge"' not in markup
     assert 'id="safetyBadge"' in markup
@@ -1074,6 +1234,68 @@ def test_history_series_payload_can_include_lab_test_signals(tmp_path: Path) -> 
     assert by_id["lab_tds"]["points"][0]["value"] == 1000.0
     assert by_id["lab_salt"]["points"][0]["value"] == 3100.0
     assert by_id["lab_borates"]["points"][0]["value"] == 35.0
+
+
+def test_fc_history_includes_valid_preceding_context_without_fabricating_tests(
+    tmp_path: Path,
+) -> None:
+    clock = make_clock()
+    app = build_app_from_mapping(
+        logging_live_config(str(tmp_path / "fc-context.sqlite3")),
+        clock=clock,
+    )
+    assert app.measurement_logger is not None
+    boundary = clock.now() - timedelta(hours=24)
+    before = LabTest(sampled_at=boundary - timedelta(hours=4), free_chlorine=4.0)
+    inside = LabTest(sampled_at=boundary + timedelta(hours=4), free_chlorine=2.0)
+    app.measurement_logger.log_lab_test(before)
+    app.measurement_logger.log_lab_test(inside)
+
+    payload = build_history_series_payload(
+        app,
+        sensor_ids=("lab_free_chlorine",),
+        hours=24,
+        limit=100,
+        until=clock.now(),
+    )
+
+    series = payload["series"][0]
+    assert [point["value"] for point in series["points"]] == [2.0]
+    assert series["context_before"]["value"] == 4.0
+    assert series["context_before"]["context_only"] is True
+    assert series["actual_markers"] is True
+
+
+def test_fc_history_does_not_bridge_explicitly_invalid_preceding_test(
+    tmp_path: Path,
+) -> None:
+    clock = make_clock()
+    app = build_app_from_mapping(
+        logging_live_config(str(tmp_path / "fc-gap.sqlite3")),
+        clock=clock,
+    )
+    assert app.measurement_logger is not None
+    boundary = clock.now() - timedelta(hours=24)
+    app.measurement_logger.log_lab_test(
+        LabTest(
+            sampled_at=boundary - timedelta(hours=4),
+            free_chlorine=4.0,
+            metadata={"free_chlorine_valid": False},
+        )
+    )
+    app.measurement_logger.log_lab_test(
+        LabTest(sampled_at=boundary + timedelta(hours=4), free_chlorine=2.0)
+    )
+
+    payload = build_history_series_payload(
+        app,
+        sensor_ids=("lab_free_chlorine",),
+        hours=24,
+        limit=100,
+        until=clock.now(),
+    )
+
+    assert payload["series"][0]["context_before"] is None
 
 
 def test_history_series_payload_can_include_chemical_addition_events(tmp_path: Path) -> None:

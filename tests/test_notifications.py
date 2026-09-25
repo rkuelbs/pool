@@ -3,18 +3,23 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
+from poolctl.app import PoolControllerApp, build_app_from_mapping
 from poolctl.config import MonitoringConfig
 from poolctl.domain.models import Measurement, Quality, SensorId
 from poolctl.services.notifications import (
+    CPU_TEMPERATURE_HIGH_RULE,
+    FREEZE_PROTECTION_ACTIVE_RULE,
     NotificationAlertSeverity,
     NotificationMessage,
     NotificationService,
     NotificationsConfig,
     evaluate_notification_alerts,
 )
+from poolctl.services.clock import SimulatedClock
 
 
 NOW = datetime(2026, 5, 21, 12, tzinfo=timezone.utc)
@@ -246,3 +251,216 @@ def test_notification_service_disabled_and_configured_delivery() -> None:
     assert sent.sent is True
     assert requests[0][1]["token"] == "token"
     assert requests[0][1]["user"] == "user"
+
+
+def notification_app(tmp_path: Path) -> tuple[PoolControllerApp, list[dict[str, str]]]:
+    sent: list[dict[str, str]] = []
+    config = {
+        "runtime": {
+            "driver_profile": "simulated",
+            "enabled_actuators": [],
+            "enabled_sensor_groups": [],
+        },
+        "logging": {"database_path": str(tmp_path / "notifications.sqlite3")},
+        "notifications": {
+            "enabled": True,
+            "pushover": {"app_token": "token", "user_key": "user"},
+            "rules": {
+                FREEZE_PROTECTION_ACTIVE_RULE: {"enabled": True},
+                CPU_TEMPERATURE_HIGH_RULE: {
+                    "enabled": True,
+                    "threshold_deg_c": 75,
+                    "hysteresis_deg_c": 5,
+                    "debounce_seconds": 60,
+                },
+            },
+        },
+    }
+    clock = SimulatedClock(start_at=NOW)
+    app = build_app_from_mapping(config, clock=clock)
+
+    def post_form(
+        _url: str,
+        data: dict[str, str],
+        _timeout_s: float,
+    ) -> tuple[int, str]:
+        sent.append(data)
+        return 200, '{"status": 1}'
+
+    object.__setattr__(
+        app,
+        "notification_service",
+        NotificationService(app.notifications_config, post_form=post_form),
+    )
+    return app, sent
+
+
+def test_freeze_activation_notifies_once_and_persists_edge_state(tmp_path: Path) -> None:
+    app, sent = notification_app(tmp_path)
+    assert isinstance(app.clock, SimulatedClock)
+    service = app.notification_service
+    assert service is not None
+    inactive = {"active": False, "fail_safe": False}
+    active = {
+        "active": True,
+        "active_temperature": 31.5,
+        "active_unit": "degF",
+        "active_source": "ph_temp",
+        "active_measurement_at": NOW.isoformat(),
+        "fail_safe": False,
+    }
+
+    assert app._freeze_activation_notification(  # noqa: SLF001
+        service=service, freeze_status=inactive, now=NOW
+    ) is None
+    result = app._freeze_activation_notification(  # noqa: SLF001
+        service=service, freeze_status=active, now=NOW
+    )
+    assert result is not None and result.sent is True
+    assert "31.5 degF" in sent[-1]["message"]
+    assert "ph_temp" in sent[-1]["message"]
+    assert app._freeze_activation_notification(  # noqa: SLF001
+        service=service, freeze_status=active, now=NOW + timedelta(minutes=1)
+    ) is None
+
+    restarted, restarted_sent = notification_app(tmp_path)
+    restarted_service = restarted.notification_service
+    assert restarted_service is not None
+    assert restarted._freeze_activation_notification(  # noqa: SLF001
+        service=restarted_service,
+        freeze_status=active,
+        now=NOW + timedelta(minutes=2),
+    ) is None
+    assert restarted_sent == []
+
+
+def test_freeze_activation_on_first_observation_notifies_once(tmp_path: Path) -> None:
+    app, sent = notification_app(tmp_path)
+    service = app.notification_service
+    assert service is not None
+    active = {
+        "active": True,
+        "active_temperature": None,
+        "active_unit": None,
+        "active_source": None,
+        "active_measurement_at": None,
+        "fail_safe": True,
+        "fail_safe_reason": "configured temperature sources unavailable",
+    }
+
+    result = app._freeze_activation_notification(  # noqa: SLF001
+        service=service,
+        freeze_status=active,
+        now=NOW,
+    )
+
+    assert result is not None and result.sent is True
+    assert "without a valid temperature" in sent[-1]["message"]
+    assert "configured temperature sources unavailable" in sent[-1]["message"]
+
+    restarted, restarted_sent = notification_app(tmp_path)
+    restarted_service = restarted.notification_service
+    assert restarted_service is not None
+    assert restarted._freeze_activation_notification(  # noqa: SLF001
+        service=restarted_service,
+        freeze_status=active,
+        now=NOW + timedelta(minutes=1),
+    ) is None
+    assert restarted_sent == []
+
+
+@pytest.mark.asyncio
+async def test_cpu_temperature_notification_uses_debounce_and_hysteresis(
+    tmp_path: Path,
+) -> None:
+    app, sent = notification_app(tmp_path)
+    assert isinstance(app.clock, SimulatedClock)
+    service = app.notification_service
+    assert service is not None
+
+    def cpu(value: float) -> Measurement:
+        return Measurement(
+            sensor_id=SensorId.CPU_TEMP,
+            observed_at=app.clock.now(),
+            value=value,
+            unit="degC",
+            quality=Quality.GOOD,
+        )
+
+    assert app._cpu_temperature_notification(  # noqa: SLF001
+        service=service, measurement=cpu(76), now=app.clock.now()
+    ) is None
+    await app.clock.advance(59)
+    assert app._cpu_temperature_notification(  # noqa: SLF001
+        service=service, measurement=cpu(76), now=app.clock.now()
+    ) is None
+    await app.clock.advance(1)
+    result = app._cpu_temperature_notification(  # noqa: SLF001
+        service=service, measurement=cpu(76), now=app.clock.now()
+    )
+    assert result is not None and result.sent is True
+    assert len(sent) == 1
+    assert "76.0 degC" in sent[0]["message"]
+
+    await app.clock.advance(1)
+    assert app._cpu_temperature_notification(  # noqa: SLF001
+        service=service, measurement=cpu(72), now=app.clock.now()
+    ) is None
+    assert app.notification_runtime_state[CPU_TEMPERATURE_HIGH_RULE]["active"] is True
+    await app.clock.advance(1)
+    assert app._cpu_temperature_notification(  # noqa: SLF001
+        service=service, measurement=cpu(70), now=app.clock.now()
+    ) is None
+    assert app.notification_runtime_state[CPU_TEMPERATURE_HIGH_RULE]["active"] is False
+
+
+def test_pump_off_chemical_reading_is_not_a_notification_prerequisite(
+    tmp_path: Path,
+) -> None:
+    config = {
+        "runtime": {
+            "driver_profile": "simulated",
+            "enabled_actuators": ["pump_motor"],
+            "enabled_sensor_groups": ["chemistry_loop"],
+        },
+        "logging": {"database_path": str(tmp_path / "pump-off.sqlite3")},
+        "acquisition": {
+            "groups": {
+                "chemistry_loop": {
+                    "sensor_ids": ["raw_ph", "raw_orp"],
+                    "read_interval_s": 1,
+                    "log_interval_s": 1,
+                    "requires_pump_flow": True,
+                    "min_pump_on_seconds": 60,
+                }
+            }
+        },
+    }
+    app = build_app_from_mapping(config, clock=SimulatedClock(start_at=NOW))
+    measurements = app._notification_alert_measurements(  # noqa: SLF001
+        latest_measurements={
+            SensorId.RAW_PH: measurement(SensorId.RAW_PH, 6.0, "pH"),
+            SensorId.RAW_ORP: measurement(SensorId.RAW_ORP, 100, "mV"),
+        },
+        control_measurements=(),
+        observed_at=NOW,
+        daily_dose_oz=32,
+    )
+
+    assert SensorId.RAW_PH not in measurements
+    assert SensorId.RAW_ORP not in measurements
+
+
+def test_failed_chemical_read_does_not_reuse_retained_good_value(tmp_path: Path) -> None:
+    app, _sent = notification_app(tmp_path)
+    retained = measurement(SensorId.RAW_PH, 6.0, "pH")
+
+    measurements = app._notification_alert_measurements(  # noqa: SLF001
+        latest_measurements={SensorId.RAW_PH: retained},
+        control_measurements=(),
+        observed_at=NOW,
+        daily_dose_oz=32,
+        failed_sensor_ids=frozenset({SensorId.RAW_PH}),
+    )
+
+    assert SensorId.RAW_PH not in measurements

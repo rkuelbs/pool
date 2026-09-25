@@ -235,87 +235,35 @@
         <div id="faultTimeline" class="timeline-list">--</div>
       </section>
 
-      <section class="history-panel" aria-label="Water test entry" data-view-section="history">
+      <section class="history-panel" aria-label="Water test history" data-view-section="history">
         <div class="history-header">
           <h2>Water Tests</h2>
           <div class="history-controls">
             <button id="labTestReload" type="button">Reload</button>
           </div>
         </div>
-        <div class="config-grid">
-          <label>Sampled At (Local, blank = now) <input id="labSampledAt" type="datetime-local" step="60"></label>
-          <label>pH <input id="labPh" type="number" step="0.01"></label>
-          <label>Free Chlorine <input id="labFreeChlorine" type="number" step="0.01"></label>
-          <label>Combined Chlorine <input id="labCombinedChlorine" type="number" step="0.01"></label>
-          <label>Total Chlorine <input id="labTotalChlorine" type="number" step="0.01"></label>
-          <label>Alkalinity <input id="labAlkalinity" type="number" step="0.1"></label>
-          <label>CYA <input id="labCya" type="number" step="0.1"></label>
-          <label>Calcium Hardness <input id="labCalciumHardness" type="number" step="0.1"></label>
-          <label>TDS <input id="labTds" type="number" step="0.1"></label>
-          <label>Salt <input id="labSalt" type="number" step="0.1"></label>
-          <label>Borates <input id="labBorates" type="number" step="0.1"></label>
-          <label>Water Temp <input id="labWaterTemp" type="number" step="0.1"></label>
-          <label>Chlorine Tank Level (gal) <input id="labChlorineTankLevelGal" type="number" step="0.01" min="0"></label>
-          <label>Notes <input id="labNotes" type="text"></label>
-        </div>
-        <div class="timer-actions">
-          <button id="labTestSave" type="button">Add Test Result</button>
-        </div>
         <div id="labTestStatus" class="history-status">--</div>
-        <div id="labTestFcDemandStatus" class="history-status">FC demand: --</div>
-        <div id="labTestTankStatus" class="history-status">Chlorine tank: --</div>
         <div id="labTestList" class="timeline-list">--</div>
       </section>
 
-      <section class="history-panel" aria-label="Chlorine tank refill entry" data-view-section="history">
+      <section class="history-panel" aria-label="Chlorine tank refill history" data-view-section="history">
         <div class="history-header">
           <h2>Chlorine Tank Refills</h2>
           <div class="history-controls">
             <button id="chlorineTankRefillReload" type="button">Reload</button>
           </div>
         </div>
-        <div class="config-grid">
-          <label>Added At (Local, blank = now) <input id="chlorineTankRefillAddedAt" type="datetime-local" step="60"></label>
-          <label>Amount Added (gal) <input id="chlorineTankRefillAmountGal" type="number" step="0.01" min="0"></label>
-          <label>Notes <input id="chlorineTankRefillNotes" type="text"></label>
-        </div>
-        <div class="timer-actions">
-          <button id="chlorineTankRefillSave" type="button">Add Tank Refill</button>
-        </div>
         <div id="chlorineTankRefillStatus" class="history-status">--</div>
         <div id="chlorineTankEstimateStatus" class="history-status">Estimated tank level: --</div>
         <div id="chlorineTankRefillList" class="timeline-list">--</div>
       </section>
 
-      <section class="history-panel" aria-label="Chemical addition entry" data-view-section="history">
+      <section class="history-panel" aria-label="Chemical addition history" data-view-section="history">
         <div class="history-header">
           <h2>Chemical Additions</h2>
           <div class="history-controls">
             <button id="chemicalAdditionReload" type="button">Reload</button>
           </div>
-        </div>
-        <div class="config-grid">
-          <label>Added At (Local, blank = now) <input id="chemicalAddedAt" type="datetime-local" step="60"></label>
-          <label>Chemical
-            <select id="chemicalType">
-              <option value="muriatic_acid" selected>Muriatic Acid</option>
-              <option value="sodium_hypochlorite">Sodium Hypochlorite</option>
-            </select>
-          </label>
-          <label>Amount <input id="chemicalAmount" type="number" step="0.1" min="0"></label>
-          <label>Unit
-            <select id="chemicalUnit">
-              <option value="fl_oz" selected>fl oz</option>
-              <option value="gal">gal</option>
-              <option value="ml">mL</option>
-              <option value="l">L</option>
-            </select>
-          </label>
-          <label>Strength % <input id="chemicalStrength" type="number" step="0.01" min="0"></label>
-          <label>Notes <input id="chemicalNotes" type="text"></label>
-        </div>
-        <div class="timer-actions">
-          <button id="chemicalAdditionSave" type="button">Add Chemical</button>
         </div>
         <div id="chemicalAdditionStatus" class="history-status">--</div>
         <div id="chemicalAdditionList" class="timeline-list">--</div>

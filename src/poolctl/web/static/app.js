@@ -101,7 +101,6 @@ const HISTORY_SENSOR_ORDER = [
   "filter_reference_psi",
   "filter_reference_flow_gpm",
   "filter_flow_loss_percent",
-  "filter_loading_percent",
   "chlorine_daily_delivered_oz",
   "chlorination_duty_cycle_percent",
   "fc_demand_ppm_per_day",
@@ -163,6 +162,13 @@ const HISTORY_SENSOR_ORDER = [
 
 const LIVE_SENSOR_ORDER = [...SENSOR_ORDER, "calcium_saturation_index"];
 const DEFAULT_HISTORY_SENSOR_IDS = new Set(["pump_output_psi", "raw_orp"]);
+const HISTORY_CATEGORY_ORDER = [
+  ["chemistry", "Chemistry"],
+  ["manual", "Manual tests and additions"],
+  ["hydraulics", "Pump and hydraulics"],
+  ["weather", "Weather"],
+  ["diagnostics", "System diagnostics"],
+];
 
 const ACQ_REDUCERS = ["last", "mean", "median", "trimmed_mean"];
 const ACQ_FILTER_TYPES = ["none", "boxcar"];
@@ -254,6 +260,7 @@ const LIVE_KPI_DEFINITIONS = [
     includeZero: true,
     historyHours: LIVE_SHORT_KPI_HISTORY_HOURS,
     summaryType: "flow-total",
+    displayKey: "flow",
   },
   {
     sensorId: "filter_flow_loss_percent",
@@ -266,7 +273,8 @@ const LIVE_KPI_DEFINITIONS = [
     unit: "%",
     includeZero: true,
     historyHours: LIVE_LONG_KPI_HISTORY_HOURS,
-    summaryHours: 24 * 7,
+    summaryType: "filter-change",
+    displayKey: "filter_loss",
   },
   {
     sensorId: "chlorine_tank_level_gal",
@@ -278,9 +286,10 @@ const LIVE_KPI_DEFINITIONS = [
     deltaDecimals: 2,
     unit: " gal",
     includeZero: true,
-    historyHours: LIVE_LONG_KPI_HISTORY_HOURS,
+    historyHours: 24 * 7,
     summaryType: "chlorine-dose-total",
     usableInventory: true,
+    displayKey: "chlorine_supply",
   },
 ];
 const LIVE_TREND_DEFINITIONS = [
@@ -354,6 +363,8 @@ let lastTopStatusLoadedAt = 0;
 let labTestLoading = false;
 let chemicalAdditionLoading = false;
 let chlorineTankRefillLoading = false;
+let chlorineTankRefillSaving = false;
+let pendingChlorineTankRefill = null;
 let latestLivePayload = null;
 let configAutoRefreshPaused = false;
 let configDraftDirty = false;
@@ -1561,18 +1572,21 @@ function renderLiveChemCard(sensors) {
   setLiveCardStatus("livePhCard", sensorCardStatus(sensorStatus(sensors, "raw_ph")));
   setLiveCardStatus("liveOrpCard", sensorCardStatus(sensorStatus(sensors, "raw_orp")));
 
-  setNumericReading("liveTempValue", water && water.value, 1);
-  setNodeText("liveTempUnit", temperatureUnit(water && water.unit));
+  const waterReading = displayableSensorReading(water);
+  const phReading = displayableSensorReading(ph);
+  const orpReading = displayableSensorReading(orp);
+  setNumericReading("liveTempValue", waterReading && waterReading.value, 1);
+  setNodeText("liveTempUnit", temperatureUnit(waterReading && waterReading.unit));
   setNodeText("liveTempLine", sensorSummary(water, "Water temperature unavailable"));
-  setNodeText("liveTrendWaterValue", water && water.display ? water.display : "--");
+  setNodeText("liveTrendWaterValue", waterReading && waterReading.display ? waterReading.display : "--");
 
-  setNumericReading("livePhValue", ph && ph.value, 2);
+  setNumericReading("livePhValue", phReading && phReading.value, 2);
   setNodeText("livePhLine", sensorSummary(ph, `Probe temp ${sensorDisplay(sensors, "ph_temp")}`));
-  setNodeText("liveTrendPhValue", ph && ph.display ? ph.display : "--");
+  setNodeText("liveTrendPhValue", phReading && phReading.display ? phReading.display : "--");
 
-  setNumericReading("liveOrpValue", orp && orp.value, 0);
+  setNumericReading("liveOrpValue", orpReading && orpReading.value, 0);
   setNodeText("liveOrpLine", sensorSummary(orp, `Probe temp ${sensorDisplay(sensors, "orp_temp")}`));
-  setNodeText("liveTrendOrpValue", orp && orp.display ? orp.display : "--");
+  setNodeText("liveTrendOrpValue", orpReading && orpReading.display ? orpReading.display : "--");
   setNodeText("liveCsiLine", `CSI: ${sensorDisplay(sensors, "calcium_saturation_index")}`);
 }
 
@@ -1586,11 +1600,13 @@ function renderLiveTankCard(sensors, chlorineSupply) {
     2,
   );
   setNodeText("liveTankUnit", "gal");
-  const days =
-    chlorineSupply && chlorineSupply.days_remaining_display
-      ? chlorineSupply.days_remaining_display
-      : "-- days";
-  setNodeText("liveTankLevelLine", `${days} estimated remaining`);
+  const daysValue = chlorineSupply ? Number(chlorineSupply.days_remaining) : Number.NaN;
+  setNodeText(
+    "liveTankLevelLine",
+    Number.isFinite(daysValue)
+      ? `${daysValue.toFixed(1)} days estimated remaining`
+      : `Days remaining unavailable${chlorineSupply && chlorineSupply.reason ? `: ${chlorineSupply.reason}` : ""}`,
+  );
 }
 
 function setNumericReading(id, value, decimals) {
@@ -1609,6 +1625,24 @@ function sensorSummary(sensor, fallback) {
   if (!sensor) {
     return fallback;
   }
+  const availability = sensor.availability || null;
+  if (availability && availability.state !== "current") {
+    const history = sensor.last_valid;
+    const historyTime = history && history.observed_at
+      ? new Date(history.observed_at).toLocaleString()
+      : null;
+    const suffix = history && history.display
+      ? ` · Historical ${history.display}${historyTime ? ` at ${historyTime}` : ""}`
+      : "";
+    const faultSuffix = sensor.fault && sensor.fault.message
+      ? ` - Sensor fault: ${sensor.fault.message}`
+      : "";
+    return `${availability.label || fallback}${suffix}${faultSuffix}`;
+  }
+  const threshold = sensor.threshold || null;
+  if (threshold && !threshold.configured) {
+    return "Current reading";
+  }
   const labels = {
     normal: "In expected range",
     caution: "Outside the preferred range",
@@ -1617,6 +1651,16 @@ function sensorSummary(sensor, fallback) {
     unknown: "Status unavailable",
   };
   return labels[String(sensor.status || "unknown")] || fallback;
+}
+
+function displayableSensorReading(sensor) {
+  if (!sensor) {
+    return null;
+  }
+  if (!sensor.availability || sensor.availability.state === "current") {
+    return sensor;
+  }
+  return sensor.last_valid || null;
 }
 
 function setNodeText(id, value) {
@@ -1639,6 +1683,15 @@ function flowDisplay(flows, flowId) {
 
 function sensorStatus(sensors, sensorId) {
   const payload = sensors[sensorId];
+  if (
+    payload &&
+    payload.availability &&
+    payload.availability.state === "current" &&
+    payload.threshold &&
+    payload.threshold.configured === false
+  ) {
+    return "normal";
+  }
   return payload && payload.status ? payload.status : "unknown";
 }
 
@@ -1700,20 +1753,16 @@ async function refreshLiveTrends(force) {
     status.textContent = "Loading validated history…";
   }
   try {
-    const shortKpiParams = liveHistoryParams(
-      LIVE_SHORT_KPI_HISTORY_HOURS,
-      LIVE_KPI_DEFINITIONS
-        .filter((definition) => definition.historyHours === LIVE_SHORT_KPI_HISTORY_HOURS)
-        .map((definition) => definition.sensorId),
-      1500,
-    );
-    const longKpiParams = liveHistoryParams(
-      LIVE_LONG_KPI_HISTORY_HOURS,
-      LIVE_KPI_DEFINITIONS
-        .filter((definition) => definition.historyHours === LIVE_LONG_KPI_HISTORY_HOURS)
-        .map((definition) => definition.sensorId),
-      720,
-    );
+    applyLiveDisplayConfig(latestLivePayload && latestLivePayload.display);
+    const kpiGroups = new Map();
+    LIVE_KPI_DEFINITIONS.forEach((definition) => {
+      const hours = Number(definition.historyHours);
+      const key = String(hours);
+      if (!kpiGroups.has(key)) {
+        kpiGroups.set(key, { hours, sensorIds: [] });
+      }
+      kpiGroups.get(key).sensorIds.push(definition.sensorId);
+    });
     const trendParams = liveHistoryParams(
       LIVE_TREND_HISTORY_HOURS,
       [
@@ -1723,49 +1772,83 @@ async function refreshLiveTrends(force) {
       ],
       1000,
     );
+    const kpiRequests = [...kpiGroups.values()].map((group) =>
+      fetch(`/api/history?${liveHistoryParams(group.hours, group.sensorIds, 1500).toString()}`, { cache: "no-store" }),
+    );
     const requests = [
-      fetch(`/api/history?${shortKpiParams.toString()}`, { cache: "no-store" }),
-      fetch(`/api/history?${longKpiParams.toString()}`, { cache: "no-store" }),
+      ...kpiRequests,
       fetch(`/api/history?${trendParams.toString()}`, { cache: "no-store" }),
     ];
     if (!liveTrendBandsLoaded) {
       requests.push(fetch("/api/config/monitoring", { cache: "no-store" }));
     }
     const responses = await Promise.all(requests);
-    const [shortHistory, longHistory, trendHistory] = await Promise.all([
-      parseApiResponse(responses[0], "24-hour KPI history failed"),
-      parseApiResponse(responses[1], "30-day KPI history failed"),
-      parseApiResponse(responses[2], "live trend history failed"),
-    ]);
-    if (responses[3]) {
+    const kpiHistories = await Promise.all(
+      responses.slice(0, kpiRequests.length).map((response) =>
+        parseApiResponse(response, "KPI history failed"),
+      ),
+    );
+    const trendHistory = await parseApiResponse(
+      responses[kpiRequests.length],
+      "live trend history failed",
+    );
+    if (responses[kpiRequests.length + 1]) {
       try {
-        const config = await parseApiResponse(responses[3], "trend limits load failed");
+        const config = await parseApiResponse(
+          responses[kpiRequests.length + 1],
+          "trend limits load failed",
+        );
         liveTrendBands = trendBandsFromMonitoring(config);
       } catch (_error) {
         liveTrendBands = {};
       }
       liveTrendBandsLoaded = true;
     }
+    const kpiSeriesById = {};
+    const kpiWindowsById = {};
+    [...kpiGroups.values()].forEach((group, index) => {
+      const history = kpiHistories[index];
+      const window = historyWindowFromPayload(history);
+      normalizeHistorySeries(history).forEach((series) => {
+        kpiSeriesById[series.sensor_id] = series;
+        kpiWindowsById[series.sensor_id] = window;
+      });
+    });
     renderLiveTrendDashboard({
-      shortSeries: normalizeHistorySeries(shortHistory),
-      shortWindow: historyWindowFromPayload(shortHistory),
-      longSeries: normalizeHistorySeries(longHistory),
-      longWindow: historyWindowFromPayload(longHistory),
+      kpiSeriesById,
+      kpiWindowsById,
       trendSeries: normalizeHistorySeries(trendHistory),
       trendWindow: historyWindowFromPayload(trendHistory),
     });
     lastLiveTrendLoadedAt = now;
-    const totalPoints = [shortHistory, longHistory, trendHistory]
+    const totalPoints = [...kpiHistories, trendHistory]
       .flatMap((history) => normalizeHistorySeries(history))
       .reduce((sum, series) => sum + (series.points || []).length, 0);
     status.textContent = totalPoints
-      ? `${totalPoints} validated samples loaded for the aligned 7-day window`
+      ? `${totalPoints} validated samples loaded for the configured chart windows`
       : "No validated history is available yet; current values will continue to update.";
   } catch (error) {
     status.textContent = `Trend history unavailable: ${error.message}`;
   } finally {
     liveTrendLoading = false;
   }
+}
+
+function applyLiveDisplayConfig(display) {
+  const charts = display && display.live_kpi_charts ? display.live_kpi_charts : {};
+  LIVE_KPI_DEFINITIONS.forEach((definition) => {
+    if (!definition.displayKey || !charts[definition.displayKey]) {
+      return;
+    }
+    const config = charts[definition.displayKey];
+    const hours = Number(config.window_hours);
+    if (Number.isFinite(hours) && hours >= 1) {
+      definition.historyHours = hours;
+    }
+    definition.autoY = config.auto_y !== false;
+    definition.yMin = numberOrNull(config.y_min);
+    definition.yMax = numberOrNull(config.y_max);
+  });
 }
 
 function liveHistoryParams(hours, sensorIds, maxPoints) {
@@ -1801,20 +1884,12 @@ function trendBandsFromMonitoring(config) {
 
 function renderLiveTrendDashboard(renderState) {
   liveTrendRenderState = renderState;
-  const shortById = liveSeriesById(renderState.shortSeries);
-  const longById = liveSeriesById(renderState.longSeries);
+  const kpiById = renderState.kpiSeriesById || {};
+  const kpiWindowsById = renderState.kpiWindowsById || {};
   const trendById = liveSeriesById(renderState.trendSeries);
   const fallbackEnd = historyReferenceNowMs();
   const trendWindow = renderState.trendWindow || {
     startMs: fallbackEnd - LIVE_TREND_HISTORY_HOURS * 3600 * 1000,
-    endMs: fallbackEnd,
-  };
-  const shortWindow = renderState.shortWindow || {
-    startMs: fallbackEnd - LIVE_SHORT_KPI_HISTORY_HOURS * 3600 * 1000,
-    endMs: fallbackEnd,
-  };
-  const longWindow = renderState.longWindow || {
-    startMs: fallbackEnd - LIVE_LONG_KPI_HISTORY_HOURS * 3600 * 1000,
     endMs: fallbackEnd,
   };
   const events = LIVE_EVENT_SENSOR_IDS.flatMap((sensorId) => {
@@ -1832,10 +1907,11 @@ function renderLiveTrendDashboard(renderState) {
 
   liveTrendChartState = [];
   LIVE_KPI_DEFINITIONS.forEach((definition) => {
-    const usesLongHistory = definition.historyHours === LIVE_LONG_KPI_HISTORY_HOURS;
-    const byId = usesLongHistory ? longById : shortById;
-    const window = usesLongHistory ? longWindow : shortWindow;
-    const entry = byId[definition.sensorId] || { points: [] };
+    const window = kpiWindowsById[definition.sensorId] || {
+      startMs: fallbackEnd - definition.historyHours * 3600 * 1000,
+      endMs: fallbackEnd,
+    };
+    const entry = kpiById[definition.sensorId] || { points: [] };
     let points = normalizedLivePoints(entry.points || []).filter(
       (point) => point._time >= window.startMs && point._time <= window.endMs,
     );
@@ -1851,6 +1927,9 @@ function renderLiveTrendDashboard(renderState) {
   LIVE_TREND_DEFINITIONS.forEach((definition, index) => {
     const entry = trendById[definition.sensorId] || { points: [] };
     const points = normalizedLivePoints(entry.points || []);
+    const linePoints = definition.sensorId === "lab_free_chlorine"
+      ? fcLinePointsWithBoundary(points, entry.context_before, trendWindow)
+      : points;
     const latest = points[points.length - 1];
     setNodeText(
       definition.valueId,
@@ -1864,8 +1943,31 @@ function renderLiveTrendDashboard(renderState) {
       events,
       trendWindow,
       index === LIVE_TREND_DEFINITIONS.length - 1,
+      linePoints,
     );
   });
+}
+
+function fcLinePointsWithBoundary(points, contextBefore, window) {
+  if (!points.length || !contextBefore || !window) {
+    return points;
+  }
+  const context = normalizedLivePoints([contextBefore])[0];
+  const first = points[0];
+  if (!context || context._time >= window.startMs || first._time <= window.startMs) {
+    return points;
+  }
+  const ratio = (window.startMs - context._time) / (first._time - context._time);
+  return [
+    {
+      observed_at: new Date(window.startMs).toISOString(),
+      value: context._value + ratio * (first._value - context._value),
+      _value: context._value + ratio * (first._value - context._value),
+      _time: window.startMs,
+      _interpolatedBoundary: true,
+    },
+    ...points,
+  ];
 }
 
 function liveSeriesById(series) {
@@ -1899,22 +2001,25 @@ function drawLiveSparkline(definition, points, window) {
   const width = 180;
   const height = 44;
   const padding = 3;
+  const axisBottom = height - 8;
+  const windowLabel = `Past ${formatLiveWindow(definition.historyHours)}`;
   if (!points.length) {
-    chart.appendChild(svgLine(padding, height / 2, width - padding, height / 2, "sparkline-empty"));
+    chart.appendChild(svgLine(padding, axisBottom / 2, width - padding, axisBottom / 2, "sparkline-empty"));
+    appendLiveSparkAxisLabels(chart, window, definition.historyHours, width, height, windowLabel);
     return;
   }
   const domain = liveValueDomain(definition, points);
   const coordinates = points.map((point) => ({
     x: padding + ((point._time - window.startMs) / (window.endMs - window.startMs)) * (width - padding * 2),
-    y: padding + (1 - (point._value - domain.minimum) / (domain.maximum - domain.minimum)) * (height - padding * 2),
+    y: padding + (1 - (point._value - domain.minimum) / (domain.maximum - domain.minimum)) * (axisBottom - padding * 2),
   }));
   const area = document.createElementNS(SVG_NS, "polygon");
   area.setAttribute("class", "sparkline-area");
   area.setAttribute(
     "points",
-    `${coordinates[0].x.toFixed(1)},${height - padding} ` +
+    `${coordinates[0].x.toFixed(1)},${axisBottom} ` +
       coordinates.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ") +
-      ` ${coordinates[coordinates.length - 1].x.toFixed(1)},${height - padding}`,
+      ` ${coordinates[coordinates.length - 1].x.toFixed(1)},${axisBottom}`,
   );
   chart.appendChild(area);
   const line = document.createElementNS(SVG_NS, "polyline");
@@ -1924,6 +2029,36 @@ function drawLiveSparkline(definition, points, window) {
     coordinates.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" "),
   );
   chart.appendChild(line);
+  chart.appendChild(svgLine(padding, axisBottom, width - padding, axisBottom, "sparkline-axis"));
+  appendLiveSparkAxisLabels(chart, window, definition.historyHours, width, height, windowLabel);
+  if (domain.clipped) {
+    chart.appendChild(svgText("clipped", width - padding, 7, "sparkline-clipped-label", "end"));
+  }
+}
+
+function appendLiveSparkAxisLabels(chart, window, hours, width, height, windowLabel) {
+  chart.appendChild(
+    svgText(formatSparkAxisTick(window.startMs, hours), 3, height - 1, "sparkline-axis-tick", "start"),
+  );
+  chart.appendChild(svgText(windowLabel, width / 2, height - 1, "sparkline-axis-label", "middle"));
+  chart.appendChild(
+    svgText(formatSparkAxisTick(window.endMs, hours), width - 3, height - 1, "sparkline-axis-tick", "end"),
+  );
+}
+
+function formatSparkAxisTick(timestamp, hours) {
+  const date = new Date(timestamp);
+  if (Number(hours) <= 48) {
+    return date.toLocaleTimeString([], { hour: "numeric" });
+  }
+  return date.toLocaleDateString([], { month: "numeric", day: "numeric" });
+}
+
+function formatLiveWindow(hours) {
+  const numeric = Number(hours);
+  if (numeric % (24 * 365) === 0) return `${numeric / (24 * 365)} year${numeric === 24 * 365 ? "" : "s"}`;
+  if (numeric % 24 === 0) return `${numeric / 24} day${numeric === 24 ? "" : "s"}`;
+  return `${numeric} hour${numeric === 1 ? "" : "s"}`;
 }
 
 function renderLiveKpiSummary(definition, points, chlorineDeliveryPoints, historyWindow) {
@@ -1936,8 +2071,8 @@ function renderLiveKpiSummary(definition, points, chlorineDeliveryPoints, histor
     setNodeText(
       definition.trendId,
       totalGallons === null
-        ? "24h total unavailable"
-        : `Estimated 24h total: ${Math.round(totalGallons).toLocaleString()} gal`,
+        ? `${formatLiveWindow(definition.historyHours)} total unavailable`
+        : `Estimated ${formatLiveWindow(definition.historyHours)} total: ${Math.round(totalGallons).toLocaleString()} gal`,
     );
     return;
   }
@@ -1948,7 +2083,21 @@ function renderLiveKpiSummary(definition, points, chlorineDeliveryPoints, histor
       definition.trendId,
       totalOunces === null
         ? "7-day dose unavailable"
-        : `Dosed last 7 days: ${totalOunces.toFixed(1)} fl oz`,
+        : `Dosed last 7 days: ${(totalOunces / 128).toFixed(2)} gal`,
+    );
+    return;
+  }
+
+  if (definition.summaryType === "filter-change") {
+    if (points.length < 2) {
+      setNodeText(definition.trendId, `Insufficient history for ${formatLiveWindow(definition.historyHours)} comparison`);
+      return;
+    }
+    const change = points[points.length - 1]._value - points[0]._value;
+    const sign = change > 0 ? "+" : "";
+    setNodeText(
+      definition.trendId,
+      `${sign}${change.toFixed(1)} percentage points over ${formatLiveWindow(definition.historyHours)} (earliest validated test baseline)`,
     );
     return;
   }
@@ -2011,7 +2160,8 @@ function cumulativeCounterIncrease(points) {
 }
 
 function liveValueDomain(definition, points) {
-  const values = points.map((point) => point._value);
+  const sampleValues = points.map((point) => point._value);
+  const values = [...sampleValues];
   const band = liveTrendBands[definition.sensorId];
   if (band) {
     values.push(band.minimum, band.maximum);
@@ -2019,18 +2169,39 @@ function liveValueDomain(definition, points) {
   if (definition.includeZero) {
     values.push(0);
   }
-  let minimum = Math.min(...values);
-  let maximum = Math.max(...values);
+  const actualMinimum = Math.min(...values);
+  const actualMaximum = Math.max(...values);
+  const sampleMinimum = Math.min(...sampleValues);
+  const sampleMaximum = Math.max(...sampleValues);
+  if (definition.autoY === false) {
+    let minimum = definition.yMin === null ? actualMinimum : definition.yMin;
+    let maximum = definition.yMax === null ? actualMaximum : definition.yMax;
+    if (minimum >= maximum) {
+      const spread = Math.max(Math.abs(minimum || maximum) * 0.05, 1);
+      if (definition.yMin !== null && definition.yMax === null) {
+        maximum = minimum + spread;
+      } else {
+        minimum = maximum - spread;
+      }
+    }
+    return {
+      minimum,
+      maximum,
+      clipped: sampleMinimum < minimum || sampleMaximum > maximum,
+    };
+  }
+  let minimum = actualMinimum;
+  let maximum = actualMaximum;
   if (minimum === maximum) {
     const spread = Math.max(Math.abs(minimum) * 0.05, 1);
     minimum -= spread;
     maximum += spread;
   }
   const padding = (maximum - minimum) * 0.08;
-  return { minimum: minimum - padding, maximum: maximum + padding };
+  return { minimum: minimum - padding, maximum: maximum + padding, clipped: false };
 }
 
-function drawLiveTrendStrip(definition, points, events, window, showTimeAxis) {
+function drawLiveTrendStrip(definition, points, events, window, showTimeAxis, linePoints = points) {
   const chart = document.getElementById(definition.svgId);
   if (!chart) {
     return;
@@ -2043,8 +2214,8 @@ function drawLiveTrendStrip(definition, points, events, window, showTimeAxis) {
   const margin = { top: 8, right: 10, bottom: showTimeAxis ? 20 : 7, left: 40 };
   const plotWidth = width - margin.left - margin.right;
   const plotHeight = height - margin.top - margin.bottom;
-  const domain = points.length
-    ? liveValueDomain(definition, points)
+  const domain = linePoints.length
+    ? liveValueDomain(definition, linePoints)
     : { minimum: 0, maximum: 1 };
   const xForTime = (time) => margin.left + ((time - window.startMs) / (window.endMs - window.startMs)) * plotWidth;
   const yForValue = (value) =>
@@ -2075,10 +2246,11 @@ function drawLiveTrendStrip(definition, points, events, window, showTimeAxis) {
     svgText(formatAxisTick(domain.minimum, domain.maximum - domain.minimum), margin.left - 6, margin.top + plotHeight, "live-trend-axis", "end"),
   );
 
-  if (points.length) {
-    const coordinates = points.map((point) => ({
+  if (linePoints.length) {
+    const coordinates = linePoints.map((point) => ({
       x: xForTime(point._time),
       y: yForValue(point._value),
+      point,
     }));
     const area = document.createElementNS(SVG_NS, "polygon");
     area.setAttribute("class", "live-trend-area");
@@ -2096,6 +2268,21 @@ function drawLiveTrendStrip(definition, points, events, window, showTimeAxis) {
       coordinates.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" "),
     );
     chart.appendChild(line);
+    if (definition.sensorId === "lab_free_chlorine") {
+      coordinates
+        .filter((coordinate) => !coordinate.point._interpolatedBoundary)
+        .forEach((coordinate) => {
+          const marker = document.createElementNS(SVG_NS, "circle");
+          marker.setAttribute("class", "live-trend-test-marker");
+          marker.setAttribute("cx", String(coordinate.x));
+          marker.setAttribute("cy", String(coordinate.y));
+          marker.setAttribute("r", "3.2");
+          const title = document.createElementNS(SVG_NS, "title");
+          title.textContent = `FC test ${coordinate.point.display || coordinate.point.value} at ${new Date(coordinate.point._time).toLocaleString()}`;
+          marker.appendChild(title);
+          chart.appendChild(marker);
+        });
+    }
   } else {
     chart.appendChild(svgText("No logged data", margin.left + plotWidth / 2, margin.top + plotHeight / 2, "live-trend-empty"));
   }
@@ -2429,10 +2616,20 @@ function renderAttention(payload) {
   }
   ["water_temp", "raw_ph", "raw_orp"].forEach((sensorId) => {
     const sensor = payload.sensors && payload.sensors[sensorId];
-    if (!sensor || sensor.status === "normal" || sensor.status === "unknown") {
+    if (!sensor) {
       return;
     }
-    const level = sensor.status === "alarm" ? "alarm" : "warning";
+    if (sensor.fault) {
+      add("alarm", `${SENSOR_LABELS[sensorId] || sensorId} sensor fault: ${sensor.fault.message}.`);
+    }
+    if (sensor.availability && sensor.availability.state !== "current") {
+      return;
+    }
+    const thresholdState = sensor.threshold ? sensor.threshold.state : sensor.status;
+    if (thresholdState === "normal" || !thresholdState) {
+      return;
+    }
+    const level = thresholdState === "alarm" ? "alarm" : "warning";
     add(level, `${SENSOR_LABELS[sensorId] || sensorId}: ${sensor.display || "reading unavailable"}.`);
   });
   const filter = payload.flows && payload.flows.filter_loading;
@@ -2622,12 +2819,21 @@ function drawHistoryChartSeries(series, windowInfo = null) {
           return { ...point, _value: value, _time: time };
         })
         .filter((point) => point !== null);
+      const contextValue = entry.context_before ? Number(entry.context_before.value) : NaN;
+      const contextTime = entry.context_before
+        ? new Date(entry.context_before.observed_at).getTime()
+        : NaN;
+      const contextBefore = Number.isFinite(contextValue) && Number.isFinite(contextTime)
+        ? { ...entry.context_before, _value: contextValue, _time: contextTime, _contextOnly: true }
+        : null;
       return {
         sensor_id: entry.sensor_id,
         label: entry.label || entry.sensor_id,
         color,
         style: entry.style || "line",
         marker: entry.marker || "circle",
+        actualMarkers: entry.actual_markers === true,
+        contextBefore,
         points,
       };
     })
@@ -2666,7 +2872,28 @@ function drawHistoryChartSeries(series, windowInfo = null) {
   const withAxes = chartSeries.map((entry, index) => {
     const side = index % 2 === 0 ? "left" : "right";
     const slot = Math.floor(index / 2);
-    const values = entry.points.map((point) => point._value);
+    const linePoints = [...entry.points];
+    const firstPoint = entry.points[0];
+    if (
+      entry.sensor_id === "lab_free_chlorine" &&
+      entry.contextBefore &&
+      firstPoint &&
+      entry.contextBefore._time < minTime &&
+      firstPoint._time > minTime
+    ) {
+      const ratio =
+        (minTime - entry.contextBefore._time) /
+        (firstPoint._time - entry.contextBefore._time);
+      linePoints.unshift({
+        observed_at: new Date(minTime).toISOString(),
+        value: entry.contextBefore._value + ratio * (firstPoint._value - entry.contextBefore._value),
+        _value: entry.contextBefore._value + ratio * (firstPoint._value - entry.contextBefore._value),
+        _time: minTime,
+        _interpolatedBoundary: true,
+        display: "Interpolated chart boundary (not a test)",
+      });
+    }
+    const values = linePoints.map((point) => point._value);
     const rawMinValue = Math.min(...values);
     const rawMaxValue = Math.max(...values);
     let minValue = rawMinValue;
@@ -2685,6 +2912,7 @@ function drawHistoryChartSeries(series, windowInfo = null) {
 
     return {
       ...entry,
+      linePoints,
       axis: {
         side,
         slot,
@@ -2703,7 +2931,7 @@ function drawHistoryChartSeries(series, windowInfo = null) {
   const axisMode = chooseHistoryAxisMode(withAxes);
 
   if (axisMode === "single") {
-    const singleValues = allPoints.map((point) => point._value);
+    const singleValues = withAxes.flatMap((entry) => entry.linePoints).map((point) => point._value);
     let minValue = Math.min(...singleValues);
     let maxValue = Math.max(...singleValues);
     if (minValue === maxValue) {
@@ -2723,7 +2951,7 @@ function drawHistoryChartSeries(series, windowInfo = null) {
     }
 
     withAxes.forEach((entry) => {
-      const coordinates = entry.points.map((point) => {
+      const coordinates = (entry.linePoints || entry.points).map((point) => {
         const x =
           minTime === maxTime
             ? margin.left + plotWidth
@@ -2774,7 +3002,7 @@ function drawHistoryChartSeries(series, windowInfo = null) {
     });
 
     withAxes.forEach((entry) => {
-      const coordinates = entry.points.map((point) => {
+      const coordinates = (entry.linePoints || entry.points).map((point) => {
         const x =
           minTime === maxTime
             ? margin.left + plotWidth
@@ -2846,6 +3074,23 @@ function appendHistorySeriesTrace(chart, entry, coordinates) {
         5.5,
       );
     });
+    return;
+  }
+
+  if (entry.actualMarkers) {
+    coordinates
+      .filter((coordinate) => !coordinate.point._interpolatedBoundary)
+      .forEach((coordinate) => {
+        appendHistoryMarker(
+          chart,
+          coordinate.x,
+          coordinate.y,
+          entry.color,
+          historyPointTitle(entry, coordinate.point),
+          "circle",
+          3.5,
+        );
+      });
     return;
   }
 
@@ -3163,6 +3408,16 @@ function updateHistoryChecklistAppearance() {
       swatch.style.backgroundColor = "#a6b2bf";
     }
   });
+  document.querySelectorAll("[data-history-category]").forEach((category) => {
+    const selected = [...category.querySelectorAll('input[type="checkbox"]:checked')]
+      .map((input) => SENSOR_LABELS[input.value] || input.value);
+    const summary = category.querySelector("[data-category-selection]");
+    if (summary) {
+      summary.textContent = selected.length
+        ? `${selected.length} selected: ${selected.join(", ")}`
+        : "None selected";
+    }
+  });
 }
 
 function colorWithAlpha(hexColor, alpha) {
@@ -3351,6 +3606,25 @@ function optionalIntValue(root, field) {
 
 function initializeHistoryControls() {
   const checklist = document.getElementById("historySensorChecklist");
+  const categoryBodies = {};
+  HISTORY_CATEGORY_ORDER.forEach(([categoryId, labelText], index) => {
+    const category = document.createElement("details");
+    category.className = "history-sensor-category";
+    category.dataset.historyCategory = categoryId;
+    category.open = index < 2;
+    const summary = document.createElement("summary");
+    const label = document.createElement("span");
+    label.textContent = labelText;
+    const selection = document.createElement("small");
+    selection.dataset.categorySelection = categoryId;
+    selection.textContent = "None selected";
+    summary.append(label, selection);
+    const body = document.createElement("div");
+    body.className = "sensor-checklist-category";
+    category.append(summary, body);
+    checklist.appendChild(category);
+    categoryBodies[categoryId] = body;
+  });
   HISTORY_SENSOR_ORDER.forEach((sensorId) => {
     const label = document.createElement("label");
     label.dataset.sensorId = sensorId;
@@ -3358,7 +3632,10 @@ function initializeHistoryControls() {
     input.type = "checkbox";
     input.value = sensorId;
     input.checked = DEFAULT_HISTORY_SENSOR_IDS.has(sensorId);
-    input.addEventListener("change", () => refreshHistory(true));
+    input.addEventListener("change", () => {
+      updateHistoryChecklistAppearance();
+      refreshHistory(true);
+    });
     const swatch = document.createElement("span");
     swatch.className = "history-swatch";
     swatch.style.backgroundColor = "#a6b2bf";
@@ -3366,7 +3643,7 @@ function initializeHistoryControls() {
     text.className = "history-sensor-text";
     text.textContent = SENSOR_LABELS[sensorId] || sensorId;
     label.append(input, swatch, text);
-    checklist.appendChild(label);
+    categoryBodies[historyCategoryFor(sensorId)].appendChild(label);
   });
   updateHistoryChecklistAppearance();
 
@@ -3401,6 +3678,36 @@ function initializeHistoryControls() {
   });
   document.getElementById("historyExportCsv").addEventListener("click", exportHistoryCsv);
   updateHistoryWindowControls();
+}
+
+function historyCategoryFor(sensorId) {
+  if (
+    sensorId.startsWith("weather_") ||
+    sensorId.startsWith("daily_uv_") ||
+    sensorId === "daily_shortwave_radiation_dose"
+  ) {
+    return "weather";
+  }
+  if (sensorId.startsWith("lab_") || sensorId.startsWith("chemical_")) {
+    return "manual";
+  }
+  if (
+    sensorId.startsWith("pump_") ||
+    sensorId.startsWith("filter_") ||
+    sensorId === "chlorination_duty_cycle_percent"
+  ) {
+    return "hydraulics";
+  }
+  if (
+    sensorId.startsWith("cpu_") ||
+    sensorId === "tank_level" ||
+    sensorId === "orp_temp" ||
+    sensorId === "ph_temp" ||
+    sensorId === "temp"
+  ) {
+    return "diagnostics";
+  }
+  return "chemistry";
 }
 
 async function loadPumpTimerConfig() {
@@ -4136,8 +4443,8 @@ async function loadSafetyConfig() {
     document.getElementById("safetyFreezeUnit").value = freeze.threshold_unit || "degF";
     document.getElementById("safetyChlorineMinPump").value = payload.thresholds.chlorine_min_pump_output_psi;
     document.getElementById("safetyChlorineMaxPump").value = payload.thresholds.chlorine_max_pump_output_psi;
-    document.getElementById("safetyChlorineTankLevelSensor").value =
-      tank.level_sensor || "chlorine_tank_level_gal";
+    document.getElementById("safetyChlorineTankCapacityGal").value =
+      tank.capacity_gal == null ? "" : String(tank.capacity_gal);
     document.getElementById("safetyChlorineTankWarningGal").value = String(tank.low_warning_gal ?? 2.0);
     document.getElementById("safetyChlorineTankInhibitGal").value = String(tank.inhibit_below_gal ?? 1.5);
     document.getElementById("safetyChlorineTankReenableGal").value = String(tank.reenable_at_gal ?? 2.0);
@@ -4182,7 +4489,7 @@ async function saveSafetyConfig() {
           threshold_unit: document.getElementById("safetyFreezeUnit").value,
         },
         chlorine_tank: {
-          level_sensor: document.getElementById("safetyChlorineTankLevelSensor").value,
+          capacity_gal: numberOrNull(document.getElementById("safetyChlorineTankCapacityGal").value),
           low_warning_gal: Number(document.getElementById("safetyChlorineTankWarningGal").value),
           inhibit_below_gal: Number(document.getElementById("safetyChlorineTankInhibitGal").value),
           reenable_at_gal: Number(document.getElementById("safetyChlorineTankReenableGal").value),
@@ -4232,7 +4539,6 @@ function setSafetyStatus(message) {
 function initializeSafetyControls() {
   const sensorSelects = [
     "safetySensorPumpOutput",
-    "safetyChlorineTankLevelSensor",
   ];
   sensorSelects.forEach((selectId) => {
     const select = document.getElementById(selectId);
@@ -5006,10 +5312,9 @@ function renderLabTestTankFeedback(chlorineTank) {
 function initializeLabTestControls() {
   const save = document.getElementById("labTestSave");
   const reload = document.getElementById("labTestReload");
-  if (!save) {
-    return;
+  if (save) {
+    save.addEventListener("click", saveLabTest);
   }
-  save.addEventListener("click", saveLabTest);
   if (reload) {
     reload.addEventListener("click", loadLabTests);
   }
@@ -5041,21 +5346,55 @@ async function loadChlorineTankRefills() {
 }
 
 async function saveChlorineTankRefill() {
+  if (chlorineTankRefillSaving) {
+    return;
+  }
+  const save = document.getElementById("chlorineTankRefillSave");
+  const refillPayload = collectChlorineTankRefillPayload();
+  const fingerprint = JSON.stringify(refillPayload);
+  if (!pendingChlorineTankRefill || pendingChlorineTankRefill.fingerprint !== fingerprint) {
+    pendingChlorineTankRefill = {
+      fingerprint,
+      requestId: globalThis.crypto?.randomUUID?.() || `refill-${Date.now()}-${Math.random()}`,
+    };
+  }
+  chlorineTankRefillSaving = true;
+  if (save) {
+    save.disabled = true;
+  }
   setChlorineTankRefillStatus("Saving chlorine tank refill...");
   try {
     const response = await fetch("/api/chlorine_tank_refills", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(collectChlorineTankRefillPayload()),
+      body: JSON.stringify({ ...refillPayload, request_id: pendingChlorineTankRefill.requestId }),
     });
     const payload = await parseApiResponse(response, "chlorine tank refill save failed");
-    setChlorineTankRefillStatus("Chlorine tank refill saved");
+    const resultLevel = Number(payload.resulting_level_gal);
+    const resultText = Number.isFinite(resultLevel)
+      ? ` Resulting estimated level: ${resultLevel.toFixed(2)} gal.`
+      : " Resulting level is unavailable until the estimator is initialized.";
+    setChlorineTankRefillStatus(
+      `${payload.deduplicated ? "Refill already recorded." : "Chlorine tank refill saved."}${resultText}` +
+      `${payload.warning ? ` ${payload.warning}` : ""}`,
+    );
     renderChlorineTankEstimate(payload.chlorine_tank && payload.chlorine_tank.estimate);
+    pendingChlorineTankRefill = null;
     clearChlorineTankRefillInputs();
     await loadChlorineTankRefills();
-    await refreshHistory(true);
+    if (PAGE_MODE === "history") {
+      await refreshHistory(true);
+    } else if (PAGE_MODE === "live") {
+      await loadLive();
+      await refreshLiveTrends(true);
+    }
   } catch (error) {
     setChlorineTankRefillStatus(error.message);
+  } finally {
+    chlorineTankRefillSaving = false;
+    if (save) {
+      save.disabled = false;
+    }
   }
 }
 
@@ -5111,9 +5450,13 @@ function renderChlorineTankEstimate(estimate) {
 }
 
 function clearChlorineTankRefillInputs() {
-  document.getElementById("chlorineTankRefillAddedAt").value = "";
-  document.getElementById("chlorineTankRefillAmountGal").value = "";
-  document.getElementById("chlorineTankRefillNotes").value = "";
+  ["chlorineTankRefillAddedAt", "chlorineTankRefillAmountGal", "chlorineTankRefillNotes"]
+    .forEach((id) => {
+      const node = document.getElementById(id);
+      if (node) {
+        node.value = "";
+      }
+    });
 }
 
 function setChlorineTankRefillStatus(message) {
@@ -5126,12 +5469,15 @@ function setChlorineTankRefillStatus(message) {
 function initializeChlorineTankRefillControls() {
   const save = document.getElementById("chlorineTankRefillSave");
   const reload = document.getElementById("chlorineTankRefillReload");
-  if (!save || !reload) {
-    return;
+  if (reload) {
+    reload.addEventListener("click", loadChlorineTankRefills);
   }
-  reload.addEventListener("click", loadChlorineTankRefills);
-  save.addEventListener("click", saveChlorineTankRefill);
-  loadChlorineTankRefills();
+  if (save) {
+    save.addEventListener("click", saveChlorineTankRefill);
+  }
+  if (document.getElementById("chlorineTankRefillList")) {
+    loadChlorineTankRefills();
+  }
 }
 
 function chemicalDefaultStrengthPercent(chemical) {
@@ -5283,10 +5629,9 @@ async function loadCanonicalChlorineStrength() {
 
 function initializeChemicalAdditionControls() {
   const chemicalType = document.getElementById("chemicalType");
-  if (!chemicalType) {
-    return;
+  if (chemicalType) {
+    chemicalType.addEventListener("change", updateChemicalStrengthDefault);
   }
-  chemicalType.addEventListener("change", updateChemicalStrengthDefault);
   const reload = document.getElementById("chemicalAdditionReload");
   const save = document.getElementById("chemicalAdditionSave");
   if (reload) {
@@ -5295,8 +5640,10 @@ function initializeChemicalAdditionControls() {
   if (save) {
     save.addEventListener("click", saveChemicalAddition);
   }
-  updateChemicalStrengthDefault();
-  void loadCanonicalChlorineStrength();
+  if (chemicalType) {
+    updateChemicalStrengthDefault();
+    void loadCanonicalChlorineStrength();
+  }
   if (document.getElementById("chemicalAdditionList")) {
     loadChemicalAdditions();
   }
@@ -5532,6 +5879,7 @@ function initializeForPage() {
     initializeChlorinationQuickControls();
     initializeChemicalAdditionControls();
     initializeLabTestControls();
+    initializeChlorineTankRefillControls();
     return;
   }
   if (PAGE_MODE === "history") {

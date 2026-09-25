@@ -3,16 +3,24 @@ const SETTINGS_PRIMARY_LIMITS = [
   ["raw_orp", "ORP"],
   ["calcium_saturation_index", "CSI"],
   ["filter_flow_loss_percent", "Filter flow loss"],
-  ["chlorine_tank_days_remaining", "Chlorine remaining"],
+  ["chlorine_tank_days_remaining", "Chlorine remaining (days)"],
   ["cpu_temp", "CPU temperature"],
 ];
 
 const SETTINGS_NOTIFICATION_RULES = [
-  ["chlorine_tank_days_remaining", "Chlorine remaining"],
+  ["chlorine_tank_days_remaining", "Chlorine remaining (days)"],
   ["raw_ph", "pH"],
   ["raw_orp", "ORP"],
   ["filter_flow_loss_percent", "Filter flow loss"],
   ["freeze_temperature_unavailable", "Freeze temperature unavailable"],
+  ["freeze_protection_active", "Freeze protection activated"],
+  ["cpu_temperature_high", "High CPU temperature"],
+];
+
+const SETTINGS_DISPLAY_CHARTS = [
+  ["chlorine_supply", "ChlorineSupply"],
+  ["flow", "Flow"],
+  ["filter_loss", "FilterLoss"],
 ];
 
 const SETTINGS_LIMIT_KEYS = [
@@ -312,6 +320,12 @@ function thresholdDescription(sensorId) {
   if (sensorId === "freeze_temperature_unavailable") {
     return "Triggers when neither configured freeze temperature source has a usable reading.";
   }
+  if (sensorId === "freeze_protection_active") {
+    return "Triggers once when the controller's actual freeze-protection state becomes active.";
+  }
+  if (sensorId === "cpu_temperature_high") {
+    return "Uses CPU telemetry, the threshold below, debounce, and hysteresis.";
+  }
   const limits = settingsLimits[sensorId];
   if (!limits) {
     return "No status range is configured.";
@@ -570,14 +584,19 @@ function renderNotificationRules() {
 
     const fields = document.createElement("div");
     fields.className = "notification-rule-fields";
-    if (ruleId !== "freeze_temperature_unavailable") {
+    if (!["freeze_temperature_unavailable", "freeze_protection_active", "cpu_temperature_high"].includes(ruleId)) {
       fields.appendChild(notificationCheckbox("Caution", "notify_caution", rule.notify_caution !== false));
     }
     fields.appendChild(notificationCheckbox("Alarm", "notify_alarm", rule.notify_alarm !== false));
-    if (ruleId !== "freeze_temperature_unavailable") {
+    if (!["freeze_temperature_unavailable", "freeze_protection_active", "cpu_temperature_high"].includes(ruleId)) {
       fields.appendChild(notificationRepeatField("Caution repeat", "caution_repeat_minutes", rule.caution_repeat_minutes));
     }
     fields.appendChild(notificationRepeatField("Alarm repeat", "alarm_repeat_minutes", rule.alarm_repeat_minutes));
+    if (ruleId === "cpu_temperature_high") {
+      fields.appendChild(notificationNumberField("Threshold (degC)", "threshold_deg_c", rule.threshold_deg_c, 0.1));
+      fields.appendChild(notificationNumberField("Hysteresis (degC)", "hysteresis_deg_c", rule.hysteresis_deg_c, 0.1));
+      fields.appendChild(notificationNumberField("Debounce (s)", "debounce_seconds", rule.debounce_seconds, 1));
+    }
     card.appendChild(fields);
 
     const threshold = document.createElement("p");
@@ -611,6 +630,66 @@ function notificationRepeatField(label, field, minutes) {
   input.value = String(minutes ?? 0);
   wrapper.appendChild(input);
   return wrapper;
+}
+
+function notificationNumberField(label, field, value, step) {
+  const wrapper = document.createElement("label");
+  wrapper.textContent = label;
+  const input = document.createElement("input");
+  input.type = "number";
+  input.step = String(step);
+  input.dataset.ruleField = field;
+  input.value = value == null ? "" : String(value);
+  wrapper.appendChild(input);
+  return wrapper;
+}
+
+function renderDisplaySettings(payload) {
+  const charts = payload.live_kpi_charts || {};
+  SETTINGS_DISPLAY_CHARTS.forEach(([key, suffix]) => {
+    const chart = charts[key] || {};
+    settingsSetValue(`display${suffix}Window`, chart.window_hours);
+    const auto = settingsElement(`display${suffix}AutoY`);
+    auto.checked = chart.auto_y !== false;
+    settingsSetValue(`display${suffix}YMin`, chart.y_min);
+    settingsSetValue(`display${suffix}YMax`, chart.y_max);
+    settingsElement(`display${suffix}YMin`).disabled = auto.checked;
+    settingsElement(`display${suffix}YMax`).disabled = auto.checked;
+  });
+}
+
+function collectDisplaySettings() {
+  const charts = {};
+  SETTINGS_DISPLAY_CHARTS.forEach(([key, suffix]) => {
+    charts[key] = {
+      window_hours: settingsNumber(`display${suffix}Window`),
+      auto_y: settingsElement(`display${suffix}AutoY`).checked,
+      y_min: settingsNumber(`display${suffix}YMin`, { optional: true }),
+      y_max: settingsNumber(`display${suffix}YMax`, { optional: true }),
+      unit: key === "chlorine_supply" ? "gal" : key === "flow" ? "gpm" : "percent",
+    };
+  });
+  return { live_kpi_charts: charts };
+}
+
+async function loadDisplaySettings() {
+  try {
+    renderDisplaySettings(await settingsRequest("/api/config/display"));
+    settingsSetStatus("displayStatus", "Saved dashboard settings loaded");
+  } catch (error) {
+    settingsSetStatus("displayStatus", error.message);
+  }
+}
+
+async function saveDisplaySettings() {
+  settingsSetStatus("displayStatus", "Savingâ€¦");
+  try {
+    renderDisplaySettings(await settingsPost("/api/config/display", collectDisplaySettings()));
+    settingsSetStatus("displayStatus", "Dashboard settings saved and applied");
+    settingsSaved();
+  } catch (error) {
+    settingsSetStatus("displayStatus", error.message);
+  }
 }
 
 function renderNotificationsSettings(payload) {
@@ -926,6 +1005,7 @@ async function reloadAllSettings() {
     loadFilterLoadingSettings(),
     loadFlowModel(),
     loadNotificationsSettings(),
+    loadDisplaySettings(),
     loadRuntimeSettings(),
     loadOrpSettings(),
     loadRelaySettings(),
@@ -990,6 +1070,14 @@ function initializeSettingsPage() {
   settingsBind("notificationsSave", "click", saveNotificationsSettings);
   settingsBind("notificationsReload", "click", loadNotificationsSettings);
   settingsBind("notificationsTest", "click", sendSettingsTestNotification);
+  settingsBind("displaySave", "click", saveDisplaySettings);
+  settingsBind("displayReload", "click", loadDisplaySettings);
+  SETTINGS_DISPLAY_CHARTS.forEach(([_key, suffix]) => {
+    settingsBind(`display${suffix}AutoY`, "change", (event) => {
+      settingsElement(`display${suffix}YMin`).disabled = event.target.checked;
+      settingsElement(`display${suffix}YMax`).disabled = event.target.checked;
+    });
+  });
   settingsBind("runtimeSave", "click", saveRuntimeSettings);
   settingsBind("runtimeReload", "click", loadRuntimeSettings);
   settingsBind("orpSensorSave", "click", saveOrpSettings);

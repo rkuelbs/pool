@@ -287,12 +287,12 @@
                 <div class="settings-form-grid">
                   <label>Minimum pump pressure <input id="safetyChlorineMinPump" type="number" step="0.1"></label>
                   <label>Maximum pump pressure <input id="safetyChlorineMaxPump" type="number" step="0.1"></label>
-                  <label>Tank level sensor <select id="safetyChlorineTankLevelSensor"></select></label>
-                  <label>Low warning <input id="safetyChlorineTankWarningGal" type="number" step="0.1" min="0"></label>
-                  <label>Inhibit below <input id="safetyChlorineTankInhibitGal" type="number" step="0.1" min="0"></label>
-                  <label>Re-enable at <input id="safetyChlorineTankReenableGal" type="number" step="0.1" min="0"></label>
-                  <label>Forecast reserve <input id="safetyChlorineTankForecastReserveGal" type="number" step="0.1" min="0"></label>
-                </div><p class="setting-help">Tank safety uses physical gallons for dosing inhibition; days-remaining status is configured separately.</p>
+                  <label>Tank capacity <span class="input-with-unit"><input id="safetyChlorineTankCapacityGal" type="number" step="0.1" min="0" placeholder="Optional"><span>gal</span></span></label>
+                  <label>Low warning <span class="input-with-unit"><input id="safetyChlorineTankWarningGal" type="number" step="0.1" min="0"><span>gal</span></span></label>
+                  <label>Inhibit dosing below <span class="input-with-unit"><input id="safetyChlorineTankInhibitGal" type="number" step="0.1" min="0"><span>gal</span></span></label>
+                  <label>Re-enable dosing at <span class="input-with-unit"><input id="safetyChlorineTankReenableGal" type="number" step="0.1" min="0"><span>gal</span></span></label>
+                  <label>Forecast reserve <span class="input-with-unit"><input id="safetyChlorineTankForecastReserveGal" type="number" step="0.1" min="0"><span>gal</span></span></label>
+                </div><p class="setting-help">The tank estimator is the authoritative supply source. Gallon thresholds protect dosing; days-remaining alerts use the configured monitoring thresholds and require an available consumption estimate.</p>
               </section>
               <div class="settings-form-actions"><button id="safetySave" type="button">Save Safety</button><button id="safetyClearLockout" type="button" class="button-danger">Clear Lockout</button><button id="safetyReload" type="button" class="button-secondary">Reload</button></div>
               <p id="safetyStatus" class="settings-save-status">--</p>
@@ -331,6 +331,29 @@
               <section class="settings-subsection"><h3>Chemistry Refresh</h3><div class="settings-form-grid"><label class="setting-toggle"><span>Enabled</span><input id="acqRefreshEnabled" type="checkbox"></label><label>Maximum pump-off time <input id="acqRefreshMaxOff" type="number" min="1"></label><label>Refresh duration <input id="acqRefreshDuration" type="number" min="1"></label><label>Pump speed <select id="acqRefreshSpeed"><option value="low">LOW</option><option value="high">HIGH</option></select></label></div></section>
               <div class="settings-form-actions"><button id="acqSave" type="button">Save Acquisition</button><button id="acqReload" type="button" class="button-secondary">Reload</button></div><p id="acqStatus" class="settings-save-status">--</p>
               <section class="settings-subsection"><h3>Data Storage</h3><div class="settings-form-grid"><label>Database path <input id="loggingDatabasePath" type="text"></label><label>Control snapshot interval <input id="loggingControlMeasurementInterval" type="number" min="0.1" step="0.1"></label></div><div class="settings-form-actions"><button id="loggingSave" type="button">Save Storage</button><button id="loggingReload" type="button" class="button-secondary">Reload</button></div><p id="loggingStatus" class="settings-save-status">--</p></section>
+            </div>
+          </details>
+
+          <details class="settings-card" id="display-dashboard" data-settings-card>
+            <summary><span><strong>Display &amp; Dashboard</strong><small>Live KPI chart windows and axes</small></span><span class="settings-card-meta"><span class="settings-badge">Display only</span><i aria-hidden="true"></i></span></summary>
+            <div class="settings-card-body">
+              <p class="setting-help">These settings change only dashboard queries and rendering. They do not change sensor sampling, history retention, dosing, or safety behavior.</p>
+              <div class="config-rows">
+                <section class="settings-subsection">
+                  <h3>Chlorine supply <small>(gal)</small></h3>
+                  <div class="settings-form-grid"><label>Time window <span class="input-with-unit"><input id="displayChlorineSupplyWindow" type="number" min="1" max="8760" step="1"><span>hours</span></span></label><label class="setting-toggle"><span>Automatic y-axis</span><input id="displayChlorineSupplyAutoY" type="checkbox"></label><label>Fixed minimum <span class="input-with-unit"><input id="displayChlorineSupplyYMin" type="number" step="any"><span>gal</span></span></label><label>Fixed maximum <span class="input-with-unit"><input id="displayChlorineSupplyYMax" type="number" step="any"><span>gal</span></span></label></div>
+                </section>
+                <section class="settings-subsection">
+                  <h3>Flow <small>(gpm)</small></h3>
+                  <div class="settings-form-grid"><label>Time window <span class="input-with-unit"><input id="displayFlowWindow" type="number" min="1" max="8760" step="1"><span>hours</span></span></label><label class="setting-toggle"><span>Automatic y-axis</span><input id="displayFlowAutoY" type="checkbox"></label><label>Fixed minimum <span class="input-with-unit"><input id="displayFlowYMin" type="number" step="any"><span>gpm</span></span></label><label>Fixed maximum <span class="input-with-unit"><input id="displayFlowYMax" type="number" step="any"><span>gpm</span></span></label></div>
+                </section>
+                <section class="settings-subsection">
+                  <h3>Filter loss <small>(percent)</small></h3>
+                  <div class="settings-form-grid"><label>Time window <span class="input-with-unit"><input id="displayFilterLossWindow" type="number" min="1" max="8760" step="1"><span>hours</span></span></label><label class="setting-toggle"><span>Automatic y-axis</span><input id="displayFilterLossAutoY" type="checkbox"></label><label>Fixed minimum <span class="input-with-unit"><input id="displayFilterLossYMin" type="number" step="any"><span>%</span></span></label><label>Fixed maximum <span class="input-with-unit"><input id="displayFilterLossYMax" type="number" step="any"><span>%</span></span></label></div>
+                </section>
+              </div>
+              <div class="settings-form-actions"><button id="displaySave" type="button">Save Dashboard</button><button id="displayReload" type="button" class="button-secondary">Reload</button></div>
+              <p id="displayStatus" class="settings-save-status">--</p>
             </div>
           </details>
 
