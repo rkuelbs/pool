@@ -3656,6 +3656,10 @@ def build_app_from_mapping(
         flow_estimation_config.filter_loading,
         pump_pressure_model=flow_estimation_config.pump_pressure_model,
     )
+    _restore_filter_loading_result(
+        measurement_logger,
+        filter_loading_estimator,
+    )
 
     weather_service: WeatherService | None = None
     if weather_config.enabled:
@@ -3698,6 +3702,53 @@ def build_app_from_mapping(
         notification_runtime_state=persisted_notification_state,
         relay_safety_config=relay_safety_config,
     )
+
+
+def _restore_filter_loading_result(
+    measurement_logger: MeasurementLogger,
+    estimator: FilterLoadingEstimator,
+) -> None:
+    """Hydrate the estimator from the newest usable standardized pressure test."""
+    records = measurement_logger.history(
+        sensor_id=SensorId.FILTER_REFERENCE_PSI,
+        qualities=(Quality.GOOD,),
+        limit=100,
+    )
+    for record in reversed(records):
+        if record.unit != "psi":
+            continue
+        sample_count = _positive_int_or_default(record.metadata.get("sample_count"), 1)
+        averaging_seconds = _nonnegative_float_or_default(
+            record.metadata.get("averaging_seconds"),
+            0.0,
+        )
+        if estimator.restore_last_result(
+            reference_psi=record.value,
+            completed_at=record.observed_at,
+            sample_count=sample_count,
+            averaging_seconds=averaging_seconds,
+        ):
+            return
+
+
+def _positive_int_or_default(value: Any, default: int) -> int:
+    if isinstance(value, bool):
+        return default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return parsed if parsed >= 1 else default
+
+
+def _nonnegative_float_or_default(value: Any, default: float) -> float:
+    if isinstance(value, bool):
+        return default
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return parsed if math.isfinite(parsed) and parsed >= 0 else default
 
 
 def empty_acquisition_result() -> AcquisitionResult:

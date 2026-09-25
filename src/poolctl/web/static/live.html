@@ -286,61 +286,65 @@
             <p id="liveTrendsStatus" class="sr-only" role="status">Loading validated history…</p>
         </section>
 
-        <section class="dashboard-card quick-actions-card controls-card" id="liveControlsCard" aria-labelledby="controlsHeading">
-          <div class="section-heading compact">
-            <div>
+        <details class="dashboard-card quick-actions-card controls-card action-panel" id="liveControlsCard">
+          <summary aria-labelledby="controlsHeading">
+            <span>
               <span class="eyebrow">Equipment</span>
-              <h2 id="controlsHeading">Controls</h2>
+              <strong id="controlsHeading">Controls</strong>
+            </span>
+            <span class="controls-summary-status">
+              <span id="liveTimerModeBadge" class="mode-badge">Automatic</span>
+              <span class="details-toggle" aria-hidden="true"></span>
+            </span>
+          </summary>
+
+          <div class="action-panel-body">
+            <div class="controls-layout">
+              <div class="control-section">
+                <div class="control-section-heading">
+                  <h3>Main pump</h3>
+                  <span>Manual commands yield to safety</span>
+                </div>
+                <div class="quick-control-grid pump-controls" role="group" aria-label="Main pump controls">
+                  <button type="button" data-command="pump_motor:off">Pump Off</button>
+                  <button type="button" data-command="pump_motor:on">Pump On</button>
+                  <button type="button" data-command="pump_motor_speed:low">Pump Low</button>
+                  <button type="button" data-command="pump_motor_speed:high">Pump High</button>
+                </div>
+                <div class="quick-timer-actions">
+                  <button id="liveOverridePumpOffManual" type="button">Hold pump off</button>
+                  <button id="liveOverrideResumeSchedule" class="button-primary" type="button">Resume schedule</button>
+                </div>
+                <p id="liveTimerOverrideStatus" class="control-status">Schedule mode</p>
+              </div>
+
+              <div class="control-section">
+                <div class="control-section-heading">
+                  <h3>Booster</h3>
+                  <span>Current state is highlighted</span>
+                </div>
+                <div class="quick-control-grid" role="group" aria-label="Booster controls">
+                  <button type="button" data-command="booster_pump:off">Booster Off</button>
+                  <button type="button" data-command="booster_pump:on">Booster On</button>
+                </div>
+              </div>
+
+              <div class="control-section">
+                <div class="control-section-heading">
+                  <h3>Active schedule</h3>
+                  <span>Applies on the next controller tick</span>
+                </div>
+                <div class="schedule-profile-control">
+                  <label class="sr-only" for="liveScheduleProfile">Active schedule profile</label>
+                  <select id="liveScheduleProfile" aria-label="Active schedule profile" disabled></select>
+                  <button id="liveScheduleProfileActivate" type="button" disabled>Activate</button>
+                </div>
+              </div>
             </div>
-            <span id="liveTimerModeBadge" class="mode-badge">Automatic</span>
+
+            <p id="liveCommandStatus" class="command-status" role="status">Ready</p>
           </div>
-
-          <div class="controls-layout">
-            <div class="control-section">
-              <div class="control-section-heading">
-                <h3>Main pump</h3>
-                <span>Manual commands yield to safety</span>
-              </div>
-              <div class="quick-control-grid pump-controls" role="group" aria-label="Main pump controls">
-                <button type="button" data-command="pump_motor:off">Pump Off</button>
-                <button type="button" data-command="pump_motor:on">Pump On</button>
-                <button type="button" data-command="pump_motor_speed:low">Pump Low</button>
-                <button type="button" data-command="pump_motor_speed:high">Pump High</button>
-              </div>
-              <div class="quick-timer-actions">
-                <button id="liveOverridePumpOffManual" type="button">Hold pump off</button>
-                <button id="liveOverrideResumeSchedule" class="button-primary" type="button">Resume schedule</button>
-              </div>
-              <p id="liveTimerOverrideStatus" class="control-status">Schedule mode</p>
-            </div>
-
-            <div class="control-section">
-              <div class="control-section-heading">
-                <h3>Booster</h3>
-                <span>Current state is highlighted</span>
-              </div>
-              <div class="quick-control-grid" role="group" aria-label="Booster controls">
-                <button type="button" data-command="booster_pump:off">Booster Off</button>
-                <button type="button" data-command="booster_pump:on">Booster On</button>
-              </div>
-            </div>
-
-            <div class="control-section">
-              <div class="control-section-heading">
-                <h3>Active schedule</h3>
-                <span>Applies on the next controller tick</span>
-              </div>
-              <div class="schedule-profile-control">
-                <label class="sr-only" for="liveScheduleProfile">Active schedule profile</label>
-                <select id="liveScheduleProfile" aria-label="Active schedule profile" disabled></select>
-                <button id="liveScheduleProfileActivate" type="button" disabled>Activate</button>
-              </div>
-            </div>
-
-          </div>
-
-          <p id="liveCommandStatus" class="command-status" role="status">Ready</p>
-        </section>
+        </details>
 
         <section class="dashboard-card attention-card" aria-labelledby="attentionHeading">
           <div class="section-heading compact">

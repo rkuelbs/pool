@@ -547,11 +547,13 @@ and navigation.
   estimated flow, filter flow loss, and usable chlorine inventory; aligned
   seven-day trend strips for water temperature, pH, ORP, and tested free
   chlorine; collapsible chemical-addition, tank-refill, chlorination, and
-  complete water-test entry panels; pump, booster, and active-profile controls;
-  and an exception-first attention list. Tank refills record the amount added
-  separately from the resulting estimated tank level, validate against the
-  optional configured capacity, and use an idempotency token to prevent a
-  repeated browser submission. Supplemental chlorine
+  complete water-test entry panels; a collapsed equipment Controls panel for
+  pump, booster, and active-profile commands; and an exception-first attention
+  list. Historical KPI values use the compact `Last reading HH:MM ago` label;
+  known sensor faults remain identified separately. Tank refills record the
+  amount added separately from the resulting estimated tank level, validate
+  against the optional configured capacity, and use an idempotency token to
+  prevent a repeated browser submission. Supplemental chlorine
   requires a review/confirmation step before the existing command is sent.
   Detailed hydraulics, chlorination/FC-demand, CPU, health, and runtime-loop
   information remains available in the collapsed engineering status section.
@@ -978,7 +980,11 @@ and samples are not mixed across sessions.
 On completion, the averaged standardized PSI is converted to HIGH-speed flow
 using the same shared pressure-to-flow hydraulic model used for live flow
 estimation. The result remains latched until the next valid standardized test,
-even when the pump later drops to LOW/OFF.
+even when the pump later drops to LOW/OFF. The authoritative standardized
+reference-pressure result is logged in SQLite and restored at controller
+startup; flow and loss are recalculated from it using the current hydraulic
+model and clean-flow calibration, so a service restart does not blank the Live
+KPI.
 
 The only clean-filter calibration is:
 

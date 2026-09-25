@@ -310,6 +310,35 @@ class FilterLoadingEstimator:
     def last_result(self) -> FilterLoadingResult | None:
         return self._last_result
 
+    def restore_last_result(
+        self,
+        *,
+        reference_psi: float,
+        completed_at: datetime,
+        sample_count: int = 1,
+        averaging_seconds: float = 0.0,
+    ) -> bool:
+        """Restore a persisted standardized test using the current calibration."""
+        if (
+            not math.isfinite(reference_psi)
+            or reference_psi <= 0
+            or sample_count < 1
+            or not math.isfinite(averaging_seconds)
+            or averaging_seconds < 0
+        ):
+            return False
+        try:
+            result = self._build_result(
+                reference_psi=reference_psi,
+                completed_at=completed_at,
+                sample_count=sample_count,
+                averaging_seconds=averaging_seconds,
+            )
+        except ValueError:
+            return False
+        self._last_result = result
+        return True
+
     def apply_config(
         self,
         config: FilterLoadingConfig,

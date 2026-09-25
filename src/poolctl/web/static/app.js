@@ -922,7 +922,13 @@ function render(payload) {
   if (PAGE_MODE !== "live") {
     return;
   }
-  renderLiveCards(payload.sensors || {}, payload.actuators || {}, payload.flows || {}, payload.chlorine_supply);
+  renderLiveCards(
+    payload.sensors || {},
+    payload.actuators || {},
+    payload.flows || {},
+    payload.chlorine_supply,
+    payload.observed_at,
+  );
   renderControlButtonStates(payload.actuators || {});
   renderTodaySchedule(payload.schedule, payload.observed_at);
   renderAttention(payload);
@@ -1471,14 +1477,14 @@ async function refreshHealth(force) {
   }
 }
 
-function renderLiveCards(sensors, actuators, flows, chlorineSupply) {
+function renderLiveCards(sensors, actuators, flows, chlorineSupply, observedAt) {
   if (!document.getElementById("liveCardPanel")) {
     return;
   }
 
   renderLivePumpCard(sensors, actuators, flows);
   renderLiveFilterCard(sensors, flows);
-  renderLiveChemCard(sensors);
+  renderLiveChemCard(sensors, observedAt);
   renderLiveTankCard(sensors, chlorineSupply);
 }
 
@@ -1564,7 +1570,7 @@ function renderLiveFilterCard(sensors, flows) {
   setNodeText("liveFilterLastTest", `Last standardized test: ${completedText}`);
 }
 
-function renderLiveChemCard(sensors) {
+function renderLiveChemCard(sensors, observedAt) {
   const water = sensors.water_temp || null;
   const ph = sensors.raw_ph || null;
   const orp = sensors.raw_orp || null;
@@ -1577,15 +1583,15 @@ function renderLiveChemCard(sensors) {
   const orpReading = displayableSensorReading(orp);
   setNumericReading("liveTempValue", waterReading && waterReading.value, 1);
   setNodeText("liveTempUnit", temperatureUnit(waterReading && waterReading.unit));
-  setNodeText("liveTempLine", sensorSummary(water, "Water temperature unavailable"));
+  setNodeText("liveTempLine", sensorSummary(water, "Water temperature unavailable", observedAt));
   setNodeText("liveTrendWaterValue", waterReading && waterReading.display ? waterReading.display : "--");
 
   setNumericReading("livePhValue", phReading && phReading.value, 2);
-  setNodeText("livePhLine", sensorSummary(ph, `Probe temp ${sensorDisplay(sensors, "ph_temp")}`));
+  setNodeText("livePhLine", sensorSummary(ph, `Probe temp ${sensorDisplay(sensors, "ph_temp")}`, observedAt));
   setNodeText("liveTrendPhValue", phReading && phReading.display ? phReading.display : "--");
 
   setNumericReading("liveOrpValue", orpReading && orpReading.value, 0);
-  setNodeText("liveOrpLine", sensorSummary(orp, `Probe temp ${sensorDisplay(sensors, "orp_temp")}`));
+  setNodeText("liveOrpLine", sensorSummary(orp, `Probe temp ${sensorDisplay(sensors, "orp_temp")}`, observedAt));
   setNodeText("liveTrendOrpValue", orpReading && orpReading.display ? orpReading.display : "--");
   setNodeText("liveCsiLine", `CSI: ${sensorDisplay(sensors, "calcium_saturation_index")}`);
 }
@@ -1621,23 +1627,23 @@ function temperatureUnit(unit) {
   return "°F";
 }
 
-function sensorSummary(sensor, fallback) {
+function sensorSummary(sensor, fallback, observedAt) {
   if (!sensor) {
     return fallback;
   }
   const availability = sensor.availability || null;
   if (availability && availability.state !== "current") {
     const history = sensor.last_valid;
-    const historyTime = history && history.observed_at
-      ? new Date(history.observed_at).toLocaleString()
+    const historyAge = history && history.observed_at
+      ? elapsedAgeHHMM(history.observed_at, observedAt)
       : null;
-    const suffix = history && history.display
-      ? ` · Historical ${history.display}${historyTime ? ` at ${historyTime}` : ""}`
-      : "";
-    const faultSuffix = sensor.fault && sensor.fault.message
-      ? ` - Sensor fault: ${sensor.fault.message}`
-      : "";
-    return `${availability.label || fallback}${suffix}${faultSuffix}`;
+    const historicalLabel = history && history.display && historyAge
+      ? `Last reading ${historyAge} ago`
+      : null;
+    if (sensor.fault && sensor.fault.message) {
+      return historicalLabel ? `Sensor problem · ${historicalLabel}` : "Sensor problem";
+    }
+    return historicalLabel || availability.label || fallback;
   }
   const threshold = sensor.threshold || null;
   if (threshold && !threshold.configured) {
@@ -1651,6 +1657,18 @@ function sensorSummary(sensor, fallback) {
     unknown: "Status unavailable",
   };
   return labels[String(sensor.status || "unknown")] || fallback;
+}
+
+function elapsedAgeHHMM(observedAt, referenceAt) {
+  const observedMs = Date.parse(observedAt);
+  const referenceMs = Date.parse(referenceAt);
+  if (!Number.isFinite(observedMs) || !Number.isFinite(referenceMs)) {
+    return null;
+  }
+  const totalMinutes = Math.max(0, Math.floor((referenceMs - observedMs) / 60000));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
 }
 
 function displayableSensorReading(sensor) {
@@ -2097,7 +2115,7 @@ function renderLiveKpiSummary(definition, points, chlorineDeliveryPoints, histor
     const sign = change > 0 ? "+" : "";
     setNodeText(
       definition.trendId,
-      `${sign}${change.toFixed(1)} percentage points over ${formatLiveWindow(definition.historyHours)} (earliest validated test baseline)`,
+      `${sign}${change.toFixed(1)} percentage points over ${formatLiveWindow(definition.historyHours)}`,
     );
     return;
   }

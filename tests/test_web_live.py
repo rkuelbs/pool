@@ -197,6 +197,67 @@ async def test_build_live_snapshot_includes_runtime_sensors_and_actuators() -> N
 
 
 @pytest.mark.asyncio
+async def test_filter_loss_kpi_restores_after_service_restart(tmp_path: Path) -> None:
+    database_path = tmp_path / "filter-restart.sqlite3"
+    config = logging_live_config(str(database_path))
+    config["filter_loading"] = {"clean_flow_gpm": 100.0}
+    completed_at = make_clock().now() - timedelta(hours=3, minutes=12)
+
+    first_app = build_app_from_mapping(config, clock=make_clock())
+    assert first_app.measurement_logger is not None
+    first_app.measurement_logger.log_measurements(
+        (
+            Measurement(
+                sensor_id=SensorId.FILTER_REFERENCE_PSI,
+                observed_at=completed_at,
+                value=17.0,
+                unit="psi",
+                quality=Quality.GOOD,
+                metadata={"sample_count": 7, "averaging_seconds": 120.0},
+            ),
+        )
+    )
+
+    restarted_app = build_app_from_mapping(config, clock=make_clock())
+    restored = restarted_app.filter_loading_estimator
+    assert restored is not None
+    assert restored.last_result is not None
+    assert restored.last_result.completed_at == completed_at
+    assert restored.last_result.sample_count == 7
+
+    snapshot = await build_live_snapshot(restarted_app)
+
+    assert snapshot["flows"]["filter_reference_psi"]["value"] == 17.0
+    assert snapshot["flows"]["filter_flow_loss_percent"]["value"] is not None
+    assert snapshot["flows"]["filter_loading"]["completed_at"] == completed_at.isoformat()
+    assert snapshot["flows"]["filter_loading"]["status"] != "unknown"
+
+
+def test_filter_loss_restore_ignores_non_psi_history(tmp_path: Path) -> None:
+    database_path = tmp_path / "filter-invalid.sqlite3"
+    config = logging_live_config(str(database_path))
+    config["filter_loading"] = {"clean_flow_gpm": 100.0}
+    first_app = build_app_from_mapping(config, clock=make_clock())
+    assert first_app.measurement_logger is not None
+    first_app.measurement_logger.log_measurements(
+        (
+            Measurement(
+                sensor_id=SensorId.FILTER_REFERENCE_PSI,
+                observed_at=make_clock().now(),
+                value=17.0,
+                unit="bar",
+                quality=Quality.GOOD,
+            ),
+        )
+    )
+
+    restarted_app = build_app_from_mapping(config, clock=make_clock())
+
+    assert restarted_app.filter_loading_estimator is not None
+    assert restarted_app.filter_loading_estimator.last_result is None
+
+
+@pytest.mark.asyncio
 async def test_live_schedule_includes_trimmed_dosing_windows() -> None:
     config = control_config()
     config["site"] = {"timezone": "UTC"}
@@ -860,6 +921,16 @@ def test_live_dashboard_preserves_control_hooks_and_product_sections() -> None:
     assert "cumulativeCounterIncrease(chlorineDeliveryPoints)" in script
     assert "(totalOunces / 128).toFixed(2)" in script
     assert "percentage points over" in script
+    assert "earliest validated test baseline" not in script
+    assert "Historical ${history.display}" not in script
+    assert "Last reading ${historyAge} ago" in script
+    assert "function elapsedAgeHHMM(observedAt, referenceAt)" in script
+    assert 'String(hours).padStart(2, "0")' in script
+    assert 'String(minutes).padStart(2, "0")' in script
+    assert '<details class="dashboard-card quick-actions-card controls-card action-panel" id="liveControlsCard">' in markup
+    assert '<details class="dashboard-card quick-actions-card controls-card action-panel" id="liveControlsCard" open>' not in markup
+    assert 'class="controls-summary-status"' in markup
+    assert ".controls-summary-status" in styles
     assert "definition.historyHours = hours" in script
     assert "sparkline-clipped-label" in script
     assert "fcLinePointsWithBoundary" in script

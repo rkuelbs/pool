@@ -453,6 +453,63 @@ def test_filter_loading_uses_monitoring_status_and_config_recompute() -> None:
     assert recomputed.as_payload(monitoring_config=monitoring)["status"] == "alarm"
 
 
+def test_filter_loading_restores_persisted_reference_with_current_calibration() -> None:
+    completed_at = datetime(2026, 5, 20, 7, 0, tzinfo=timezone.utc)
+    estimator = FilterLoadingEstimator(
+        FilterLoadingConfig(clean_flow_gpm=100.0),
+    )
+
+    restored = estimator.restore_last_result(
+        reference_psi=17.0,
+        completed_at=completed_at,
+        sample_count=7,
+        averaging_seconds=120.0,
+    )
+
+    assert restored is True
+    result = estimator.last_result
+    assert result is not None
+    assert result.reference_psi == 17.0
+    assert result.completed_at == completed_at
+    assert result.sample_count == 7
+    assert result.averaging_seconds == 120.0
+    original_raw_loss = result.raw_flow_loss_percent
+
+    estimator.apply_config(FilterLoadingConfig(clean_flow_gpm=80.0))
+
+    assert estimator.last_result is not None
+    assert estimator.last_result.reference_psi == 17.0
+    assert estimator.last_result.clean_flow_gpm == 80.0
+    assert estimator.last_result.raw_flow_loss_percent != original_raw_loss
+
+
+@pytest.mark.parametrize(
+    ("reference_psi", "sample_count", "averaging_seconds"),
+    [
+        (float("nan"), 1, 0.0),
+        (-1.0, 1, 0.0),
+        (17.0, 0, 0.0),
+        (17.0, 1, float("inf")),
+    ],
+)
+def test_filter_loading_rejects_invalid_persisted_reference(
+    reference_psi: float,
+    sample_count: int,
+    averaging_seconds: float,
+) -> None:
+    estimator = FilterLoadingEstimator(FilterLoadingConfig(clean_flow_gpm=100.0))
+
+    restored = estimator.restore_last_result(
+        reference_psi=reference_psi,
+        completed_at=datetime(2026, 5, 20, 7, 0, tzinfo=timezone.utc),
+        sample_count=sample_count,
+        averaging_seconds=averaging_seconds,
+    )
+
+    assert restored is False
+    assert estimator.last_result is None
+
+
 def test_filter_loading_config_validates_flow_loss_calibration() -> None:
     with pytest.raises(ValueError):
         FilterLoadingConfig(clean_flow_gpm=0.0)

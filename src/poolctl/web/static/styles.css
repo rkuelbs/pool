@@ -1706,6 +1706,12 @@ body[data-page] {
   grid-template-columns: minmax(300px, 1.5fr) minmax(220px, 1fr) minmax(260px, 1fr);
 }
 
+.controls-summary-status {
+  align-items: center;
+  display: flex;
+  gap: var(--space-3);
+}
+
 .controls-card .quick-timer-actions {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
